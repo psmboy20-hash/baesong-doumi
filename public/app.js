@@ -1,4 +1,4 @@
-/* 배송 도우미 - 화면 로직 */
+﻿/* 배송 도우미 - 화면 로직 */
 let DB = null;
 let PAGE = 'home';
 let SYNC_STATUS = null;
@@ -29,6 +29,16 @@ async function api(path, opts) {
 async function saveDb() {
   const r = await api('/api/db', { method: 'POST', body: JSON.stringify(DB) });
   if (r && r.rev != null) DB.rev = r.rev;
+}
+// 서버에서 새 DB를 받아올 때 체크박스 선택 상태(_sel)를 유지
+function adoptDb(newDb) {
+  if (DB && newDb && !newDb.error) {
+    for (const key of ['orders', 'seeding']) {
+      const oldSel = new Map((DB[key] || []).filter(x => x._sel === false).map(x => [x.id, false]));
+      for (const it of (newDb[key] || [])) if (oldSel.has(it.id)) it._sel = false;
+    }
+  }
+  DB = newDb;
 }
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -127,10 +137,10 @@ function renderHome() {
     <div class="card" style="margin-top:1.5rem">
       <div class="step-title">💡 보내는 순서</div>
       <div class="hint" style="font-size:1.1rem">
-        ① <b>불러오기</b> — 주문/시딩 목록을 가져와요<br>
-        ② <b>우체국 엑셀 만들기</b> — 버튼 한 번이면 끝!<br>
-        ③ 만들어진 파일을 <b>우체국 프로그램(오즈뷰어)</b>에서 불러와 송장을 뽑아요<br>
-        ④ 우체국에서 받은 <b>송장 엑셀</b>을 이 프로그램에 끌어다 놓으면 자동으로 정리돼요
+        ① 주문·시딩은 <b>5분마다 저절로</b> 들어와요<br>
+        ② [📮 보내기]에서 <b>[🚀 우체국 바로 접수]</b> — 송장번호가 즉시 발급돼요<br>
+        ③ <b>[🖨 운송장 바로 인쇄]</b> — 라벨기에서 뽑아 상자에 붙여요<br>
+        ④ 끝! 카페24 배송처리·재고 차감·구글시트 기록은 저절로 됩니다
       </div>
     </div>`;
 }
@@ -269,7 +279,7 @@ async function epostRefresh() {
   const r = await api('/api/epost/status', { method: 'POST' });
   busy(false);
   if (r.error) { toast('⚠️ ' + r.error, 6000); return; }
-  DB = r.db;
+  adoptDb(r.db);
   render();
   toast(`✔️ ${r.refreshed}건 상태를 새로 확인했어요.` + (r.errors && r.errors.length ? ' (일부 실패)' : ''), 5000);
 }
@@ -279,7 +289,7 @@ async function epostCancel(kind, id, name) {
   const r = await api('/api/epost/cancel', { method: 'POST', body: JSON.stringify({ type: kind, id }) });
   busy(false);
   if (r.error) { toast('⚠️ ' + r.error, 8000); return; }
-  DB = r.db;
+  adoptDb(r.db);
   render();
   toast('✔️ 접수를 취소했어요. [보내기] 목록으로 돌아갔습니다.', 6000);
   if (r.warning) setTimeout(() => alert('⚠️ ' + r.warning), 300);
@@ -344,8 +354,9 @@ function renderInventory() {
     <div class="sub">남은 옷 개수예요. 옷을 보내면 <b>−</b>, 새로 들어오면 <b>＋</b>를 눌러요. <span style="color:var(--red)">빨간 숫자</span>는 2개 이하!</div>
     <input class="search-input" placeholder="🔍 제품 이름으로 찾기" value="${esc(q)}"
       oninput="window._invQ=this.value; renderInventory(); this.focus(); this.setSelectionRange(this.value.length,this.value.length)">
-    <div style="margin-bottom:1rem">
+    <div style="margin-bottom:1rem; display:flex; gap:0.8rem; flex-wrap:wrap">
       <button class="big-btn" onclick="invAddForm()">➕ 새 제품 넣기</button>
+      ${DB.products && DB.products.length ? `<button class="big-btn orange" onclick="invImportProducts()">📥 카페24 제품 전부 불러오기</button>` : ''}
     </div>
     <div id="inv-form"></div>
     <div class="inv-grid">${cards || '<div class="muted" style="font-size:1.1rem">아직 등록된 제품이 없어요. 위의 [새 제품 넣기]를 눌러 주세요.</div>'}</div>`;
@@ -376,6 +387,19 @@ async function invAdd() {
   await saveDb();
   renderInventory();
   toast('저장했어요! ✔️');
+}
+// 카페24 제품 목록을 재고 항목으로 한 번에 등록 (이미 있는 건 건너뜀)
+async function invImportProducts() {
+  const existing = new Set(DB.inventory.map(i => lettersOnly(i.name)));
+  const news = (DB.products || []).filter(p => p.name && !existing.has(lettersOnly(p.name)));
+  if (!news.length) { toast('새로 넣을 제품이 없어요. (이미 다 등록됨)'); return; }
+  if (!confirm(`카페24 제품 ${news.length}개를 재고 목록에 넣을까요?\n(개수는 0으로 들어가니, 실제 재고 수량을 ＋로 채워 주세요)`)) return;
+  for (const p of news) {
+    DB.inventory.push({ id: DB.nextId++, name: p.name, color: '', size: '', qty: 0 });
+  }
+  await saveDb();
+  renderInventory();
+  toast(`✔️ ${news.length}개 제품을 넣었어요. 이제 실제 개수를 ＋로 채워 주세요.`, 6000);
 }
 async function invAdj(id, d) {
   const item = DB.inventory.find(i => i.id === id);
@@ -520,7 +544,7 @@ async function doSync() {
     const r = await api('/api/sync', { method: 'POST' });
     busy(false);
     if (r.error) { toast('⚠️ ' + r.error, 6000); return; }
-    DB = r.db;
+    adoptDb(r.db);
     SYNC_STATUS = r.status || SYNC_STATUS;
     const c24added = r.cafe24 ? r.cafe24.added : 0;
     const cxl = (r.seeding.canceled || 0) + (r.orders.canceled || 0) + (r.cafe24 && r.cafe24.canceled || 0);
@@ -546,7 +570,7 @@ async function doExportAll() {
   const r = await api('/api/export/epost', { method: 'POST', body: JSON.stringify({ selected }) });
   busy(false);
   if (r.error) { toast('⚠️ ' + r.error, 6000); return; }
-  DB = r.db;
+  adoptDb(r.db);
   render();
   const box = $('#export-result');
   if (box) box.innerHTML = `
@@ -572,7 +596,7 @@ async function doEpostRegister() {
   const r = await api('/api/epost/register', { method: 'POST', body: JSON.stringify({ selected }) });
   busy(false);
   if (r.error) { toast('⚠️ ' + r.error, 7000); return; }
-  DB = r.db;
+  adoptDb(r.db);
   render();
   const ok = r.results.filter(x => x.ok);
   const fail = r.results.filter(x => !x.ok);
@@ -612,7 +636,7 @@ async function epostConnect() {
   busy(false);
   const box = $('#epost-result');
   if (r.error) { if (box) box.innerHTML = `<div class="result-box err">⚠️ ${esc(r.error)}</div>`; return; }
-  DB = r.db;
+  adoptDb(r.db);
   await refreshStatus(true);
   renderSettings();
   toast('✅ 우체국 연결 완료!', 5000);
@@ -643,7 +667,7 @@ async function uploadFile(which, file) {
     const r = await api('/api/upload/' + which, { method: 'POST', body: buf });
     busy(false);
     if (r.error) { toast('⚠️ ' + r.error, 7000); return; }
-    DB = r.db;
+    adoptDb(r.db);
     if (which === 'cafe24') {
       render();
       toast(`✔️ 주문 ${r.added}건을 새로 가져왔어요.` + (r.total - r.added > 0 ? ` (이미 있던 ${r.total - r.added}건은 건너뜀)` : ''), 6000);
@@ -708,7 +732,7 @@ async function refreshStatus(force) {
     SYNC_STATUS = r.status;
     if (force || (DB && r.rev !== DB.rev)) {
       const before = DB ? pendingOf(DB.seeding).length + pendingOf(DB.orders).length : 0;
-      DB = await api('/api/db');
+      adoptDb(await api('/api/db'));
       const after = pendingOf(DB.seeding).length + pendingOf(DB.orders).length;
       // 입력 중인 화면(설정, 재고 추가 폼)은 건드리지 않음
       const formOpen = PAGE === 'settings' || document.querySelector('#inv-form input');
@@ -730,3 +754,4 @@ async function refreshStatus(force) {
   go('home');
   setInterval(() => refreshStatus(false), 30 * 1000);
 })();
+

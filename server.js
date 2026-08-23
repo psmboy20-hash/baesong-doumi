@@ -308,7 +308,7 @@ async function cafe24FetchOrders(db) {
           // 취소/반품/교환: 이미 앱에 들어와 있는 대기 건을 취소 처리하기 위해 표시만 남김
           parsed.push({
             orderNo: o.order_id || '', name, phone,
-            product: it.product_name || '', _canceled: true
+            product: it.product_name || '', _canceled: true, _src: 'c24'
           });
           continue;
         }
@@ -338,7 +338,8 @@ async function cafe24FetchOrders(db) {
           courier: '',
           invoice: '',
           sentDate: shipped ? String(o.order_date || '').slice(0, 10) : '',
-          _shipped: shipped
+          _shipped: shipped,
+          _src: 'c24'
         });
       }
     }
@@ -399,7 +400,7 @@ async function epostConnect(db) {
   const custXml = await epostCall(db, 'api.GetCustNo.jparcel', { memberID: s.epostMemberId });
   const custNo = xmlVal(custXml, 'custNo');
   if (!custNo) throw new Error('고객번호를 찾지 못했어요. 인터넷우체국 아이디를 확인해 주세요.');
-  const apprXml = await epostCall(db, 'api.GetApprNo.jparcel', { custNo });
+  const apprXml = await epostCall(db, 'api.GetApprNo.jparcel', { custNo, statusCd: '1' }); // 승인 상태 계약만
   const apprNo = xmlVal(apprXml, 'apprNo');
   if (!apprNo) throw new Error('계약 승인번호를 찾지 못했어요.');
   const offXml = await epostCall(db, 'api.GetOfficeInfo.jparcel', { custNo });
@@ -713,7 +714,9 @@ function mergeOrders(db, parsed) {
       continue;
     }
     const shipped = !!(p.invoice || p._shipped);
+    const src = p._src;
     delete p._shipped;
+    delete p._src;
     const ex = map.get(orderKey(p)) || fuzzy.get(fuzzyOrderKey(p));
     if (ex) {
       let ch = false;
@@ -722,12 +725,13 @@ function mergeOrders(db, parsed) {
       if (shipped && !ex.sentDate && p.sentDate) { ex.sentDate = p.sentDate; ch = true; }
       if (p.orderNo && !ex.orderNo) { ex.orderNo = p.orderNo; ch = true; }
       // 아직 안 보낸 건은 주소/연락처/옵션 변경을 최신으로 반영
-      if (!shipped && ex.status !== '발송완료') {
-        if (ex.status === '취소됨') { ex.status = '대기'; ch = true; } // 취소 철회된 경우
+      if (!shipped && ex.status !== '발송완료' && ex.status !== '취소됨') {
         for (const f of ['addr', 'zip', 'phone', 'msg', 'option', 'color', 'size', 'qty']) {
           if (p[f] != null && String(p[f]) !== '' && String(p[f]) !== String(ex[f] ?? '')) { ex[f] = p[f]; ch = true; }
         }
       }
+      // 취소 철회 복구는 카페24가 다시 정상 주문으로 보내줄 때만 (시트 잔여 행 때문에 되살아나는 것 방지)
+      if (!shipped && ex.status === '취소됨' && src === 'c24') { ex.status = '대기'; ch = true; }
       if (ch) updated++;
     } else {
       const item = Object.assign({}, p, {
@@ -905,23 +909,29 @@ async function matchInvoices(db, rows) {
   return results;
 }
 
+// 재고 항목과 발송 제품이 같은 물건인지 (품번/특수문자 무시, 글자만 비교)
+function stockMatches(inv, item) {
+  const lo = s => String(s || '').toLowerCase().replace(/[^a-z가-힣]/g, '');
+  const core = lo(String(inv.name || '').replace(/^[A-Za-z]#?\d+_?/, ''));
+  const text = lo(item.product);
+  if (!core || core.length < 6 || !text.includes(core)) return false;
+  if (inv.color && !text.includes(lo(inv.color)) && lo(item.color) !== lo(inv.color)) return false;
+  if (inv.size && String(item.size || '').trim().toUpperCase() !== String(inv.size).trim().toUpperCase()) return false;
+  return true;
+}
+
 // 발송 확정된 건들의 공통 후처리 (송장매칭·API접수 양쪽에서 사용)
 async function postProcessShipped(db, matchedItems) {
   const results = {};
-  const norm = s => String(s || '').replace(/\s/g, '').toLowerCase();
 
   // 1) 재고 자동 차감 (제품 이름이 재고 목록과 맞으면)
   results.stock = [];
   for (const { item } of matchedItems) {
     if (item.stockDeducted) continue;
-    const text = norm(item.product);
-    if (!text) continue;
+    if (!item.product) continue;
     let any = false;
     for (const inv of db.inventory) {
-      const nm = norm(inv.name);
-      if (!nm || !text.includes(nm)) continue;
-      if (inv.color && !(text.includes(norm(inv.color)) || norm(item.color) === norm(inv.color))) continue;
-      if (inv.size && String(item.size || '').trim().toUpperCase() !== String(inv.size).trim().toUpperCase()) continue;
+      if (!stockMatches(inv, item)) continue;
       const n = Number(item.qty) || 1;
       inv.qty = Math.max(0, inv.qty - n);
       results.stock.push({ name: [inv.name, inv.color, inv.size].filter(Boolean).join(' '), minus: n, left: inv.qty });
@@ -1089,6 +1099,12 @@ const server = http.createServer(async (req, res) => {
       for (const g of groups.values()) {
         idx++;
         const orderNo = 'HAM' + Date.now() + '-' + idx;
+        // 접수 전 검증: 우편번호 5자리 필수
+        const zipChk = String(g.zip || '').trim() || extractZip(g.addr);
+        if (!/^\d{5}$/.test(zipChk)) {
+          out.push({ name: g.name, ok: false, error: '주소에서 우편번호(5자리)를 찾지 못했어요. 주소를 고친 뒤 다시 접수해 주세요.' });
+          continue;
+        }
         try {
           const r = await epostInsertOrder(db, g, orderNo, body.testYn === 'Y' ? 'Y' : 'N');
           if (body.testYn !== 'Y' && r.regiNo) {
@@ -1160,19 +1176,13 @@ const server = http.createServer(async (req, res) => {
       }
       // 같은 접수(orderNo)로 묶인 항목 전부 원상복구
       const warn = [];
-      const norm = s => String(s || '').replace(/\s/g, '').toLowerCase();
       for (const arr of [db.orders, db.seeding]) {
         for (const it of arr) {
           if (it.epost && it.epost.orderNo === item.epost.orderNo) {
             // 재고 되돌리기
             if (it.stockDeducted) {
-              const text = norm(it.product);
               for (const inv of db.inventory) {
-                const nm = norm(inv.name);
-                if (!nm || !text.includes(nm)) continue;
-                if (inv.color && !(text.includes(norm(inv.color)) || norm(it.color) === norm(inv.color))) continue;
-                if (inv.size && String(it.size || '').trim().toUpperCase() !== String(inv.size).trim().toUpperCase()) continue;
-                inv.qty += Number(it.qty) || 1;
+                if (stockMatches(inv, it)) inv.qty += Number(it.qty) || 1;
               }
               it.stockDeducted = false;
             }
