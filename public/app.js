@@ -147,8 +147,11 @@ function renderSend() {
           <tbody>${rows}</tbody>
         </table>
       </div>
-      <div style="margin-top:1rem">
-        <button class="big-btn green" onclick="doExportAll()">📄 선택한 ${selCount}건 우체국 엑셀 만들기</button>
+      <div style="margin-top:1rem; display:flex; gap:0.8rem; flex-wrap:wrap">
+        ${SYNC_STATUS && SYNC_STATUS.epost && SYNC_STATUS.epost.connected
+          ? `<button class="big-btn green" onclick="doEpostRegister()">🚀 선택한 ${selCount}건 우체국 바로 접수</button>
+             <button class="big-btn gray" onclick="doExportAll()">📄 엑셀로 만들기 (예비)</button>`
+          : `<button class="big-btn green" onclick="doExportAll()">📄 선택한 ${selCount}건 우체국 엑셀 만들기</button>`}
       </div>
       <div id="export-result"></div>` : `
       <div class="hint" style="font-size:1.1rem">지금은 보낼 것이 없어요. 새 주문·신청이 들어오면 여기에 자동으로 나타나요. 😊</div>`}
@@ -322,6 +325,23 @@ function renderSettings() {
       ${c24 && c24.ok === false ? `<div class="result-box err" style="margin-top:1rem">⚠️ ${esc(c24.error || '')}</div>` : ''}
     </div>
     <div class="card">
+      <div class="step-title">📮 우체국 바로 접수 (OpenAPI) ${SYNC_STATUS && SYNC_STATUS.epost && SYNC_STATUS.epost.connected ? '<span class="chip done">연결됨 ✓</span>' : '<span class="chip wait">연결 안 됨</span>'}</div>
+      <div class="hint">
+        연결하면 엑셀 업로드 없이 <b>[보내기]에서 버튼 한 번으로 우체국 접수 + 송장번호 자동 발급</b>이 됩니다.<br>
+        계약고객시스템 → 고객센터 → 오픈API신청결과 화면의 <b>인증키</b>와 <b>접수용 보안키</b>를 붙여넣으세요.
+      </div>
+      <div class="form-row"><label>인증키</label><input id="set-epkey" value="${esc(s.epostApiKey)}"></div>
+      <div class="form-row"><label>접수용 보안키</label><input id="set-epsec" type="password" value="${esc(s.epostSecKey)}"></div>
+      <div class="form-row"><label>인터넷우체국 아이디</label><input id="set-epid" value="${esc(s.epostMemberId)}"></div>
+      <div style="display:flex; gap:0.8rem; flex-wrap:wrap">
+        <button class="big-btn green" onclick="saveSettings()">✔️ 저장</button>
+        <button class="big-btn" onclick="epostConnect()">🔗 우체국 연결</button>
+        ${SYNC_STATUS && SYNC_STATUS.epost && SYNC_STATUS.epost.connected ? '<button class="big-btn orange" onclick="epostTest()">🧪 테스트 접수 해보기</button>' : ''}
+      </div>
+      ${DB.epost ? `<div class="hint" style="margin-top:0.8rem">고객번호 ${esc(DB.epost.custNo)} · 계약승인번호 ${esc(DB.epost.apprNo)} · 공급지 ${esc(DB.epost.officeNm || DB.epost.officeSer)}</div>` : ''}
+      <div id="epost-result"></div>
+    </div>
+    <div class="card">
       <div class="step-title">📝 구글시트 송장 자동 기록 ${s.sheetWebhookUrl ? '<span class="chip done">켜짐 ✓</span>' : '<span class="chip wait">꺼짐</span>'}</div>
       <div class="hint">
         송장을 붙일 때 <b>시딩 구글시트의 송장번호 칸에도 자동으로</b> 적어줍니다.<br>
@@ -348,6 +368,11 @@ async function saveSettings() {
   if ($('#set-whurl')) {
     s.sheetWebhookUrl = $('#set-whurl').value.trim();
     s.sheetWebhookToken = $('#set-whtoken').value.trim();
+  }
+  if ($('#set-epkey')) {
+    s.epostApiKey = $('#set-epkey').value.trim();
+    s.epostSecKey = $('#set-epsec').value.trim();
+    s.epostMemberId = $('#set-epid').value.trim() || 'allincrew';
   }
   await saveDb();
   toast('저장했어요! ✔️');
@@ -419,6 +444,69 @@ async function doExportAll() {
       열린 폴더에 있는 <b>${esc(r.fname)}</b> 파일을 선택하면 됩니다.
     </div>`;
   window.scrollTo(0, document.body.scrollHeight);
+}
+
+// 우체국 OpenAPI 바로 접수
+async function doEpostRegister() {
+  const selected = [
+    ...DB.orders.filter(x => x.status !== '발송완료' && x._sel !== false).map(x => ({ type: 'order', id: x.id })),
+    ...DB.seeding.filter(x => x.status !== '발송완료' && x._sel !== false).map(x => ({ type: 'seeding', id: x.id }))
+  ];
+  if (!selected.length) { toast('선택된 사람이 없어요.'); return; }
+  if (!confirm(`${selected.length}건을 우체국에 바로 접수할까요?\n(접수하면 송장번호가 발급되고 요금이 계산돼요)`)) return;
+  busy(true, '우체국에 접수하는 중…');
+  const r = await api('/api/epost/register', { method: 'POST', body: JSON.stringify({ selected }) });
+  busy(false);
+  if (r.error) { toast('⚠️ ' + r.error, 7000); return; }
+  DB = r.db;
+  render();
+  const ok = r.results.filter(x => x.ok);
+  const fail = r.results.filter(x => !x.ok);
+  let html = '';
+  if (ok.length) {
+    html += `<div class="result-box ok"><div class="big">✅ 우체국 접수 완료! 송장번호가 나왔어요.</div>` +
+      ok.map(x => `${esc(x.name)} → 송장 <b>${esc(x.regiNo)}</b>${x.price ? ' (예상요금 ' + esc(x.price) + '원)' : ''}`).join('<br>') +
+      `<br><span style="font-weight:400">이제 우체국 사이트 <b>계약소포 → 운송장출력</b>에서 라벨만 뽑으면 끝!</span></div>`;
+  }
+  if (fail.length) {
+    html += `<div class="result-box err"><div class="big">⚠️ 접수 못 한 건 ${fail.length}건</div>` +
+      fail.map(x => `${esc(x.name)}: ${esc(x.error)}`).join('<br>') + '</div>';
+  }
+  const extra = [];
+  if (r.cafe24 && r.cafe24.length) {
+    const c = r.cafe24.filter(x => x.ok).length;
+    if (c) extra.push(`🛒 카페24에도 송장 ${c}건 자동 등록 완료`);
+    r.cafe24.filter(x => !x.ok).slice(0, 3).forEach(f => extra.push(`🛒 카페24 등록 못 함 (${esc(f.orderNo)}): ${esc(f.error)}`));
+  }
+  if (r.stock && r.stock.length) extra.push('📋 재고 자동 차감: ' + r.stock.map(s => `${esc(s.name)} −${s.minus}`).join(', '));
+  if (r.sheet) extra.push(r.sheet.ok ? `📝 구글시트에도 송장 ${r.sheet.count}건 기록 완료` : `📝 구글시트 기록 실패: ${esc(r.sheet.error)}`);
+  if (extra.length) html += `<div class="result-box ok" style="font-weight:400">${extra.join('<br>')}</div>`;
+  const box = $('#export-result');
+  if (box) box.innerHTML = html;
+  window.scrollTo(0, document.body.scrollHeight);
+}
+
+async function epostConnect() {
+  await saveSettings();
+  busy(true, '우체국과 연결하는 중…');
+  const r = await api('/api/epost/connect', { method: 'POST' });
+  busy(false);
+  const box = $('#epost-result');
+  if (r.error) { if (box) box.innerHTML = `<div class="result-box err">⚠️ ${esc(r.error)}</div>`; return; }
+  DB = r.db;
+  await refreshStatus(true);
+  renderSettings();
+  toast('✅ 우체국 연결 완료!', 5000);
+}
+
+async function epostTest() {
+  busy(true, '테스트 접수 중… (실제 접수 아님)');
+  const r = await api('/api/epost/test', { method: 'POST' });
+  busy(false);
+  const box = $('#epost-result');
+  if (r.error) { if (box) box.innerHTML = `<div class="result-box err">⚠️ ${esc(r.error)}</div>`; return; }
+  if (box) box.innerHTML = `<div class="result-box ok">🧪 테스트 성공! 응답 송장번호: <b>${esc(r.result.regiNo)}</b><br>
+    <span style="font-weight:400">TESTREGINOAPI라고 나오면 정상이에요. 실제 접수는 되지 않았습니다.</span></div>`;
 }
 
 function pickFile(which) {

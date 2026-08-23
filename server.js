@@ -8,6 +8,7 @@ const os = require('os');
 const https = require('https');
 const { exec } = require('child_process');
 const XLSX = require('xlsx');
+const seed = require('./lib/seed128');
 
 const PORT = 8899;
 const DATA_DIR = path.join(__dirname, 'data');
@@ -38,6 +39,10 @@ function defaultDb() {
       cafe24RedirectUri: '',
       sheetWebhookUrl: '',
       sheetWebhookToken: '',
+      epostApiKey: '',
+      epostSecKey: '',
+      epostMemberId: 'allincrew',
+      epostContCd: '025', // 내용품코드: 의류/패션잡화
       // 우체국 계약고객시스템 > 파일등록 > "주문접수처 양식다운로드"에서 확인한 NUSOLVERE 실제 양식
       epostColumns: [
         '주문번호', '수취인명', '수취인 우편번호', '수취인 주소',
@@ -335,6 +340,114 @@ async function cafe24FetchOrders(db) {
   return parsed;
 }
 
+// ---------- 우체국 계약소포 OpenAPI ----------
+const httpMod = require('http');
+function httpGetText(urlStr) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(urlStr);
+    const req = httpMod.get({
+      hostname: u.hostname, path: u.pathname + u.search,
+      headers: {
+        'Connection': 'keep-alive',
+        'Host': u.hostname,
+        'User-Agent': 'Apache-HttpClient/4.5.1 (Java/1.8.0_91)'
+      },
+      timeout: 20000
+    }, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    });
+    req.on('timeout', () => { req.destroy(); reject(new Error('우체국 응답 시간 초과')); });
+    req.on('error', reject);
+  });
+}
+function xmlVal(xml, tag) {
+  const m = String(xml).match(new RegExp('<' + tag + '>\\s*(?:<!\\[CDATA\\[)?([\\s\\S]*?)(?:\\]\\]>)?\\s*</' + tag + '>'));
+  return m ? m[1].trim() : '';
+}
+function epostConfigured(db) {
+  const s = db.settings;
+  return !!(s.epostApiKey && s.epostSecKey);
+}
+// regData 평문: k=v&k=v (값 안의 &,=는 제거)
+function epostPlain(params) {
+  return Object.entries(params)
+    .filter(([, v]) => v != null && String(v) !== '')
+    .map(([k, v]) => k + '=' + String(v).replace(/[&=]/g, ' ').trim())
+    .join('&');
+}
+async function epostCall(db, msgName, params) {
+  const s = db.settings;
+  const enc = seed.encryptHex(s.epostSecKey, epostPlain(params));
+  const url = `http://ship.epost.go.kr/${msgName}?key=${encodeURIComponent(s.epostApiKey)}&regData=${enc}`;
+  const xml = await httpGetText(url);
+  const errCode = xmlVal(xml, 'error_code');
+  if (errCode) throw new Error(errCode + ': ' + (xmlVal(xml, 'message') || '우체국 오류'));
+  return xml;
+}
+// 연결: 아이디 → 고객번호 → 계약승인번호 → 공급지 코드 자동 조회
+async function epostConnect(db) {
+  const s = db.settings;
+  const custXml = await epostCall(db, 'api.GetCustNo.jparcel', { memberID: s.epostMemberId });
+  const custNo = xmlVal(custXml, 'custNo');
+  if (!custNo) throw new Error('고객번호를 찾지 못했어요. 인터넷우체국 아이디를 확인해 주세요.');
+  const apprXml = await epostCall(db, 'api.GetApprNo.jparcel', { custNo });
+  const apprNo = xmlVal(apprXml, 'apprNo');
+  if (!apprNo) throw new Error('계약 승인번호를 찾지 못했어요.');
+  const offXml = await epostCall(db, 'api.GetOfficeInfo.jparcel', { custNo });
+  const officeSer = xmlVal(offXml, 'officeSer');
+  const officeNm = xmlVal(offXml, 'officeNm');
+  if (!officeSer) throw new Error('공급지(발송지) 정보가 없어요. 계약고객시스템 > 계약소포 > 기초정보 > 공급지관리에서 등록해 주세요.');
+  db.epost = { custNo, apprNo, officeSer, officeNm, connectedAt: today() };
+  saveDb(db);
+  return db.epost;
+}
+// 소포 접수 (한 그룹 = 택배 1건). testYn='Y'면 실제 접수 안 됨
+async function epostInsertOrder(db, g, orderNo, testYn) {
+  const s = db.settings;
+  const zip = String(g.zip || '').trim() || extractZip(g.addr);
+  const addr = cleanAddr(g.addr);
+  const addr1 = addr.slice(0, 140);
+  const addr2 = addr.length > 140 ? addr.slice(140, 420) : '.';
+  const products = g.items.map(({ item }) => String(item.product || '').replace(/\s+/g, ' ').trim()).filter(Boolean).join(' / ');
+  const models = g.items.map(({ item }) =>
+    [item.color, item.size].filter(Boolean).join(' ') || String(item.option || '').trim()
+  ).filter(Boolean).join(' / ');
+  const qty = g.items.reduce((a, { item }) => a + (Number(item.qty) || 1), 0);
+  const phone = String(g.phone || '').replace(/[^0-9-]/g, '');
+  const isMobile = phone.replace(/\D/g, '').startsWith('01');
+  const params = {
+    custNo: db.epost.custNo,
+    apprNo: db.epost.apprNo,
+    payType: '1',
+    reqType: '1',
+    officeSer: db.epost.officeSer,
+    microYn: 'N',
+    orderNo,
+    ordCompNm: (s.senderName || '누솔베르').slice(0, 90),
+    recNm: String(g.name).slice(0, 38),
+    recZip: zip,
+    recAddr1: addr1,
+    recAddr2: addr2,
+    contCd: s.epostContCd || '025',
+    goodsNm: (products || s.defaultContent || '의류').slice(0, 390),
+    goodsMdl: models.slice(0, 390),
+    qty: String(qty),
+    delivMsg: g.msgs.filter(Boolean).join(' / ').slice(0, 190),
+    printYn: 'N' // 운송장은 계약고객시스템 운송장출력 메뉴에서 출력
+  };
+  if (isMobile) params.recMob = phone; else params.recTel = phone;
+  if (testYn === 'Y') params.testYn = 'Y';
+  const xml = await epostCall(db, 'api.InsertOrder.jparcel', params);
+  return {
+    regiNo: xmlVal(xml, 'regiNo'),
+    reqNo: xmlVal(xml, 'reqNo'),
+    resNo: xmlVal(xml, 'resNo'),
+    price: xmlVal(xml, 'price')
+  };
+}
+
 // ---------- 자동 동기화 ----------
 const syncStatus = {
   lastRun: null, lastOk: null,
@@ -558,10 +671,8 @@ function mergeOrders(db, parsed) {
 }
 
 // ---------- 우체국 엑셀 생성 ----------
-function buildEpostRows(db, selected) {
-  // selected: [{type:'seeding'|'order', id}]
-  const st = db.settings;
-  // 수령인 기준으로 묶기 (주문 여러 건 → 택배 1건)
+// 수령인 기준으로 묶기 (주문 여러 건 → 택배 1건)
+function buildParcelGroups(db, selected) {
   const groups = new Map();
   const pick = [];
   for (const sel of selected) {
@@ -577,6 +688,13 @@ function buildEpostRows(db, selected) {
     if (item.msg) g.msgs.push(item.msg);
     if (type === 'seeding' && item.request) g.msgs.push('');
   }
+  return { groups, pick };
+}
+
+function buildEpostRows(db, selected) {
+  // selected: [{type:'seeding'|'order', id}]
+  const st = db.settings;
+  const { groups, pick } = buildParcelGroups(db, selected);
   const rows = [];
   for (const g of groups.values()) {
     const zip = String(g.zip || '').trim() || extractZip(g.addr);
@@ -633,7 +751,8 @@ function exportEpost(db, selected) {
   // 편의: 파일이 담긴 폴더를 열고(파일 선택된 상태), 우체국 접수 사이트도 연다
   try {
     exec(`explorer /select,"${fpath}"`);
-    exec('start "" "https://ship.epost.go.kr/ui/index.jsp"');
+    // start는 셸 따옴표 문제로 안 열리는 경우가 있어 rundll32 방식 사용
+    exec('rundll32 url.dll,FileProtocolHandler https://biz.epost.go.kr');
   } catch (e) { /* 못 열어도 치명적이지 않음 */ }
   return { path: fpath, fname, count, parcels };
 }
@@ -704,6 +823,16 @@ async function matchInvoices(db, rows) {
     type: m.type,
     item: (m.type === 'seeding' ? db.seeding : db.orders).find(x => x.id === m.id)
   })).filter(x => x.item);
+  const post = await postProcessShipped(db, matchedItems);
+  results.stock = post.stock;
+  results.cafe24 = post.cafe24;
+  results.sheet = post.sheet;
+  return results;
+}
+
+// 발송 확정된 건들의 공통 후처리 (송장매칭·API접수 양쪽에서 사용)
+async function postProcessShipped(db, matchedItems) {
+  const results = {};
   const norm = s => String(s || '').replace(/\s/g, '').toLowerCase();
 
   // 1) 재고 자동 차감 (제품 이름이 재고 목록과 맞으면)
@@ -803,6 +932,7 @@ const server = http.createServer(async (req, res) => {
       const db = loadDb();
       syncStatus.cafe24.configured = cafe24Configured(db);
       syncStatus.cafe24.connected = !!db.cafe24Token;
+      syncStatus.epost = { configured: epostConfigured(db), connected: !!db.epost };
       return sendJson(res, 200, { rev: db.rev || 0, status: syncStatus });
     }
     if (url.pathname === '/api/cafe24/authurl' && req.method === 'GET') {
@@ -846,6 +976,65 @@ const server = http.createServer(async (req, res) => {
       } catch (e) {
         return sendJson(res, 200, { error: e.message });
       }
+    }
+    if (url.pathname === '/api/epost/connect' && req.method === 'POST') {
+      const db = loadDb();
+      if (!epostConfigured(db)) return sendJson(res, 200, { error: '먼저 우체국 인증키와 보안키를 저장해 주세요.' });
+      try {
+        const info = await epostConnect(db);
+        return sendJson(res, 200, { ok: true, epost: info, db: loadDb() });
+      } catch (e) {
+        return sendJson(res, 200, { error: '우체국 연결 실패: ' + e.message });
+      }
+    }
+    if (url.pathname === '/api/epost/test' && req.method === 'POST') {
+      const db = loadDb();
+      if (!epostConfigured(db) || !db.epost) return sendJson(res, 200, { error: '먼저 [우체국 연결]을 해주세요.' });
+      try {
+        const g = {
+          name: '테스트', phone: '010-0000-0000', zip: '07997',
+          addr: db.settings.senderAddr || '서울 양천구 목동동로 창구',
+          msgs: ['테스트 접수입니다'],
+          items: [{ item: { product: '테스트 상품', color: '', size: '', option: '', qty: 1 } }]
+        };
+        const r = await epostInsertOrder(db, g, 'HAMTEST' + Date.now(), 'Y');
+        return sendJson(res, 200, { ok: true, result: r });
+      } catch (e) {
+        return sendJson(res, 200, { error: '테스트 접수 실패: ' + e.message });
+      }
+    }
+    if (url.pathname === '/api/epost/register' && req.method === 'POST') {
+      const body = JSON.parse((await readBody(req)).toString('utf8'));
+      const db = loadDb();
+      if (!epostConfigured(db) || !db.epost) return sendJson(res, 200, { error: '먼저 설정에서 [우체국 연결]을 해주세요.' });
+      const { groups } = buildParcelGroups(db, body.selected || []);
+      const out = [];
+      const shippedItems = [];
+      let idx = 0;
+      for (const g of groups.values()) {
+        idx++;
+        const orderNo = 'HAM' + Date.now() + '-' + idx;
+        try {
+          const r = await epostInsertOrder(db, g, orderNo, body.testYn === 'Y' ? 'Y' : 'N');
+          if (body.testYn !== 'Y' && r.regiNo) {
+            for (const { type, item } of g.items) {
+              item.invoice = r.regiNo;
+              item.courier = '우체국';
+              item.status = '발송완료';
+              item.sentDate = today();
+              item.epost = { orderNo, reqNo: r.reqNo, resNo: r.resNo };
+              shippedItems.push({ type, item });
+            }
+          }
+          out.push({ name: g.name, ok: true, regiNo: r.regiNo, price: r.price });
+        } catch (e) {
+          out.push({ name: g.name, ok: false, error: e.message });
+        }
+      }
+      let post = { stock: [], cafe24: [], sheet: null };
+      if (shippedItems.length) post = await postProcessShipped(db, shippedItems);
+      saveDb(db);
+      return sendJson(res, 200, { ok: true, results: out, stock: post.stock, cafe24: post.cafe24, sheet: post.sheet, db });
     }
     if (url.pathname === '/api/cafe24/disconnect' && req.method === 'POST') {
       const db = loadDb();
