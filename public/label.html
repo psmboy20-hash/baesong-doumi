@@ -110,7 +110,8 @@
 <div class="toolbar">
   <button onclick="window.print()">🖨 인쇄하기</button>
   <select id="paper" onchange="setPaper(this.value)">
-    <option value="roll">라벨기 용지 100×150mm</option>
+    <option value="post">우체국 전용라벨 C형 168×107 (6인치 라벨기)</option>
+    <option value="roll">택배라벨 100×150mm</option>
     <option value="a4">일반 A4 (잘라 붙이기)</option>
   </select>
   <span id="paper-hint" style="margin-left:12px;color:#555">라벨기에서 한 장씩 나옵니다. 인쇄 창에서 프린터를 라벨기로 선택하세요.</span>
@@ -180,9 +181,15 @@ function renderRoll() {
   }).join('');
 }
 
+function renderPost() { // C형 한 장 = 한 페이지 (6인치 라벨기)
+  return LABELS.map((L, i) => '<div style="page-break-after:always">' + labelC(L, i) + '</div>').join('');
+}
 function renderA4() {
+  return '<div class="sheet-a4">' + LABELS.map((L, i) => labelC(L, i)).join('') + '</div>';
+}
+function labelC(L, i) {
   const st = DBREF.settings;
-  return '<div class="sheet-a4">' + LABELS.map((L, i) => {
+  return (() => {
     const it = L.it, ep = it.epost, lb = ep.label || {};
     const a = parseArea(lb);
     const zip = String(it.zip || lb.refineZip || '').replace(/\D/g, '').slice(0, 5);
@@ -216,7 +223,7 @@ function renderA4() {
         <div class="longbar"><svg id="regi${i}"></svg></div>
       </div>
     </div>`;
-  }).join('') + '</div>';
+  })();
 }
 
 function drawBarcodes() {
@@ -232,13 +239,19 @@ function setPaper(mode) {
   MODE = mode;
   localStorage.setItem('labelPaper', mode);
   document.getElementById('paper').value = mode;
-  document.getElementById('pagestyle').textContent = mode === 'roll'
-    ? '@page { size: 100mm 150mm; margin: 0; }'
-    : '@page { size: A4 portrait; margin: 5mm; }';
-  document.getElementById('paper-hint').textContent = mode === 'roll'
-    ? '라벨기에서 한 장씩 나옵니다. 인쇄 창에서 프린터를 라벨기로 선택하세요.'
-    : 'A4에 인쇄해서 잘라 붙이세요.';
-  document.getElementById('sheet').innerHTML = mode === 'roll' ? renderRoll() : renderA4();
+  const page = {
+    post: '@page { size: 168mm 107mm; margin: 0; } .label { margin: 0 auto; border-radius: 0; }',
+    roll: '@page { size: 100mm 150mm; margin: 0; }',
+    a4: '@page { size: A4 portrait; margin: 5mm; }'
+  };
+  const hint = {
+    post: '우체국 전용라벨(C형)이 한 장씩 나옵니다. 인쇄 창에서 프린터를 라벨기로 선택하세요.',
+    roll: '라벨기에서 한 장씩 나옵니다. 인쇄 창에서 프린터를 라벨기로 선택하세요.',
+    a4: 'A4에 인쇄해서 잘라 붙이세요.'
+  };
+  document.getElementById('pagestyle').textContent = page[mode] || page.post;
+  document.getElementById('paper-hint').textContent = hint[mode] || '';
+  document.getElementById('sheet').innerHTML = mode === 'roll' ? renderRoll() : (mode === 'a4' ? renderA4() : renderPost());
   drawBarcodes();
 }
 
@@ -265,7 +278,7 @@ async function main() {
     LABELS.push({ it, products: [prodLine(it)] });
   }
   if (!LABELS.length) { document.getElementById('sheet').innerHTML = '<p style="padding:2rem">인쇄할 운송장이 없어요. (앱에서 접수한 건만 인쇄할 수 있습니다)</p>'; return; }
-  setPaper(localStorage.getItem('labelPaper') || 'roll');
+  setPaper(localStorage.getItem('labelPaper') || 'post');
   if (params.get('print') === '1') setTimeout(() => window.print(), 700);
 }
 main();
