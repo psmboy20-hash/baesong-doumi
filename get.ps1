@@ -1,4 +1,4 @@
-﻿# 배송 도우미 - 한 줄 설치 스크립트
+# 배송 도우미 - 한 줄 설치 스크립트
 # 사용법(cmd에 붙여넣기):
 # powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/psmboy20-hash/baesong-doumi/main/get.ps1 | iex"
 $ErrorActionPreference = 'Stop'
