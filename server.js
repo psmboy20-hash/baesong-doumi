@@ -415,8 +415,8 @@ async function epostInsertOrder(db, g, orderNo, testYn) {
     [item.color, item.size].filter(Boolean).join(' ') || String(item.option || '').trim()
   ).filter(Boolean).join(' / ');
   const qty = g.items.reduce((a, { item }) => a + (Number(item.qty) || 1), 0);
-  const phone = String(g.phone || '').replace(/[^0-9-]/g, '');
-  const isMobile = phone.replace(/\D/g, '').startsWith('01');
+  const phone = String(g.phone || '').replace(/\D/g, ''); // 숫자만 허용
+  const isMobile = phone.startsWith('01');
   const params = {
     custNo: db.epost.custNo,
     apprNo: db.epost.apprNo,
