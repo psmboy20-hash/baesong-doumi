@@ -1085,7 +1085,7 @@ const server = http.createServer(async (req, res) => {
               item.courier = '우체국';
               item.status = '발송완료';
               item.sentDate = today();
-              item.epost = { orderNo, reqNo: r.reqNo, resNo: r.resNo };
+              item.epost = { orderNo, reqNo: r.reqNo, resNo: r.resNo, reqYmd: today().replace(/-/g, ''), stus: '01' };
               shippedItems.push({ type, item });
             }
           }
@@ -1098,6 +1098,85 @@ const server = http.createServer(async (req, res) => {
       if (shippedItems.length) post = await postProcessShipped(db, shippedItems);
       saveDb(db);
       return sendJson(res, 200, { ok: true, results: out, stock: post.stock, cafe24: post.cafe24, sheet: post.sheet, db });
+    }
+    if (url.pathname === '/api/epost/status' && req.method === 'POST') {
+      // 우체국에 접수된 건들의 처리상태(예약/운송장출력/집하 등) 새로고침
+      const db = loadDb();
+      if (!epostConfigured(db) || !db.epost) return sendJson(res, 200, { error: '우체국 연결이 필요해요.' });
+      const targets = [...db.orders, ...db.seeding].filter(x => x.epost && x.epost.orderNo);
+      const done = new Set();
+      let refreshed = 0;
+      const errors = [];
+      for (const item of targets) {
+        if (done.has(item.epost.orderNo)) continue;
+        done.add(item.epost.orderNo);
+        try {
+          const xml = await epostCall(db, 'api.GetResInfo.jparcel', {
+            custNo: db.epost.custNo, reqType: '1',
+            orderNo: item.epost.orderNo, reqYmd: item.epost.reqYmd || today().replace(/-/g, '')
+          });
+          const stus = xmlVal(xml, 'treatStusCd');
+          for (const it of targets) {
+            if (it.epost.orderNo === item.epost.orderNo) {
+              if (stus) it.epost.stus = stus;
+              const rn = xmlVal(xml, 'regiNo');
+              if (rn && rn !== 'TESTREGINOAPI') it.invoice = rn; // 취소 후 재발급 등 반영
+            }
+          }
+          refreshed++;
+        } catch (e) { errors.push(item.name + ': ' + e.message); }
+      }
+      saveDb(db);
+      return sendJson(res, 200, { ok: true, refreshed, errors: errors.slice(0, 5), db });
+    }
+    if (url.pathname === '/api/epost/cancel' && req.method === 'POST') {
+      const body = JSON.parse((await readBody(req)).toString('utf8'));
+      const db = loadDb();
+      if (!epostConfigured(db) || !db.epost) return sendJson(res, 200, { error: '우체국 연결이 필요해요.' });
+      const list = body.type === 'seeding' ? db.seeding : db.orders;
+      const item = list.find(x => x.id === body.id);
+      if (!item || !item.epost) return sendJson(res, 200, { error: '취소할 접수 정보를 찾지 못했어요.' });
+      try {
+        await epostCall(db, 'api.GetResCancelCmd.jparcel', {
+          custNo: db.epost.custNo, apprNo: db.epost.apprNo, reqType: '1',
+          reqNo: item.epost.reqNo, resNo: item.epost.resNo,
+          regiNo: String(item.invoice || '').replace(/\D/g, ''),
+          reqYmd: item.epost.reqYmd, delYn: 'Y'
+        });
+      } catch (e) {
+        return sendJson(res, 200, { error: '우체국 취소 실패: ' + e.message + ' (이미 집하됐으면 취소할 수 없어요)' });
+      }
+      // 같은 접수(orderNo)로 묶인 항목 전부 원상복구
+      const warn = [];
+      const norm = s => String(s || '').replace(/\s/g, '').toLowerCase();
+      for (const arr of [db.orders, db.seeding]) {
+        for (const it of arr) {
+          if (it.epost && it.epost.orderNo === item.epost.orderNo) {
+            // 재고 되돌리기
+            if (it.stockDeducted) {
+              const text = norm(it.product);
+              for (const inv of db.inventory) {
+                const nm = norm(inv.name);
+                if (!nm || !text.includes(nm)) continue;
+                if (inv.color && !(text.includes(norm(inv.color)) || norm(it.color) === norm(inv.color))) continue;
+                if (inv.size && String(it.size || '').trim().toUpperCase() !== String(inv.size).trim().toUpperCase()) continue;
+                inv.qty += Number(it.qty) || 1;
+              }
+              it.stockDeducted = false;
+            }
+            if (it.cafe24Shipped) warn.push(it.orderNo || it.name);
+            it.status = '대기';
+            it.invoice = '';
+            it.sentDate = '';
+            delete it.epost;
+          }
+        }
+      }
+      saveDb(db);
+      return sendJson(res, 200, {
+        ok: true, db,
+        warning: warn.length ? `카페24에는 이미 배송처리로 등록돼 있어요 (${warn.join(', ')}). 카페24 관리자에서 배송상태를 되돌려 주세요.` : null
+      });
     }
     if (url.pathname === '/api/cafe24/disconnect' && req.method === 'POST') {
       const db = loadDb();

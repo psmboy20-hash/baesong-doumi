@@ -18,8 +18,13 @@ function busy(on, msg) {
   if (msg) $('#overlay-msg').textContent = msg;
 }
 async function api(path, opts) {
-  const res = await fetch(path, opts);
-  return res.json();
+  try {
+    const res = await fetch(path, opts);
+    return await res.json();
+  } catch (e) {
+    busy(false);
+    return { error: '프로그램(서버)와 연결이 안 돼요. 검은 창이 꺼졌는지 확인하고, 바탕화면 아이콘으로 다시 켜주세요.' };
+  }
 }
 async function saveDb() {
   const r = await api('/api/db', { method: 'POST', body: JSON.stringify(DB) });
@@ -83,6 +88,7 @@ function render() {
   if (!DB) return;
   if (PAGE === 'home') renderHome();
   else if (PAGE === 'send' || PAGE === 'seeding' || PAGE === 'orders') renderSend();
+  else if (PAGE === 'epost') renderEpost();
   else if (PAGE === 'shipping') renderShipping();
   else if (PAGE === 'inventory') renderInventory();
   else if (PAGE === 'settings') renderSettings();
@@ -101,6 +107,11 @@ function renderHome() {
         <div class="name">보내기</div>
         <div class="desc">주문·시딩을 한 번에<br>우체국으로 보낼 준비를 해요</div>
         <div class="badge ${total ? '' : 'zero'}">${total ? '보낼 것 ' + total + '건' : '보낼 것 없음'}</div>
+      </div>
+      <div class="home-card" onclick="go('epost')">
+        <div class="icon">📦</div>
+        <div class="name">우체국 접수</div>
+        <div class="desc">접수된 택배의 진행상황을 보고<br>취소도 할 수 있어요</div>
       </div>
       <div class="home-card" onclick="go('shipping')">
         <div class="icon">🚚</div>
@@ -202,6 +213,68 @@ function toggleSel(kind, id, checked) {
   const item = list.find(x => x.id === id);
   if (item) item._sel = checked;
   render();
+}
+
+// ---------- 우체국 접수 현황 ----------
+const EPOST_STUS = { '00': ['processing', '신청준비'], '01': ['processing', '예약완료 ✓'], '02': ['done', '운송장 출력됨'], '03': ['done', '집하완료 (수거됨)'], '04': ['wait', '미집하'], '05': ['wait', '취소됨'] };
+function renderEpost() {
+  const items = [
+    ...DB.orders.filter(x => x.epost).map(x => ({ kind: 'order', icon: '🛒', x })),
+    ...DB.seeding.filter(x => x.epost).map(x => ({ kind: 'seeding', icon: '🎁', x }))
+  ].sort((a, b) => (b.x.sentDate || '').localeCompare(a.x.sentDate || ''));
+  const rows = items.map(({ kind, icon, x }) => {
+    const [cls, nm] = EPOST_STUS[x.epost.stus] || ['processing', '확인 필요'];
+    const cancelable = ['00', '01', '02'].includes(x.epost.stus || '01');
+    return `
+    <tr>
+      <td style="font-size:1.2rem">${icon}</td>
+      <td><b>${esc(x.name)}</b></td>
+      <td style="max-width:220px">${esc(String(x.product || '').slice(0, 60))}</td>
+      <td>${x.invoice ? trackLink(x.invoice) : '<span class="muted">-</span>'}</td>
+      <td><span class="chip ${cls}">${nm}</span></td>
+      <td>${esc(x.sentDate || '')}</td>
+      <td>${cancelable ? `<button class="link-btn" style="color:var(--red)" onclick="epostCancel('${kind}',${x.id},'${esc(x.name)}')">접수 취소</button>` : ''}</td>
+    </tr>`;
+  }).join('');
+  main().innerHTML = `
+    <h1>📦 우체국 접수 현황</h1>
+    <div class="sub">앱에서 우체국에 접수한 택배들이에요. 출고 흐름: <b>① 접수(여기)</b> → <b>② 운송장 출력(우체국 사이트)</b> → <b>③ 기사님 수거</b></div>
+    <div style="display:flex; gap:0.8rem; flex-wrap:wrap; margin-bottom:1.2rem">
+      <button class="big-btn" onclick="epostRefresh()">🔄 진행상태 새로고침</button>
+      <button class="big-btn orange" onclick="window.open('https://biz.epost.go.kr','_blank')">🖨 운송장 출력하러 가기</button>
+    </div>
+    <div class="card">
+      ${items.length ? `
+      <div class="table-wrap" style="max-height:65vh">
+        <table>
+          <thead><tr><th>구분</th><th>이름</th><th>제품</th><th>송장번호</th><th>진행상태</th><th>접수일</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div class="hint" style="margin-top:0.8rem">· "예약완료"까지는 <b>[접수 취소]</b>가 가능해요 (취소하면 보내기 목록으로 돌아갑니다)<br>· 운송장 출력은 우체국 사이트 <b>계약소포 → 운송장출력</b> 메뉴에서 해요</div>
+      ` : `<div class="hint" style="font-size:1.1rem">아직 앱에서 우체국에 접수한 건이 없어요.<br>[📮 보내기]에서 <b>[🚀 우체국 바로 접수]</b>를 누르면 여기에 나타납니다.</div>`}
+    </div>
+    <div id="epost-page-result"></div>`;
+}
+async function epostRefresh() {
+  busy(true, '우체국에서 진행상태를 확인하는 중…');
+  const r = await api('/api/epost/status', { method: 'POST' });
+  busy(false);
+  if (r.error) { toast('⚠️ ' + r.error, 6000); return; }
+  DB = r.db;
+  render();
+  toast(`✔️ ${r.refreshed}건 상태를 새로 확인했어요.` + (r.errors && r.errors.length ? ' (일부 실패)' : ''), 5000);
+}
+async function epostCancel(kind, id, name) {
+  if (!confirm(`${name}님의 우체국 접수를 정말 취소할까요?\n\n· 발급된 송장번호는 무효가 돼요\n· 이 건은 [보내기] 목록으로 되돌아가요\n· 뺐던 재고도 다시 채워져요`)) return;
+  busy(true, '우체국 접수를 취소하는 중…');
+  const r = await api('/api/epost/cancel', { method: 'POST', body: JSON.stringify({ type: kind, id }) });
+  busy(false);
+  if (r.error) { toast('⚠️ ' + r.error, 8000); return; }
+  DB = r.db;
+  render();
+  toast('✔️ 접수를 취소했어요. [보내기] 목록으로 돌아갔습니다.', 6000);
+  if (r.warning) setTimeout(() => alert('⚠️ ' + r.warning), 300);
 }
 
 // ---------- 배송 확인 ----------
@@ -635,6 +708,11 @@ async function refreshStatus(force) {
 // ---------- 시작 ----------
 (async function init() {
   DB = await api('/api/db');
+  if (DB && DB.error) {
+    main().innerHTML = `<div class="result-box err" style="margin-top:3rem; font-size:1.2rem">⚠️ ${esc(DB.error)}<br><br>
+      <button class="big-btn" onclick="location.reload()">🔄 다시 시도</button></div>`;
+    return;
+  }
   await refreshStatus(false);
   go('home');
   setInterval(() => refreshStatus(false), 30 * 1000);
