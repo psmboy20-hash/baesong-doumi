@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const https = require('https');
+const { exec } = require('child_process');
 const XLSX = require('xlsx');
 
 const PORT = 8899;
@@ -579,12 +580,13 @@ function buildEpostRows(db, selected) {
   const rows = [];
   for (const g of groups.values()) {
     const zip = String(g.zip || '').trim() || extractZip(g.addr);
-    const products = g.items.map(({ item }) =>
-      [item.product, item.color, item.size ? item.size : ''].filter(Boolean).join(' ')
-    ).join(' / ');
-    let content = products.replace(/\s+/g, ' ').trim() || (st.defaultContent || '의류');
+    // 상품명 = 제품 이름만, 상품모델 = 옵션(컬러/사이즈)
+    const products = g.items.map(({ item }) => String(item.product || '').replace(/\s+/g, ' ').trim()).filter(Boolean).join(' / ');
+    let content = products || (st.defaultContent || '의류');
     if (content.length > 100) content = (st.defaultContent || '의류') + ' ' + g.items.length + '종';
-    const models = g.items.map(({ item }) => [item.color, item.size].filter(Boolean).join(' ')).filter(Boolean).join(' / ');
+    const models = g.items.map(({ item }) =>
+      [item.color, item.size].filter(Boolean).join(' ') || String(item.option || '').trim()
+    ).filter(Boolean).join(' / ');
     const orderNos = [...new Set(g.items.map(({ item }) => item.orderNo).filter(Boolean))].join(',');
     const msg = g.msgs.filter(Boolean).join(' / ').slice(0, 50);
     // 열 이름(공백 제거)별 값 - 양식이 바뀌어도 settings.epostColumns만 고치면 됨
@@ -628,6 +630,11 @@ function exportEpost(db, selected) {
   for (const { item } of picked) {
     if (item.status === '대기') item.status = '접수중';
   }
+  // 편의: 파일이 담긴 폴더를 열고(파일 선택된 상태), 우체국 접수 사이트도 연다
+  try {
+    exec(`explorer /select,"${fpath}"`);
+    exec('start "" "https://ship.epost.go.kr/ui/index.jsp"');
+  } catch (e) { /* 못 열어도 치명적이지 않음 */ }
   return { path: fpath, fname, count, parcels };
 }
 

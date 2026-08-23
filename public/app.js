@@ -54,8 +54,7 @@ function processingOf(list) { return list.filter(x => x.status === '접수중');
 function render() {
   if (!DB) return;
   if (PAGE === 'home') renderHome();
-  else if (PAGE === 'seeding') renderList('seeding');
-  else if (PAGE === 'orders') renderList('orders');
+  else if (PAGE === 'send' || PAGE === 'seeding' || PAGE === 'orders') renderSend();
   else if (PAGE === 'shipping') renderShipping();
   else if (PAGE === 'inventory') renderInventory();
   else if (PAGE === 'settings') renderSettings();
@@ -63,23 +62,17 @@ function render() {
 
 // ---------- 홈 ----------
 function renderHome() {
-  const so = pendingOf(DB.orders).length + processingOf(DB.orders).length;
-  const ss = pendingOf(DB.seeding).length + processingOf(DB.seeding).length;
+  const total = pendingOf(DB.orders).length + processingOf(DB.orders).length +
+                pendingOf(DB.seeding).length + processingOf(DB.seeding).length;
   main().innerHTML = `
     <h1>안녕하세요! 👋</h1>
     <div class="sub">아래에서 하실 일을 눌러 주세요.</div>
     <div class="home-grid">
-      <div class="home-card" onclick="go('orders')">
-        <div class="icon">🛒</div>
-        <div class="name">주문 보내기</div>
-        <div class="desc">카페24 주문을 우체국으로<br>보낼 준비를 해요</div>
-        <div class="badge ${so ? '' : 'zero'}">${so ? '보낼 것 ' + so + '건' : '보낼 것 없음'}</div>
-      </div>
-      <div class="home-card" onclick="go('seeding')">
-        <div class="icon">🎁</div>
-        <div class="name">시딩 보내기</div>
-        <div class="desc">인플루언서 선물을 우체국으로<br>보낼 준비를 해요</div>
-        <div class="badge ${ss ? '' : 'zero'}">${ss ? '보낼 것 ' + ss + '건' : '보낼 것 없음'}</div>
+      <div class="home-card" onclick="go('send')">
+        <div class="icon">📮</div>
+        <div class="name">보내기</div>
+        <div class="desc">주문·시딩을 한 번에<br>우체국으로 보낼 준비를 해요</div>
+        <div class="badge ${total ? '' : 'zero'}">${total ? '보낼 것 ' + total + '건' : '보낼 것 없음'}</div>
       </div>
       <div class="home-card" onclick="go('shipping')">
         <div class="icon">🚚</div>
@@ -104,11 +97,12 @@ function renderHome() {
 }
 
 // ---------- 주문/시딩 목록 ----------
-function renderList(kind) {
-  const isSeed = kind === 'seeding';
-  const list = isSeed ? DB.seeding : DB.orders;
-  const pending = list.filter(x => x.status !== '발송완료');
-  const title = isSeed ? '🎁 시딩 보내기' : '🛒 주문 보내기';
+function renderSend() {
+  const pending = [
+    ...DB.orders.filter(x => x.status !== '발송완료').map(x => ({ kind: 'orders', icon: '🛒', x })),
+    ...DB.seeding.filter(x => x.status !== '발송완료').map(x => ({ kind: 'seeding', icon: '🎁', x }))
+  ];
+  const selCount = pending.filter(p => p.x._sel !== false).length;
   const c24 = SYNC_STATUS && SYNC_STATUS.cafe24;
   const c24line = !c24 || !c24.configured
     ? '⚪ 카페24 자동 연동이 아직 설정되지 않았어요. <button class="link-btn" onclick="go(\'settings\')">설정하러 가기</button>'
@@ -116,59 +110,52 @@ function renderList(kind) {
       ? '🟡 카페24 연결이 필요해요. <button class="link-btn" onclick="go(\'settings\')">설정에서 연결하기</button>'
       : c24.ok === false
         ? '🔴 카페24에서 가져오기 실패: ' + esc(c24.error || '')
-        : '🟢 카페24 자동 연동 중 — 새 주문이 <b>5분마다 자동으로</b> 들어와요.';
-  const loadCard = isSeed ? `
-    <div class="card">
-      <div class="step-title"><span class="step-num">1</span> 새 신청 확인</div>
-      <div class="hint">구글시트(설문지 응답)는 <b>5분마다 자동으로</b> 확인해요. 방금 들어온 걸 바로 보고 싶으면 아래 버튼을 누르세요.</div>
-      <button class="big-btn" onclick="doSync()">🔄 지금 바로 확인하기</button>
-    </div>` : `
-    <div class="card">
-      <div class="step-title"><span class="step-num">1</span> 주문 확인</div>
-      <div class="hint">${c24line}</div>
-      <button class="big-btn" onclick="doSync()">🔄 지금 바로 확인하기</button>
-      <details style="margin-top:1rem">
-        <summary style="font-size:1rem;cursor:pointer;color:#5a6478">엑셀 파일로 직접 넣기 (자동 연동이 안 될 때)</summary>
-        <div class="dropzone" id="dz-cafe24" onclick="pickFile('cafe24')" style="margin-top:0.8rem">
-          📂 여기에 카페24 주문 엑셀 파일을 끌어다 놓으세요
-          <span class="small">또는 이 상자를 눌러서 파일을 선택하세요</span>
-        </div>
-      </details>
-    </div>`;
+        : '🟢 카페24 자동 연동 중';
 
-  const rows = pending.map(x => `
+  const rows = pending.map(({ kind, icon, x }) => `
     <tr class="${x._sel !== false ? 'checked-row' : ''}">
       <td><input type="checkbox" ${x._sel !== false ? 'checked' : ''} onchange="toggleSel('${kind}',${x.id},this.checked)"></td>
-      <td><b>${esc(x.name)}</b>${isSeed && x.insta ? `<br><span class="muted" style="font-size:0.85rem">${esc(x.insta)}</span>` : ''}</td>
+      <td style="font-size:1.2rem">${icon}</td>
+      <td><b>${esc(x.name)}</b>${x.insta ? `<br><span class="muted" style="font-size:0.85rem">${esc(x.insta)}</span>` : ''}</td>
       <td>${esc(x.phone)}</td>
-      <td style="max-width:280px">${esc(x.addr)}</td>
-      <td style="max-width:260px">${esc(x.product)}${x.size ? ' <b>(' + esc(x.size) + ')</b>' : ''}${x.color ? ' ' + esc(x.color) : ''}</td>
+      <td style="max-width:260px">${esc(x.addr)}</td>
+      <td style="max-width:240px">${esc(x.product)}${x.option ? ' <b>(' + esc(x.option) + ')</b>' : (x.size ? ' <b>(' + esc(x.size) + ')</b>' : '')}</td>
       <td>${chip(x.status)}</td>
     </tr>`).join('');
 
   main().innerHTML = `
-    <h1>${title}</h1>
-    <div class="sub">${isSeed ? '인플루언서에게 보낼 선물을 준비해요.' : '카페24 주문을 우체국으로 보낼 준비를 해요.'}</div>
-    ${loadCard}
+    <h1>📮 보내기</h1>
+    <div class="sub">카페24 주문(🛒)과 시딩 선물(🎁)을 한 번에 우체국으로 보낼 준비를 해요.</div>
+    <div class="card">
+      <div class="step-title"><span class="step-num">1</span> 새로 들어온 것 확인</div>
+      <div class="hint">주문과 시딩 신청은 <b>5분마다 자동으로</b> 들어와요. 방금 들어온 걸 바로 보고 싶으면 버튼을 누르세요.<br>${c24line}</div>
+      <button class="big-btn" onclick="doSync()">🔄 지금 바로 확인하기</button>
+      <details style="margin-top:1rem">
+        <summary style="font-size:1rem;cursor:pointer;color:#5a6478">카페24 주문 엑셀 파일로 직접 넣기 (자동 연동이 안 될 때)</summary>
+        <div class="dropzone" id="dz-cafe24" onclick="pickFile('cafe24')" style="margin-top:0.8rem">
+          📂 여기에 카페24 주문 엑셀 파일을 끌어다 놓으세요
+        </div>
+      </details>
+    </div>
     <div class="card">
       <div class="step-title"><span class="step-num">2</span> 우체국 엑셀 만들기</div>
       ${pending.length ? `
-      <div class="hint">보낼 사람 목록이에요. 빼고 싶은 사람은 체크를 풀면 돼요.</div>
+      <div class="hint">보낼 목록이에요. 빼고 싶은 사람은 체크를 풀면 돼요.</div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>보내기</th><th>이름</th><th>연락처</th><th>주소</th><th>제품</th><th>상태</th></tr></thead>
+          <thead><tr><th>보내기</th><th>구분</th><th>이름</th><th>연락처</th><th>주소</th><th>제품</th><th>상태</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
       <div style="margin-top:1rem">
-        <button class="big-btn green" onclick="doExport('${kind}')">📄 선택한 사람들 우체국 엑셀 만들기</button>
+        <button class="big-btn green" onclick="doExportAll()">📄 선택한 ${selCount}건 우체국 엑셀 만들기</button>
       </div>
       <div id="export-result"></div>` : `
-      <div class="hint" style="font-size:1.1rem">지금은 보낼 것이 없어요. 위의 <b>1번</b>에서 먼저 불러와 주세요. 😊</div>`}
+      <div class="hint" style="font-size:1.1rem">지금은 보낼 것이 없어요. 새 주문·신청이 들어오면 여기에 자동으로 나타나요. 😊</div>`}
     </div>
     <div class="card">
       <div class="step-title"><span class="step-num">3</span> 송장번호 붙이기</div>
-      <div class="hint">우체국 프로그램에서 접수가 끝나면 <b>송장번호가 적힌 엑셀</b>을 받을 수 있어요.<br>그 파일을 아래 상자에 끌어다 놓으면 자동으로 짝을 맞춰 정리해요.</div>
+      <div class="hint">우체국 접수가 끝나고 받은 <b>송장번호 엑셀</b>을 아래 상자에 끌어다 놓으면,<br>짝 맞추기 → 카페24 배송처리 → 재고 차감 → 구글시트 기록까지 한 번에 됩니다.</div>
       <div class="dropzone" id="dz-invoice" onclick="pickFile('invoice')">
         📥 여기에 우체국 송장 엑셀을 끌어다 놓으세요
         <span class="small">또는 이 상자를 눌러서 파일을 선택하세요</span>
@@ -411,10 +398,11 @@ async function doSync() {
   }
 }
 
-async function doExport(kind) {
-  const list = kind === 'seeding' ? DB.seeding : DB.orders;
-  const selected = list.filter(x => x.status !== '발송완료' && x._sel !== false)
-    .map(x => ({ type: kind === 'seeding' ? 'seeding' : 'order', id: x.id }));
+async function doExportAll() {
+  const selected = [
+    ...DB.orders.filter(x => x.status !== '발송완료' && x._sel !== false).map(x => ({ type: 'order', id: x.id })),
+    ...DB.seeding.filter(x => x.status !== '발송완료' && x._sel !== false).map(x => ({ type: 'seeding', id: x.id }))
+  ];
   if (!selected.length) { toast('선택된 사람이 없어요.'); return; }
   busy(true, '우체국 엑셀을 만드는 중…');
   const r = await api('/api/export/epost', { method: 'POST', body: JSON.stringify({ selected }) });
@@ -426,8 +414,9 @@ async function doExport(kind) {
   if (box) box.innerHTML = `
     <div class="result-box ok">
       <div class="big">✅ 다 됐어요! 택배 ${r.parcels}건짜리 엑셀을 만들었어요.</div>
-      📁 파일 위치: <b>다운로드 폴더</b> → <b>${esc(r.fname)}</b><br>
-      이제 <b>우체국 프로그램(오즈뷰어)</b>을 열고 이 파일을 불러와서 송장을 출력하세요.
+      방금 <b>파일이 든 폴더</b>와 <b>우체국 사이트</b>가 자동으로 열렸어요.<br>
+      우체국 사이트에서 <b>계약소포 → 파일등록 → [찾기]</b>를 누르고,<br>
+      열린 폴더에 있는 <b>${esc(r.fname)}</b> 파일을 선택하면 됩니다.
     </div>`;
   window.scrollTo(0, document.body.scrollHeight);
 }
