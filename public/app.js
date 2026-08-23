@@ -29,7 +29,7 @@ function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 function chip(status) {
-  const map = { '대기': ['wait', '보낼 준비'], '접수중': ['processing', '우체국 접수중'], '발송완료': ['done', '보냄 ✓'] };
+  const map = { '대기': ['wait', '보낼 준비'], '접수중': ['processing', '우체국 접수중'], '발송완료': ['done', '보냄 ✓'], '취소됨': ['wait', '취소됨 ✕'] };
   const [cls, label] = map[status] || ['wait', status];
   return `<span class="chip ${cls}">${label}</span>`;
 }
@@ -98,9 +98,10 @@ function renderHome() {
 
 // ---------- 주문/시딩 목록 ----------
 function renderSend() {
+  const notDone = x => x.status !== '발송완료' && x.status !== '취소됨';
   const pending = [
-    ...DB.orders.filter(x => x.status !== '발송완료').map(x => ({ kind: 'orders', icon: '🛒', x })),
-    ...DB.seeding.filter(x => x.status !== '발송완료').map(x => ({ kind: 'seeding', icon: '🎁', x }))
+    ...DB.orders.filter(notDone).map(x => ({ kind: 'orders', icon: '🛒', x })),
+    ...DB.seeding.filter(notDone).map(x => ({ kind: 'seeding', icon: '🎁', x }))
   ];
   const selCount = pending.filter(p => p.x._sel !== false).length;
   const c24 = SYNC_STATUS && SYNC_STATUS.cafe24;
@@ -413,8 +414,10 @@ async function doSync() {
     DB = r.db;
     SYNC_STATUS = r.status || SYNC_STATUS;
     const c24added = r.cafe24 ? r.cafe24.added : 0;
+    const cxl = (r.seeding.canceled || 0) + (r.orders.canceled || 0) + (r.cafe24 && r.cafe24.canceled || 0);
     const msg = `새로 가져옴: 시딩 ${r.seeding.added}건, 주문 ${r.orders.added + c24added}건` +
-      (r.seeding.updated + r.orders.updated ? ` (내용 바뀐 것 ${r.seeding.updated + r.orders.updated}건)` : '');
+      (r.seeding.updated + r.orders.updated ? ` (내용 바뀐 것 ${r.seeding.updated + r.orders.updated}건)` : '') +
+      (cxl ? ` / 취소 반영 ${cxl}건` : '');
     toast('✔️ ' + msg, 5000);
     render();
   } catch (e) {
@@ -424,9 +427,10 @@ async function doSync() {
 }
 
 async function doExportAll() {
+  const sendable = x => x.status !== '발송완료' && x.status !== '취소됨' && x._sel !== false;
   const selected = [
-    ...DB.orders.filter(x => x.status !== '발송완료' && x._sel !== false).map(x => ({ type: 'order', id: x.id })),
-    ...DB.seeding.filter(x => x.status !== '발송완료' && x._sel !== false).map(x => ({ type: 'seeding', id: x.id }))
+    ...DB.orders.filter(sendable).map(x => ({ type: 'order', id: x.id })),
+    ...DB.seeding.filter(sendable).map(x => ({ type: 'seeding', id: x.id }))
   ];
   if (!selected.length) { toast('선택된 사람이 없어요.'); return; }
   busy(true, '우체국 엑셀을 만드는 중…');
@@ -448,9 +452,10 @@ async function doExportAll() {
 
 // 우체국 OpenAPI 바로 접수
 async function doEpostRegister() {
+  const sendable = x => x.status !== '발송완료' && x.status !== '취소됨' && x._sel !== false;
   const selected = [
-    ...DB.orders.filter(x => x.status !== '발송완료' && x._sel !== false).map(x => ({ type: 'order', id: x.id })),
-    ...DB.seeding.filter(x => x.status !== '발송완료' && x._sel !== false).map(x => ({ type: 'seeding', id: x.id }))
+    ...DB.orders.filter(sendable).map(x => ({ type: 'order', id: x.id })),
+    ...DB.seeding.filter(sendable).map(x => ({ type: 'seeding', id: x.id }))
   ];
   if (!selected.length) { toast('선택된 사람이 없어요.'); return; }
   if (!confirm(`${selected.length}건을 우체국에 바로 접수할까요?\n(접수하면 송장번호가 발급되고 요금이 계산돼요)`)) return;

@@ -304,7 +304,14 @@ async function cafe24FetchOrders(db) {
       const msg = rc.shipping_message || '';
       for (const it of (o.items || [])) {
         const st = String(it.order_status || '');
-        if (/^[CRE]/.test(st)) continue; // 취소/반품/교환 제외
+        if (/^[CRE]/.test(st)) {
+          // 취소/반품/교환: 이미 앱에 들어와 있는 대기 건을 취소 처리하기 위해 표시만 남김
+          parsed.push({
+            orderNo: o.order_id || '', name, phone,
+            product: it.product_name || '', _canceled: true
+          });
+          continue;
+        }
         if (st === 'N10' || st === 'N00') continue; // 입금 전 제외
         // option_value 예: "색상=Indigo Blue, 사이즈=M"
         let color = '', size = '';
@@ -630,7 +637,20 @@ function mergeSeeding(db, parsed) {
       added++;
     }
   }
-  return { added, updated };
+  // 시트에서 지워진(또는 이름/연락처가 바뀐) 행: 아직 안 보낸 건이면 취소 처리
+  // (시트를 통째로 못 읽은 경우 오작동 방지를 위해 parsed가 비어있으면 건너뜀)
+  let canceled = 0;
+  if (parsed.length === 0) return { added, updated, canceled };
+  const liveKeys = new Set(parsed.map(seedKey));
+  for (const s of db.seeding) {
+    if ((s.status === '대기' || s.status === '접수중') && !liveKeys.has(seedKey(s))) {
+      s.status = '취소됨';
+      canceled++;
+    } else if (s.status === '취소됨' && liveKeys.has(seedKey(s)) && !s.invoice) {
+      s.status = '대기'; // 행이 다시 생기면 복구
+    }
+  }
+  return { added, updated, canceled };
 }
 
 // 출처가 달라도 같은 주문을 알아보기 위한 느슨한 키 (이름+전화 뒷8자리+제품명 앞부분)
@@ -642,8 +662,17 @@ function mergeOrders(db, parsed) {
   const map = new Map(db.orders.map(o => [orderKey(o), o]));
   const fuzzy = new Map();
   for (const o of db.orders) if (!fuzzy.has(fuzzyOrderKey(o))) fuzzy.set(fuzzyOrderKey(o), o);
-  let added = 0, updated = 0;
+  let added = 0, updated = 0, canceled = 0;
   for (const p of parsed) {
+    // 카페24에서 취소/반품된 주문: 아직 안 보낸 건이면 취소 처리
+    if (p._canceled) {
+      const ex = map.get(orderKey(p)) || fuzzy.get(fuzzyOrderKey(p));
+      if (ex && (ex.status === '대기' || ex.status === '접수중')) {
+        ex.status = '취소됨';
+        canceled++;
+      }
+      continue;
+    }
     const shipped = !!(p.invoice || p._shipped);
     delete p._shipped;
     const ex = map.get(orderKey(p)) || fuzzy.get(fuzzyOrderKey(p));
@@ -653,6 +682,13 @@ function mergeOrders(db, parsed) {
       if (shipped && ex.status !== '발송완료') { ex.status = '발송완료'; ch = true; }
       if (shipped && !ex.sentDate && p.sentDate) { ex.sentDate = p.sentDate; ch = true; }
       if (p.orderNo && !ex.orderNo) { ex.orderNo = p.orderNo; ch = true; }
+      // 아직 안 보낸 건은 주소/연락처/옵션 변경을 최신으로 반영
+      if (!shipped && ex.status !== '발송완료') {
+        if (ex.status === '취소됨') { ex.status = '대기'; ch = true; } // 취소 철회된 경우
+        for (const f of ['addr', 'zip', 'phone', 'msg', 'option', 'color', 'size', 'qty']) {
+          if (p[f] != null && String(p[f]) !== '' && String(p[f]) !== String(ex[f] ?? '')) { ex[f] = p[f]; ch = true; }
+        }
+      }
       if (ch) updated++;
     } else {
       const item = Object.assign({}, p, {
@@ -667,7 +703,7 @@ function mergeOrders(db, parsed) {
       added++;
     }
   }
-  return { added, updated };
+  return { added, updated, canceled };
 }
 
 // ---------- 우체국 엑셀 생성 ----------
@@ -678,7 +714,7 @@ function buildParcelGroups(db, selected) {
   for (const sel of selected) {
     const list = sel.type === 'seeding' ? db.seeding : db.orders;
     const item = list.find(x => x.id === sel.id);
-    if (item) pick.push({ type: sel.type, item });
+    if (item && item.status !== '취소됨') pick.push({ type: sel.type, item });
   }
   for (const { type, item } of pick) {
     const gk = normName(item.name) + '|' + phoneDigits(item.phone) + '|' + cleanAddr(item.addr).slice(0, 15);
@@ -780,8 +816,8 @@ async function matchInvoices(db, rows) {
     hIdx = -1;
   }
   const pendings = [];
-  for (const s of db.seeding) if (!s.invoice) pendings.push({ type: 'seeding', item: s });
-  for (const o of db.orders) if (!o.invoice) pendings.push({ type: 'order', item: o });
+  for (const s of db.seeding) if (!s.invoice && s.status !== '취소됨') pendings.push({ type: 'seeding', item: s });
+  for (const o of db.orders) if (!o.invoice && o.status !== '취소됨') pendings.push({ type: 'order', item: o });
 
   const results = { matched: [], unmatched: [] };
   const start = hIdx + 1;
