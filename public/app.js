@@ -233,15 +233,20 @@ function renderEpost() {
       <td>${x.invoice ? trackLink(x.invoice) : '<span class="muted">-</span>'}</td>
       <td><span class="chip ${cls}">${nm}</span></td>
       <td>${esc(x.sentDate || '')}</td>
-      <td>${cancelable ? `<button class="link-btn" style="color:var(--red)" onclick="epostCancel('${kind}',${x.id},'${esc(x.name)}')">접수 취소</button>` : ''}</td>
+      <td style="white-space:nowrap">
+        ${x.epost.label ? `<button class="link-btn" onclick="printLabels('${kind}:${x.id}')">🖨 인쇄</button>` : `<button class="link-btn" onclick="window.open('https://biz.epost.go.kr','_blank')" title="이 건은 우체국 사이트에서 출력">🖨 사이트에서</button>`}
+        ${cancelable ? `<button class="link-btn" style="color:var(--red)" onclick="epostCancel('${kind}',${x.id},'${esc(x.name)}')">취소</button>` : ''}
+      </td>
     </tr>`;
   }).join('');
+  const printable = items.filter(({ x }) => x.epost.label).map(({ kind, x }) => kind + ':' + x.id);
   main().innerHTML = `
     <h1>📦 우체국 접수 현황</h1>
     <div class="sub">앱에서 우체국에 접수한 택배들이에요. 출고 흐름: <b>① 접수(여기)</b> → <b>② 운송장 출력(우체국 사이트)</b> → <b>③ 기사님 수거</b></div>
     <div style="display:flex; gap:0.8rem; flex-wrap:wrap; margin-bottom:1.2rem">
       <button class="big-btn" onclick="epostRefresh()">🔄 진행상태 새로고침</button>
-      <button class="big-btn orange" onclick="window.open('https://biz.epost.go.kr','_blank')">🖨 운송장 출력하러 가기</button>
+      ${printable.length ? `<button class="big-btn green" onclick="printLabels('${printable.join(',')}')">🖨 운송장 전체 인쇄 (${printable.length}장)</button>` : ''}
+      <button class="big-btn gray" onclick="window.open('https://biz.epost.go.kr','_blank')">우체국 사이트 열기</button>
     </div>
     <div class="card">
       ${items.length ? `
@@ -255,6 +260,9 @@ function renderEpost() {
       ` : `<div class="hint" style="font-size:1.1rem">아직 앱에서 우체국에 접수한 건이 없어요.<br>[📮 보내기]에서 <b>[🚀 우체국 바로 접수]</b>를 누르면 여기에 나타납니다.</div>`}
     </div>
     <div id="epost-page-result"></div>`;
+}
+function printLabels(sel) {
+  window.open('/label.html?print=1&sel=' + encodeURIComponent(sel), '_blank');
 }
 async function epostRefresh() {
   busy(true, '우체국에서 진행상태를 확인하는 중…');
@@ -570,9 +578,14 @@ async function doEpostRegister() {
   const fail = r.results.filter(x => !x.ok);
   let html = '';
   if (ok.length) {
+    const printSel = [
+      ...DB.orders.filter(x => x.epost && x.epost.label && ok.some(o => o.regiNo === x.invoice)).map(x => 'order:' + x.id),
+      ...DB.seeding.filter(x => x.epost && x.epost.label && ok.some(o => o.regiNo === x.invoice)).map(x => 'seeding:' + x.id)
+    ];
     html += `<div class="result-box ok"><div class="big">✅ 우체국 접수 완료! 송장번호가 나왔어요.</div>` +
       ok.map(x => `${esc(x.name)} → 송장 <b>${esc(x.regiNo)}</b>${x.price ? ' (예상요금 ' + esc(x.price) + '원)' : ''}`).join('<br>') +
-      `<br><span style="font-weight:400">이제 우체국 사이트 <b>계약소포 → 운송장출력</b>에서 라벨만 뽑으면 끝!</span></div>`;
+      (printSel.length ? `<div style="margin-top:0.8rem"><button class="big-btn green" onclick="printLabels('${printSel.join(',')}')">🖨 운송장 바로 인쇄</button></div>` : '') +
+      `</div>`;
   }
   if (fail.length) {
     html += `<div class="result-box err"><div class="big">⚠️ 접수 못 한 건 ${fail.length}건</div>` +

@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>운송장 인쇄</title>
+<script src="jsbarcode.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Malgun Gothic", sans-serif; background: #eee; }
+  .toolbar { padding: 12px; text-align: center; background: #fff; border-bottom: 1px solid #ccc; }
+  .toolbar button { font-size: 18px; font-weight: 700; padding: 10px 24px; cursor: pointer; border-radius: 8px; border: 2px solid #1a6ee0; background: #1a6ee0; color: #fff; font-family: inherit; }
+  .sheet { width: 210mm; margin: 8px auto; background: #fff; padding: 6mm 0; }
+  /* C형 운송장 규격: 168mm x 107mm */
+  .label {
+    width: 168mm; height: 107mm;
+    border: 0.4mm solid #d84315;
+    border-radius: 2mm;
+    margin: 0 auto 5mm;
+    display: flex; flex-direction: column;
+    overflow: hidden; background: #fff;
+    page-break-inside: avoid;
+    font-size: 3.2mm; line-height: 1.25; color: #000;
+  }
+  .top { display: flex; border-bottom: 0.4mm solid #d84315; height: 15mm; }
+  .logo { width: 34mm; border-right: 0.4mm solid #d84315; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #d84315; font-weight: 900; }
+  .logo .l1 { font-size: 3mm; }
+  .logo .l2 { font-size: 5.5mm; letter-spacing: 0.5mm; }
+  .areacd { flex: 1; display: flex; align-items: center; gap: 2.5mm; padding: 0 3mm; font-weight: 900; }
+  .areacd .cn { font-size: 9mm; }
+  .areacd .cn.inv { background: #000; color: #fff; padding: 0 1.5mm; border-radius: 1mm; }
+  .areacd .nm { font-size: 3.6mm; }
+  .areacd .dn { font-size: 9mm; }
+  .areacd .team { margin-left: auto; text-align: center; }
+  .areacd .team .tt { font-size: 7.5mm; background: #ffe082; padding: 0 1.5mm; border-radius: 1mm; }
+  .areacd .team .course { font-size: 3.8mm; margin-top: 0.5mm; }
+  .mid { flex: 1; display: flex; min-height: 0; }
+  .left { width: 52mm; border-right: 0.4mm solid #d84315; display: flex; flex-direction: column; font-size: 2.9mm; }
+  .left .box { padding: 1.2mm 2mm; border-bottom: 0.3mm solid #f0a08a; }
+  .left .grow { flex: 1; overflow: hidden; }
+  .left b { font-weight: 700; }
+  .zipbar { text-align: center; padding: 1mm 0; border-bottom: 0.3mm solid #f0a08a; }
+  .zipbar svg { height: 9mm; }
+  .zipbar .zt { font-size: 3.4mm; letter-spacing: 1mm; font-weight: 700; }
+  .right { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .sender { padding: 1.5mm 2.5mm; border-bottom: 0.4mm solid #d84315; font-size: 2.9mm; }
+  .sender .who { font-weight: 700; }
+  .recv { flex: 1; padding: 2mm 2.5mm; display: flex; flex-direction: column; min-height: 0; }
+  .recv .addr1 { font-size: 3.2mm; }
+  .recv .addr2 { font-size: 4.6mm; font-weight: 900; margin: 1mm 0; }
+  .recv .rname { font-size: 5.2mm; font-weight: 900; margin-top: 1mm; }
+  .recv .tel { font-size: 3.4mm; font-weight: 700; margin-top: 1mm; }
+  .regino { border-top: 0.4mm solid #d84315; padding: 1.2mm 2.5mm; display: flex; align-items: center; gap: 3mm; }
+  .regino .rt { font-size: 3.2mm; }
+  .regino .rn { font-size: 5.6mm; font-weight: 900; letter-spacing: 0.3mm; }
+  .bottom { border-top: 0.4mm solid #d84315; height: 22mm; display: flex; align-items: center; }
+  .contract { width: 34mm; text-align: center; font-size: 4.6mm; font-weight: 900; border-right: 0.4mm solid #d84315; align-self: stretch; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .contract .cs { font-size: 2.6mm; font-weight: 400; }
+  .longbar { flex: 1; text-align: center; }
+  .longbar svg { height: 16mm; width: 95%; }
+  @media print {
+    .toolbar { display: none; }
+    body { background: #fff; }
+    .sheet { margin: 0; padding: 4mm 0; }
+    @page { size: A4 portrait; margin: 5mm; }
+  }
+</style>
+</head>
+<body>
+<div class="toolbar">
+  <button onclick="window.print()">🖨 인쇄하기</button>
+  <span style="margin-left:12px;color:#555">A4 용지에 운송장이 인쇄됩니다. 잘라서 상자에 붙이세요.</span>
+</div>
+<div class="sheet" id="sheet">불러오는 중…</div>
+<script>
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+// 성명 마스킹(규정 필수): 두 번째 글자 *
+function maskName(n) {
+  n = String(n || '').trim();
+  if (n.length < 2) return n;
+  return n[0] + '*' + n.slice(2);
+}
+function fmtRegi(r) {
+  const d = String(r || '').replace(/\D/g, '');
+  return d.length === 13 ? d.slice(0,5) + '-' + d.slice(5,9) + '-' + d.slice(9) : r;
+}
+// 인쇄용 집배코드 "광1(광주M) 529(나주) 05 06" 분해
+function parseArea(label) {
+  const s = String((label && label.printAreaCd) || '').trim();
+  const m = s.match(/^(\S+?)\((.+?)\)\s+(\S+?)\((.+?)\)\s+(\d{2})\s*(\d{2})$/);
+  if (m) return { cn: m[1], cnNm: m[2], dn: m[3], dnNm: m[4], team: m[5] + ' ' + m[6] };
+  // 대체: delivAreaCd "광15290506" → 못 나누면 통째로
+  return { cn: '', cnNm: (label && label.arrCnpoNm) || '', dn: '', dnNm: (label && label.delivPoNm) || '', team: '', raw: s || ((label && label.delivAreaCd) || '') };
+}
+async function main() {
+  const params = new URLSearchParams(location.search);
+  const sel = (params.get('sel') || '').split(',').filter(Boolean);
+  const db = await (await fetch('/api/db')).json();
+  const st = db.settings;
+  const items = [];
+  for (const s of sel) {
+    const [type, idStr] = s.split(':');
+    const list = type === 'seeding' ? db.seeding : db.orders;
+    const it = list.find(x => x.id === Number(idStr));
+    if (it && it.epost) items.push({ type, it });
+  }
+  // 같은 접수(orderNo)는 라벨 1장
+  const seen = new Set();
+  const labels = [];
+  for (const { it } of items) {
+    if (seen.has(it.epost.orderNo)) {
+      labels[labels.length - 1].products.push(prodLine(it));
+      continue;
+    }
+    seen.add(it.epost.orderNo);
+    labels.push({ it, products: [prodLine(it)] });
+  }
+  function prodLine(it) {
+    const opt = [it.color, it.size].filter(Boolean).join(' ') || it.option || '';
+    return esc(String(it.product || '').slice(0, 44)) + (opt ? ', ' + esc(opt) : '') + ', 수량:' + (it.qty || 1);
+  }
+  if (!labels.length) { document.getElementById('sheet').innerHTML = '<p style="padding:2rem">인쇄할 운송장이 없어요. (앱에서 접수한 건만 인쇄할 수 있습니다)</p>'; return; }
+  let html = '';
+  labels.forEach((L, i) => {
+    const it = L.it, ep = it.epost, lb = ep.label || {};
+    const a = parseArea(lb);
+    const zip = String(it.zip || lb.refineZip || '').replace(/\D/g, '').slice(0, 5);
+    const regiDigits = String(it.invoice || '').replace(/\D/g, '');
+    const addr = String(it.addr || '').replace(/\(\d{5}\)/g, '').trim();
+    // 기본주소/상세주소 분리: 뒤쪽 상세(동·호·번지 상세)를 크게
+    let addr1 = addr, addr2 = '';
+    const cut = addr.length > 18 ? addr.lastIndexOf(' ', Math.floor(addr.length * 0.55)) : -1;
+    if (cut > 5) { addr1 = addr.slice(0, cut); addr2 = addr.slice(cut + 1); }
+    const invCn = a.cn && !/^[ABC]/.test(a.cn); // 지방권 집중국번호 음영
+    html += `
+    <div class="label">
+      <div class="top">
+        <div class="logo"><div class="l1">ePOST</div><div class="l2">우체국소포</div></div>
+        <div class="areacd">
+          ${a.raw ? `<span class="dn">${esc(a.raw)}</span>` : `
+          <span class="cn ${invCn ? 'inv' : ''}">${esc(a.cn)}</span><span class="nm">${esc(a.cnNm)}</span>
+          <span class="dn">${esc(a.dn)}</span><span class="nm">${esc(a.dnNm)}</span>
+          <span class="team"><span class="tt">${esc(a.team)}</span><div class="course">${lb.courseNo ? '- ' + esc(lb.courseNo) + ' -' : ''}</div></span>`}
+        </div>
+      </div>
+      <div class="mid">
+        <div class="left">
+          <div class="box">접수국: ${esc(lb.regipoNm || (db.epost && db.epost.officeNm) || '')} &nbsp; 신청일: ${esc(it.sentDate || '')}</div>
+          <div class="box">주문처: ${esc(st.senderName || '')}<br>주문번호: ${esc(ep.orderNo || '')}<br>요금: 계약요금${ep.price ? ' (' + esc(ep.price) + '원)' : ''}</div>
+          <div class="zipbar"><svg id="zip${i}"></svg><div class="zt">${esc(zip)}</div></div>
+          <div class="box grow">${L.products.join('<br>')}${it.msg ? '<br><b>' + esc(it.msg) + '</b>' : ''}</div>
+        </div>
+        <div class="right">
+          <div class="sender">
+            ${esc(cleanA(st.senderAddr))} &nbsp; ${esc(st.senderZip || '')}<br>
+            <span class="who">${esc(st.senderName || '')}</span> &nbsp; T: ${esc(st.senderPhone || '')}
+          </div>
+          <div class="recv">
+            <div class="addr1">${esc(addr1)} &nbsp; ${esc(zip)}</div>
+            <div class="addr2">${esc(addr2 || addr1)}</div>
+            <div class="rname">${esc(maskName(it.name))} 님께</div>
+            <div class="tel">${lb.vTelNo ? 'T: ' + esc(fmtVtel(lb.vTelNo)) : 'T: ' + esc(it.phone || '')}</div>
+          </div>
+          <div class="regino"><span class="rt">등기번호:</span><span class="rn">${esc(fmtRegi(it.invoice))}</span></div>
+        </div>
+      </div>
+      <div class="bottom">
+        <div class="contract">계약소포<div class="cs">신청 및 배달안내<br>☎ 1588-1300</div></div>
+        <div class="longbar"><svg id="regi${i}"></svg></div>
+      </div>
+    </div>`;
+  });
+  document.getElementById('sheet').innerHTML = html;
+  labels.forEach((L, i) => {
+    const zip = String(L.it.zip || (L.it.epost.label && L.it.epost.label.refineZip) || '').replace(/\D/g, '').slice(0, 5);
+    const regi = String(L.it.invoice || '').replace(/\D/g, '');
+    try { if (zip.length === 5) JsBarcode('#zip' + i, zip, { format: 'CODE128', displayValue: false, margin: 0, height: 34 }); } catch (e) {}
+    try { if (regi.length === 13) JsBarcode('#regi' + i, regi, { format: 'CODE128', displayValue: false, margin: 0, height: 60 }); } catch (e) {}
+  });
+  if (params.get('print') === '1') setTimeout(() => window.print(), 600);
+}
+function cleanA(a) { return String(a || '').replace(/\(\d{5}\)/g, '').trim(); }
+function fmtVtel(v) {
+  const d = String(v).replace(/\D/g, '');
+  return d.length >= 10 ? d.slice(0, 4) + '-' + d.slice(4, d.length - 4) + '-' + d.slice(-4) : v;
+}
+main();
+</script>
+</body>
+</html>

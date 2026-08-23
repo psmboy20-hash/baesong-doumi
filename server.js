@@ -442,7 +442,8 @@ async function epostInsertOrder(db, g, orderNo, testYn) {
     goodsMdl: models.slice(0, 390),
     qty: String(qty),
     delivMsg: g.msgs.filter(Boolean).join(' / ').slice(0, 190),
-    printYn: 'N' // 운송장은 계약고객시스템 운송장출력 메뉴에서 출력
+    printYn: 'Y',      // 운송장을 앱에서 직접 인쇄 (자체 출력)
+    printAreaCdYn: 'Y' // 인쇄용 집배코드 받기
   };
   if (isMobile) params.recMob = phone; else params.recTel = phone;
   if (testYn === 'Y') params.testYn = 'Y';
@@ -451,7 +452,18 @@ async function epostInsertOrder(db, g, orderNo, testYn) {
     regiNo: xmlVal(xml, 'regiNo'),
     reqNo: xmlVal(xml, 'reqNo'),
     resNo: xmlVal(xml, 'resNo'),
-    price: xmlVal(xml, 'price')
+    price: xmlVal(xml, 'price'),
+    label: { // 운송장 인쇄에 필요한 정보
+      vTelNo: xmlVal(xml, 'vTelNo'),
+      printAreaCd: xmlVal(xml, 'printAreaCd'),
+      delivAreaCd: xmlVal(xml, 'delivAreaCd'),
+      courseNo: xmlVal(xml, 'courseNo'),
+      arrCnpoNm: xmlVal(xml, 'arrCnpoNm'),
+      delivPoNm: xmlVal(xml, 'delivPoNm'),
+      regipoNm: xmlVal(xml, 'regipoNm'),
+      refineZip: xmlVal(xml, 'refineZip'),
+      refineAddr: xmlVal(xml, 'refineAddr')
+    }
   };
 }
 
@@ -1085,7 +1097,7 @@ const server = http.createServer(async (req, res) => {
               item.courier = '우체국';
               item.status = '발송완료';
               item.sentDate = today();
-              item.epost = { orderNo, reqNo: r.reqNo, resNo: r.resNo, reqYmd: today().replace(/-/g, ''), stus: '01' };
+              item.epost = { orderNo, reqNo: r.reqNo, resNo: r.resNo, reqYmd: today().replace(/-/g, ''), stus: '02', price: r.price, label: r.label };
               shippedItems.push({ type, item });
             }
           }
