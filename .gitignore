@@ -1,0 +1,16 @@
+# 장부/개인정보 - 절대 저장소에 올리지 않음
+data/
+계정메모.md
+구글시트-자동기록-스크립트.gs
+구글시트-자동기록-설치법.md
+
+# 실행 부산물
+node_modules/
+update.log
+tmp/
+tmp_*
+*.xlsx
+*.b64
+
+.omc/
+.claude/
