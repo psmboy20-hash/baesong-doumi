@@ -33,6 +33,34 @@ function chip(status) {
   const [cls, label] = map[status] || ['wait', status];
   return `<span class="chip ${cls}">${label}</span>`;
 }
+// ---- 제품 매칭: 자유 텍스트(구글폼)를 카페24 실제 제품(품번+사진)과 연결 ----
+function lettersOnly(s) { return String(s || '').toLowerCase().replace(/[^a-z가-힣]/g, ''); }
+function matchProducts(text) {
+  if (!DB.products || !DB.products.length) return [];
+  const t = lettersOnly(text);
+  if (!t) return [];
+  const hits = [];
+  for (const p of DB.products) {
+    const core = lettersOnly(String(p.name).replace(/^[A-Za-z]#?\d+_?/, ''));
+    if (core && core.length >= 6 && t.includes(core)) hits.push({ p, pos: t.indexOf(core) });
+  }
+  hits.sort((a, b) => a.pos - b.pos);
+  return hits.map(h => h.p);
+}
+function productCell(x) {
+  const optTxt = x.option || x.size || '';
+  const matches = matchProducts(x.product);
+  if (!matches.length) {
+    return esc(x.product) + (optTxt ? ' <b>(' + esc(optTxt) + ')</b>' : '');
+  }
+  return matches.map(p => `
+    <div style="display:flex;align-items:center;gap:0.5rem;margin:0.15rem 0">
+      ${p.img ? `<img src="${esc(p.img)}" style="width:44px;height:44px;object-fit:cover;border-radius:8px;flex-shrink:0" onerror="this.style.display='none'">` : ''}
+      <span><b>${esc(p.name)}</b></span>
+    </div>`).join('') +
+    (optTxt ? `<div class="muted" style="font-size:0.85rem">옵션: ${esc(optTxt)}</div>` : '');
+}
+
 function trackLink(inv) {
   if (!inv) return '';
   const digits = String(inv).replace(/\D/g, '');
@@ -120,7 +148,7 @@ function renderSend() {
       <td><b>${esc(x.name)}</b>${x.insta ? `<br><span class="muted" style="font-size:0.85rem">${esc(x.insta)}</span>` : ''}</td>
       <td>${esc(x.phone)}</td>
       <td style="max-width:260px">${esc(x.addr)}</td>
-      <td style="max-width:240px">${esc(x.product)}${x.option ? ' <b>(' + esc(x.option) + ')</b>' : (x.size ? ' <b>(' + esc(x.size) + ')</b>' : '')}</td>
+      <td style="max-width:280px">${productCell(x)}</td>
       <td>${chip(x.status)}</td>
     </tr>`).join('');
 
@@ -188,7 +216,7 @@ function renderShipping() {
     <tr>
       <td>${x._kind === '주문' ? '🛒' : '🎁'} ${x._kind}</td>
       <td><b>${esc(x.name)}</b></td>
-      <td style="max-width:240px">${esc(x.product)}</td>
+      <td style="max-width:280px">${productCell(x)}</td>
       <td>${chip(x.status)}</td>
       <td>${x.invoice ? trackLink(x.invoice) : '<span class="muted">아직 없음</span>'}</td>
       <td>${esc(x.sentDate || '')}</td>

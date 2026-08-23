@@ -455,6 +455,29 @@ async function epostInsertOrder(db, g, orderNo, testYn) {
   };
 }
 
+// 카페24 제품 목록(품번/이미지) 가져오기 - 제품 사진 표시와 이름 매칭용
+async function cafe24FetchProducts(db) {
+  const token = await cafe24EnsureToken(db);
+  const list = [];
+  for (let offset = 0; offset < 1000; offset += 100) {
+    const r = await cafe24Fetch(db, token, `/api/v2/admin/products?limit=100&offset=${offset}`);
+    if (r.status !== 200 || !r.json) throw new Error('제품 조회 실패(' + r.status + ')');
+    const products = r.json.products || [];
+    for (const p of products) {
+      list.push({
+        no: p.product_no,
+        name: p.product_name || '',
+        code: p.product_code || '',
+        img: p.list_image || p.small_image || p.tiny_image || p.detail_image || ''
+      });
+    }
+    if (products.length < 100) break;
+  }
+  db.products = list;
+  db.productsAt = today();
+  return list.length;
+}
+
 // ---------- 자동 동기화 ----------
 const syncStatus = {
   lastRun: null, lastOk: null,
@@ -500,6 +523,10 @@ async function syncAll() {
       changed = true;
     } catch (e) {
       syncStatus.cafe24 = { configured: true, connected: !!db.cafe24Token, ok: false, error: e.message, added: 0 };
+    }
+    // 제품 목록(품번/사진)은 하루 한 번 갱신
+    if (!db.products || db.productsAt !== today()) {
+      try { await cafe24FetchProducts(db); changed = true; } catch (e) { /* 다음 동기화 때 재시도 */ }
     }
   }
   if (changed) saveDb(db);
