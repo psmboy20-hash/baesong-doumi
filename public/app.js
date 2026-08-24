@@ -217,8 +217,8 @@ function renderSend() {
       <td style="font-size:1.2rem">${icon}</td>
       <td><b>${esc(x.name)}</b>${x.insta ? `<br><span class="muted" style="font-size:0.85rem">${esc(x.insta)}</span>` : ''}</td>
       <td>${esc(x.phone)}</td>
-      <td style="max-width:260px">${esc(x.addr)}</td>
-      <td style="min-width:260px;max-width:360px">${productCell(x)}</td>
+      <td style="max-width:420px">${esc(x.addr)}</td>
+      <td style="min-width:260px;max-width:520px">${productCell(x)}</td>
       <td>${chip(x.status)}<br><button class="link-btn" style="font-size:0.85rem" onclick="manualShip('${kind}',${x.id},'${esc(x.name)}')">따로 보냈어요</button></td>
     </tr>`).join('');
 
@@ -288,7 +288,7 @@ function renderEpost() {
     <tr>
       <td style="font-size:1.2rem">${icon}</td>
       <td><b>${esc(x.name)}</b></td>
-      <td style="max-width:220px">${esc(String(x.product || '').slice(0, 60))}</td>
+      <td style="max-width:420px">${esc(String(x.product || '').slice(0, 90))}</td>
       <td>${x.invoice ? trackLink(x.invoice) : '<span class="muted">-</span>'}</td>
       <td><span class="chip ${cls}">${nm}</span></td>
       <td>${esc(x.sentDate || '')}</td>
@@ -366,8 +366,8 @@ function renderReturns() {
     <tr>
       <td style="font-size:1.2rem">${x.kind === '교환' ? '🔄' : '↩️'}</td>
       <td><b>${esc(x.name)}</b><br><span class="muted" style="font-size:0.85rem">${esc(x.phone)}</span></td>
-      <td style="max-width:240px">${esc(x.product)}${x.option ? ` <b>(${esc(x.option)})</b>` : ''}${x.kind === '교환' && x.exchangeProduct ? `<br><span style="font-size:0.85rem">→ 교환: ${esc(x.exchangeProduct)}</span>` : ''}</td>
-      <td style="max-width:160px">${esc(x.reason || '')}</td>
+      <td style="max-width:420px">${esc(x.product)}${x.option ? ` <b>(${esc(x.option)})</b>` : ''}${x.kind === '교환' && x.exchangeProduct ? `<br><span style="font-size:0.85rem">→ 교환: ${esc(x.exchangeProduct)}</span>` : ''}</td>
+      <td style="max-width:280px">${esc(x.reason || '')}</td>
       <td>${x.invoice ? trackLink(x.invoice) : '<span class="muted">-</span>'}${stusNm ? `<br><span class="muted" style="font-size:0.85rem">${stusNm}</span>` : ''}</td>
       <td><span class="chip ${cls}">${nm}</span></td>
       <td style="white-space:nowrap">${btns}</td>
@@ -503,7 +503,7 @@ function renderShipping() {
       <td style="white-space:nowrap">${x._kind === '주문' ? '🛒' : '🎁'} ${x._kind}</td>
       <td style="white-space:nowrap">${esc(x.sentDate || '')}</td>
       <td><b>${esc(x.name)}</b></td>
-      <td style="min-width:260px;max-width:360px">${productCell(x)}</td>
+      <td style="min-width:260px;max-width:520px">${productCell(x)}</td>
       <td>${chip(x.status)}</td>
       <td>${x.invoice ? trackLink(x.invoice) : '<span class="muted">아직 없음</span>'}</td>
       <td>${x.status === '발송완료' ? `<button class="link-btn" onclick="returnFormFrom('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id})">🔁 교환/반품</button>` : ''}</td>
