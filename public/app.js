@@ -604,7 +604,7 @@ function renderEpost() {
           ? (x.printed
             ? `<span class="chip done" style="font-size:0.85rem">🖨 인쇄함 ✓</span> <button class="link-btn" style="font-size:0.9rem" onclick="printLabels('${kind}:${x.id}')">다시 인쇄</button>`
             : `<button class="link-btn" style="font-weight:800" onclick="printLabels('${kind}:${x.id}')">🖨 운송장 인쇄</button>`)
-          : `<button class="link-btn" onclick="window.open('https://biz.epost.go.kr','_blank')" title="이 건은 우체국 사이트에서 출력">🖨 사이트에서</button>`}
+          : `<button class="link-btn" onclick="epostSitePrint()" title="이 건은 우체국 사이트에서 출력">🖨 사이트에서</button>`}
         ${cancelable ? `<button class="link-btn" style="color:var(--red)" onclick="epostCancel('${kind}',${x.id},'${jsq(x.name)}')">취소</button>` : ''}
       </td>
     </tr>`;
@@ -618,7 +618,7 @@ function renderEpost() {
       <button class="big-btn" onclick="epostRefresh()">🔄 진행상태 새로고침</button>
       ${needP.length ? `<button class="big-btn green" onclick="printLabels('${needP.join(',')}')">🖨 안 뽑은 운송장 ${needP.length}장 인쇄</button>` : ''}
       ${printable.length && printable.length !== needP.length ? `<button class="big-btn gray" onclick="printLabels('${printable.join(',')}')">전체 다시 인쇄 (${printable.length}장)</button>` : ''}
-      <button class="big-btn gray" onclick="window.open('https://biz.epost.go.kr','_blank')" title="로그인 → 계약소포 → 신청정보등록/운송장출력">🖨 우체국 사이트에서 출력 (오즈뷰어)</button>
+      <button class="big-btn gray" onclick="epostSitePrint()">🖨 우체국 사이트에서 출력 (오즈뷰어)</button>
     </div>
     <div class="card">
       ${items.length ? `
@@ -632,6 +632,24 @@ function renderEpost() {
       ` : `<div class="hint" style="font-size:1.1rem">아직 앱에서 우체국에 접수한 건이 없어요.<br>[📮 보내기]에서 <b>[🚀 우체국 바로 접수]</b>를 누르면 여기에 나타납니다.</div>`}
     </div>
     <div id="epost-page-result"></div>`;
+}
+// 우체국 사이트(오즈뷰어)로 출력: 사이트를 열고, 앱 화면에 따라할 순서를 크게 보여줌
+function epostSitePrint() {
+  window.open('https://biz.epost.go.kr', '_blank');
+  const box = $('#epost-page-result');
+  if (box) {
+    box.innerHTML = `<div class="result-box warn" style="font-weight:400; line-height:1.9">
+      <div class="big">🖨 우체국 사이트에서 운송장 출력 — 이 순서대로 하세요</div>
+      ① 방금 열린 우체국 화면에서 <b>로그인</b> (아이디: <b>${esc(DB.settings.epostMemberId || '')}</b>)<br>
+      ② 위쪽 메뉴에서 <b>[계약소포]</b> 클릭<br>
+      ③ 왼쪽 메뉴에서 <b>[소포신청] → [신청정보등록]</b> 클릭<br>
+      ④ 오늘 날짜로 <b>[조회]</b> — 앱에서 접수한 건들이 목록에 보여요<br>
+      ⑤ 출력할 건에 <b>체크</b> → <b>[운송장출력]</b> 버튼 클릭<br>
+      ⑥ 오즈뷰어 창이 뜨면 <b>[인쇄]</b> — 끝!<br>
+      <span class="muted" style="font-size:0.95rem">화면이 다르거나 막히면 우체국 고객센터 ☎ 1588-1300</span>
+    </div>`;
+    box.scrollIntoView({ behavior: 'smooth' });
+  }
 }
 function printLabels(sel) {
   window.open('/label.html?print=1&sel=' + encodeURIComponent(sel), '_blank');
