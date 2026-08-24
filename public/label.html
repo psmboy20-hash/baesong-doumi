@@ -95,6 +95,26 @@
   .longbar { flex: 1; text-align: center; }
   .longbar svg { height: 16mm; width: 95%; }
 
+  /* ===== C형 라벨: 오즈뷰어 출력과 동일한 배치 (절대좌표, mm) ===== */
+  .clabel {
+    width: 168mm; height: 107mm; position: relative;
+    background: #fff; color: #000; margin: 0 auto; overflow: hidden;
+    font-family: "Malgun Gothic", sans-serif;
+  }
+  body:not(.formpaper) .clabel { outline: 0.4mm solid #d84315; }
+  @media screen { body.formpaper .clabel { outline: 1px dashed #bbb; } }
+  .clabel .f { position: absolute; line-height: 1.2; white-space: nowrap; }
+  .clabel .wrap { white-space: normal; }
+  .clabel .inv { background: #000; color: #fff; padding: 0 1.2mm; }
+  .clabel .vstrip { position: absolute; right: 0; top: 0; width: 20mm; height: 107mm; overflow: hidden; }
+  .clabel .vinner {
+    position: absolute; left: 0; top: 105mm;
+    transform: rotate(-90deg); transform-origin: top left;
+    width: 103mm; height: 20mm;
+    display: flex; align-items: center; gap: 1.5mm;
+    font-size: 2.5mm; line-height: 1.15;
+  }
+
   /* ===== 양식지 모드: 틀(빨간선·로고·고정문구)이 미리 인쇄된 우체국 용지 → 데이터만 인쇄 ===== */
   body.formpaper .label, body.formpaper .top, body.formpaper .left, body.formpaper .left .box,
   body.formpaper .zipbar, body.formpaper .sender, body.formpaper .regino, body.formpaper .bottom,
@@ -207,43 +227,58 @@ function renderPost() { // C형 한 장 = 한 페이지 (6인치 라벨기)
 function renderA4() {
   return '<div class="sheet-a4">' + LABELS.map((L, i) => labelC(L, i)).join('') + '</div>';
 }
-function labelC(L, i) {
+function labelC(L, i) { // 오즈뷰어 C형 출력과 같은 배치
   const st = DBREF.settings;
-  return (() => {
-    const it = L.it, ep = it.epost, lb = ep.label || {};
-    const a = parseArea(lb);
-    const zip = String(it.zip || lb.refineZip || '').replace(/\D/g, '').slice(0, 5);
-    const [a1, a2] = splitAddr(it.addr);
-    return `
-    <div class="label">
-      <div class="top">
-        <div class="logo"><div class="l1">ePOST</div><div class="l2">우체국소포</div></div>
-        <div class="areacd">${areaHtml(a, lb)}</div>
+  const it = L.it, ep = it.epost, lb = ep.label || {};
+  const a = parseArea(lb);
+  const zip = String(it.zip || lb.refineZip || '').replace(/\D/g, '').slice(0, 5);
+  const addr = cleanA(it.addr);
+  const vtel = lb.vTelNo ? fmtVtel(lb.vTelNo) : (it.phone || '');
+  const prod = L.products.join(' ') + (it.msg ? ' ※' + esc(it.msg) : '');
+  const invCn = a.cn && !/^[ABC]/.test(a.cn);
+  return `
+  <div class="clabel">
+    <!-- 좌측 상단: 접수국/신청일/주문처/요금 -->
+    <div class="f" style="left:3mm; top:12mm; font-size:3mm">접수국 : ${esc(lb.regipoNm || '')} &nbsp;&nbsp; 신청일 : ${esc((it.sentDate || '').replace(/-/g, '/'))}</div>
+    <div class="f" style="left:3mm; top:19mm; font-size:3mm">주문인:</div>
+    <div class="f" style="left:3mm; top:23.5mm; font-size:3mm">고객 주문처: ${esc(st.senderName || '')}</div>
+    <div class="f" style="left:18mm; top:30.5mm; font-size:3.2mm">요금: 계약요금</div>
+    <!-- 좌측: 우편번호 바코드 -->
+    <div class="f" style="left:6mm; top:35mm"><svg id="zip${i}" style="width:32mm;height:10mm"></svg></div>
+    <div class="f" style="left:40mm; top:36mm; font-size:2.8mm">(1/1)</div>
+    <div class="f" style="left:40mm; top:41mm; font-size:2.8mm">(1/1)</div>
+    <div class="f" style="left:9mm; top:45.5mm; font-size:4mm; letter-spacing:2mm; font-weight:700">${esc(zip)}</div>
+    <!-- 좌측 하단: 내용품 -->
+    <div class="f wrap" style="left:3mm; top:53mm; width:47mm; font-size:2.9mm">${prod}</div>
+    <!-- 상단: 집배코드 -->
+    <div class="f" style="left:56mm; top:5mm; font-size:9mm; font-weight:900"><span class="${invCn ? 'inv' : ''}">${esc(a.cn)}</span><span style="font-size:3.4mm; font-weight:700">${esc(a.cnNm)}</span> ${esc(a.dn)}<span style="font-size:3.4mm; font-weight:700">${esc(a.dnNm)}</span>${a.raw ? esc(a.raw) : ''}</div>
+    <div class="f" style="left:118mm; top:5mm; font-size:8mm; font-weight:900">${esc(a.team)}</div>
+    <div class="f" style="left:120mm; top:14mm; font-size:4mm; font-weight:700">${lb.courseNo ? '- ' + esc(lb.courseNo) + ' -' : ''}</div>
+    <!-- 보내는 분 -->
+    <div class="f wrap" style="left:55mm; top:21mm; width:80mm; font-size:3.1mm">${esc(cleanA(st.senderAddr))}</div>
+    <div class="f" style="left:137mm; top:21mm; font-size:3.1mm">${esc(st.senderZip || '')}</div>
+    <div class="f" style="left:55mm; top:29mm; font-size:3.4mm; font-weight:900">${esc(st.senderName || '')}</div>
+    <div class="f" style="left:110mm; top:29mm; font-size:3.1mm">M: ${esc(st.senderPhone || '')}</div>
+    <!-- 받는 분 -->
+    <div class="f wrap" style="left:55mm; top:39mm; width:90mm; font-size:5mm; font-weight:900; line-height:1.35">${esc(addr)} .</div>
+    <div class="f" style="left:55mm; top:58mm; font-size:6.5mm; font-weight:900">${esc(maskName(it.name))} 님</div>
+    <div class="f" style="left:55mm; top:67mm; font-size:5mm; font-weight:900">T: ${esc(vtel)}</div>
+    <div class="f" style="left:55mm; top:73mm; font-size:2.4mm">※ 고객님의 개인정보 보호를 위하여 임시 가상번호를 사용합니다.</div>
+    <!-- 등기번호 + 대형 바코드 -->
+    <div class="f" style="left:55mm; top:77mm; font-size:5mm; font-weight:900">등기번호: ${esc(fmtRegi(it.invoice))}</div>
+    <div class="f" style="left:55mm; top:84mm"><svg id="regi${i}" style="width:85mm;height:17mm"></svg></div>
+    <!-- 우측 세로 절취 스트립 -->
+    <div class="vstrip">
+      <div class="vinner">
+        <svg id="vregi${i}" style="width:34mm;height:8mm;flex-shrink:0"></svg>
+        <b style="font-size:2.8mm">${esc(fmtRegi(it.invoice))}</b>
+        <span style="overflow:hidden">내용품 : ${esc(L.products.join(' ').slice(0, 34))}</span>
+        <b>${esc(maskName(it.name))} 님</b>
+        <span>${esc(vtel)}</span>
+        <span style="overflow:hidden">${esc(addr.slice(0, 22))}</span>
       </div>
-      <div class="mid">
-        <div class="left">
-          <div class="box">접수국: ${esc(lb.regipoNm || (DBREF.epost && DBREF.epost.officeNm) || '')} &nbsp; 신청일: ${esc(it.sentDate || '')}</div>
-          <div class="box">주문처: ${esc(st.senderName || '')}<br>주문번호: ${esc(ep.orderNo || '')}<br>요금: 계약요금${ep.price ? ' (' + esc(ep.price) + '원)' : ''}</div>
-          <div class="zipbar"><svg id="zip${i}"></svg><div class="zt">${esc(zip)}</div></div>
-          <div class="box grow">${L.products.join('<br>')}${it.msg ? '<br><b>' + esc(it.msg) + '</b>' : ''}</div>
-        </div>
-        <div class="right">
-          <div class="sender">${esc(cleanA(st.senderAddr))} &nbsp; ${esc(st.senderZip || '')}<br><span class="who">${esc(st.senderName || '')}</span> &nbsp; T: ${esc(st.senderPhone || '')}</div>
-          <div class="recv">
-            <div class="addr1">${esc(a1)} &nbsp; ${esc(zip)}</div>
-            <div class="addr2">${esc(a2)}</div>
-            <div class="rname">${esc(maskName(it.name))} 님께</div>
-            <div class="tel">${lb.vTelNo ? 'T: ' + esc(fmtVtel(lb.vTelNo)) : 'T: ' + esc(it.phone || '')}</div>
-          </div>
-          <div class="regino"><span class="rt">등기번호:</span><span class="rn">${esc(fmtRegi(it.invoice))}</span></div>
-        </div>
-      </div>
-      <div class="bottom">
-        <div class="contract">계약소포<div class="cs">신청 및 배달안내<br>☎ 1588-1300</div></div>
-        <div class="longbar"><svg id="regi${i}"></svg></div>
-      </div>
-    </div>`;
-  })();
+    </div>
+  </div>`;
 }
 
 function drawBarcodes() {
@@ -252,6 +287,7 @@ function drawBarcodes() {
     const regi = String(L.it.invoice || '').replace(/\D/g, '');
     try { if (zip.length === 5) JsBarcode('#zip' + i, zip, { format: 'CODE128', displayValue: false, margin: 0, height: 34 }); } catch (e) {}
     try { if (regi.length === 13) JsBarcode('#regi' + i, regi, { format: 'CODE128', displayValue: false, margin: 0, height: 60 }); } catch (e) {}
+    try { if (regi.length === 13 && document.getElementById('vregi' + i)) JsBarcode('#vregi' + i, regi, { format: 'CODE128', displayValue: false, margin: 0, height: 30 }); } catch (e) {}
   });
 }
 
@@ -281,7 +317,7 @@ function setPaper(mode) {
   localStorage.setItem('labelPaper', mode);
   document.getElementById('paper').value = mode;
   const page = {
-    post: '@page { size: 168mm 107mm; margin: 0; } .label { margin: 0 auto; border-radius: 0; }',
+    post: '@page { size: 168mm 107mm; margin: 0; } .clabel { margin: 0 auto; }',
     roll: '@page { size: 100mm 150mm; margin: 0; }',
     a4: '@page { size: A4 portrait; margin: 5mm; }'
   };
