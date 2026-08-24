@@ -10,7 +10,8 @@
   --line: #d8dee8;
   --text: #1c2333;
 }
-html { font-size: 20px; }
+/* 큰 화면(1270px~)에선 20px, 창이 좁아지면 15px까지 자동 축소 — 줄꺾임 방지 */
+html { font-size: clamp(15px, 1.1vw + 6px, 20px); }
 body {
   font-family: "Malgun Gothic", "맑은 고딕", sans-serif;
   background: var(--bg);
@@ -32,9 +33,10 @@ header {
 .logo { font-size: 1.4rem; font-weight: 800; cursor: pointer; }
 nav { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 nav button {
-  font-size: 1.05rem;
+  font-size: 1rem;
   font-weight: 700;
-  padding: 0.7rem 1.1rem;
+  padding: 0.55rem 0.85rem;
+  white-space: nowrap;
   border: 2px solid var(--line);
   border-radius: 12px;
   background: #fff;
@@ -66,10 +68,10 @@ h1 { font-size: 1.6rem; margin-bottom: 0.4rem; }
 .hint { font-size: 1rem; color: #5a6478; margin-bottom: 0.8rem; line-height: 1.5; }
 
 .big-btn {
-  font-size: 1.3rem;
+  font-size: 1.2rem;
   font-weight: 800;
   font-family: inherit;
-  padding: 1rem 1.6rem;
+  padding: 0.9rem 1.4rem;
   border-radius: 14px;
   border: none;
   cursor: pointer;
@@ -124,7 +126,7 @@ h1 { font-size: 1.6rem; margin-bottom: 0.4rem; }
 
 table { width: 100%; border-collapse: collapse; font-size: 1rem; }
 th, td { border-bottom: 2px solid var(--line); padding: 0.7rem 0.5rem; text-align: left; vertical-align: top; }
-th { background: #eef1f7; font-size: 0.95rem; position: sticky; top: 0; }
+th { background: #eef1f7; font-size: 0.95rem; position: sticky; top: 0; white-space: nowrap; }
 tr.checked-row { background: #f0f8f0; }
 .table-wrap { overflow-x: auto; max-height: 60vh; overflow-y: auto; border: 2px solid var(--line); border-radius: 12px; }
 input[type="checkbox"] { width: 1.6rem; height: 1.6rem; accent-color: var(--green); cursor: pointer; }
@@ -212,6 +214,6 @@ input[type="checkbox"] { width: 1.6rem; height: 1.6rem; accent-color: var(--gree
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.link-btn { background: none; border: none; color: var(--blue); font-size: 1rem; cursor: pointer; text-decoration: underline; font-family: inherit; }
+.link-btn { background: none; border: none; color: var(--blue); font-size: 1rem; cursor: pointer; text-decoration: underline; font-family: inherit; white-space: nowrap; }
 .track-link { color: var(--blue); font-weight: 700; text-decoration: underline; }
 .muted { color: #8a93a5; }
