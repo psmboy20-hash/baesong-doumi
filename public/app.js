@@ -96,28 +96,27 @@ function productParts(x) {
   const { color, size } = parseOption(x);
   const matches = matchProducts(x.product);
   if (!matches.length) {
-    return { name: esc(x.product), opt: [color, size].filter(Boolean).join(' / ') };
+    return { name: esc(x.product), opt: [color, size].filter(Boolean).join(', ') };
   }
-  const single = matches.length === 1;
+  // 제품 칸에는 이름만 (색상은 전부 옵션 칸으로)
   const name = matches.map(p => {
-    const { base, color: c } = splitColor(p.name);
+    const { base } = splitColor(p.name);
     return `
     <div style="display:flex;align-items:center;gap:0.4rem;margin:0.1rem 0;line-height:1.25">
       ${p.img ? `<img src="${esc(p.img)}" style="width:30px;height:30px;object-fit:cover;border-radius:6px;flex-shrink:0" onerror="this.style.display='none'">` : ''}
-      <span><b>${esc(base)}</b>${!single && c ? ` <span class="muted" style="font-size:0.85rem">${esc(c)}</span>` : ''}</span>
+      <span><b>${esc(base)}</b></span>
     </div>`;
   }).join('');
-  // 옵션은 항상 "색상 / 사이즈" 한 형식 (제품명에서 뺀 색상과 주문 색상이 같으면 한 번만)
+  // 옵션 = "색상(제품 순서대로), 사이즈" — 중복 색은 한 번만
   const parts = [];
-  if (single) {
-    const nameColor = splitColor(matches[0].name).color;
-    if (nameColor) parts.push(nameColor);
-    if (color && normOpt(color) !== normOpt(nameColor)) parts.push(color);
-  } else if (color) {
-    parts.push(color);
+  const seenC = new Set();
+  for (const p of matches) {
+    const c = splitColor(p.name).color;
+    if (c && !seenC.has(normOpt(c))) { seenC.add(normOpt(c)); parts.push(c); }
   }
+  if (color && !seenC.has(normOpt(color))) parts.push(color);
   if (size) parts.push(size);
-  return { name, opt: parts.join(' / ') };
+  return { name, opt: parts.join(', ') };
 }
 function productCell(x) {
   const { name, opt } = productParts(x);
