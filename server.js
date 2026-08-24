@@ -52,6 +52,7 @@ function defaultDb() {
     seeding: [],
     orders: [],
     inventory: [],
+    returns: [],
     cafe24Token: null,
     rev: 0,
     nextId: 1
@@ -64,7 +65,7 @@ function loadDb() {
     // 기본값 보강
     const def = defaultDb();
     db.settings = Object.assign(def.settings, db.settings || {});
-    for (const k of ['seeding', 'orders', 'inventory']) if (!Array.isArray(db[k])) db[k] = [];
+    for (const k of ['seeding', 'orders', 'inventory', 'returns']) if (!Array.isArray(db[k])) db[k] = [];
     if (!db.nextId) db.nextId = 1;
     return db;
   } catch (e) {
@@ -465,6 +466,47 @@ async function epostInsertOrder(db, g, orderNo, testYn) {
       refineZip: xmlVal(xml, 'refineZip'),
       refineAddr: xmlVal(xml, 'refineAddr')
     }
+  };
+}
+
+// 교환/반품 회수 접수 (reqType=2 반품소포): 집배원이 고객 주소로 방문해 물건을 회수, 공급지로 배달
+async function epostInsertReturn(db, ret, orderNo, testYn) {
+  const s = db.settings;
+  const zip = String(ret.zip || '').trim() || extractZip(ret.addr);
+  const addr = cleanAddr(ret.addr);
+  const phone = String(ret.phone || '').replace(/\D/g, '');
+  const isMobile = phone.startsWith('01');
+  const params = {
+    custNo: db.epost.custNo,
+    apprNo: db.epost.apprNo,
+    payType: '1',
+    reqType: '2',              // 반품소포: rec* = 반품인(고객), 도착지 = 공급지(officeSer)
+    officeSer: db.epost.officeSer,
+    microYn: 'N',
+    orderNo,
+    ordCompNm: (s.senderName || '누솔베르').slice(0, 90),
+    recNm: String(ret.name).slice(0, 38),
+    recZip: zip,
+    recAddr1: addr.slice(0, 140),
+    recAddr2: addr.length > 140 ? addr.slice(140, 420) : '.',
+    contCd: s.epostContCd || '025',
+    goodsNm: (ret.product || s.defaultContent || '의류').slice(0, 390),
+    goodsMdl: String(ret.option || '').slice(0, 390),
+    qty: String(Number(ret.qty) || 1),
+    delivMsg: String(ret.reason || '').slice(0, 190),
+    retReason: String(ret.reason || '').slice(0, 38),
+    printYn: 'N'               // 반품 운송장은 집배원이 가지고 방문
+  };
+  const orig = String(ret.origInvoice || '').replace(/\D/g, '');
+  if (orig.length === 13) params.retOrigRegiNo = orig;
+  if (isMobile) params.recMob = phone; else if (phone) params.recTel = phone;
+  if (testYn === 'Y') params.testYn = 'Y';
+  const xml = await epostCall(db, 'api.InsertOrder.jparcel', params);
+  return {
+    regiNo: xmlVal(xml, 'regiNo'),
+    reqNo: xmlVal(xml, 'reqNo'),
+    resNo: xmlVal(xml, 'resNo'),
+    price: xmlVal(xml, 'price')
   };
 }
 
@@ -1190,6 +1232,21 @@ const server = http.createServer(async (req, res) => {
           refreshed++;
         } catch (e) { errors.push(item.name + ': ' + e.message); }
       }
+      // 교환/반품 회수 건 진행상태도 함께 새로고침 (reqType=2)
+      for (const ret of db.returns.filter(x => x.epost && x.epost.orderNo && x.status === '회수중')) {
+        try {
+          const xml = await epostCall(db, 'api.GetResInfo.jparcel', {
+            custNo: db.epost.custNo, reqType: '2',
+            orderNo: ret.epost.orderNo, reqYmd: ret.epost.reqYmd || today().replace(/-/g, '')
+          });
+          const stus = xmlVal(xml, 'treatStusCd');
+          if (stus) ret.epost.stus = stus;
+          const rn = xmlVal(xml, 'regiNo');
+          if (rn && rn !== 'TESTREGINOAPI') ret.invoice = rn;
+          if (stus === '05') ret.status = '취소됨'; // 우체국 쪽에서 취소된 경우
+          refreshed++;
+        } catch (e) { errors.push(ret.name + '(회수): ' + e.message); }
+      }
       saveDb(db);
       return sendJson(res, 200, { ok: true, refreshed, errors: errors.slice(0, 5), db });
     }
@@ -1235,6 +1292,118 @@ const server = http.createServer(async (req, res) => {
         ok: true, db,
         warning: warn.length ? `카페24에는 이미 배송처리로 등록돼 있어요 (${warn.join(', ')}). 카페24 관리자에서 배송상태를 되돌려 주세요.` : null
       });
+    }
+    // ---------- 교환/반품 ----------
+    if (url.pathname === '/api/return/create' && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req)).toString('utf8'));
+      const db = loadDb();
+      if (!String(b.name || '').trim() || !String(b.addr || '').trim()) {
+        return sendJson(res, 200, { error: '이름과 주소는 꼭 적어 주세요.' });
+      }
+      db.returns.push({
+        id: db.nextId++,
+        kind: b.kind === '교환' ? '교환' : '반품',
+        sourceType: b.sourceType || '',
+        name: String(b.name).trim(),
+        phone: String(b.phone || '').trim(),
+        zip: String(b.zip || '').trim(),
+        addr: String(b.addr || '').trim(),
+        product: String(b.product || '').trim(),
+        option: String(b.option || '').trim(),
+        qty: Math.max(1, Number(b.qty) || 1),
+        reason: String(b.reason || '').trim(),
+        origInvoice: String(b.origInvoice || '').trim(),
+        exchangeProduct: String(b.exchangeProduct || '').trim(),
+        status: '대기', invoice: '', regDate: today()
+      });
+      saveDb(db);
+      return sendJson(res, 200, { ok: true, db });
+    }
+    if (url.pathname === '/api/return/pickup' && req.method === 'POST') {
+      // 우체국 반품소포 접수: 집배원이 고객 집으로 방문해 회수
+      const b = JSON.parse((await readBody(req)).toString('utf8'));
+      const db = loadDb();
+      if (!epostConfigured(db) || !db.epost) return sendJson(res, 200, { error: '먼저 설정에서 [우체국 연결]을 해주세요.' });
+      const ret = db.returns.find(x => x.id === b.id);
+      if (!ret) return sendJson(res, 200, { error: '해당 건을 찾지 못했어요.' });
+      if (ret.epost) return sendJson(res, 200, { error: '이미 회수 신청이 되어 있어요.' });
+      const zip = String(ret.zip || '').trim() || extractZip(ret.addr);
+      if (!/^\d{5}$/.test(zip)) return sendJson(res, 200, { error: '고객 주소에서 우편번호(5자리)를 찾지 못했어요. 건을 지우고 우편번호를 넣어 다시 등록해 주세요.' });
+      const orderNo = 'HAMR' + Date.now();
+      try {
+        const r = await epostInsertReturn(db, ret, orderNo, 'N');
+        ret.epost = { orderNo, reqNo: r.reqNo, resNo: r.resNo, reqYmd: today().replace(/-/g, ''), stus: '01', price: r.price };
+        if (r.regiNo && r.regiNo !== 'TESTREGINOAPI') ret.invoice = r.regiNo;
+        ret.status = '회수중';
+        saveDb(db);
+        return sendJson(res, 200, { ok: true, db, regiNo: r.regiNo, price: r.price });
+      } catch (e) {
+        return sendJson(res, 200, { error: '회수 접수 실패: ' + e.message });
+      }
+    }
+    if (url.pathname === '/api/return/cancel' && req.method === 'POST') {
+      // scope: 'pickup'(회수 신청만 취소, 건은 대기로) | 'entry'(건 자체를 취소됨으로) | 'delete'(목록에서 삭제)
+      const b = JSON.parse((await readBody(req)).toString('utf8'));
+      const db = loadDb();
+      const ret = db.returns.find(x => x.id === b.id);
+      if (!ret) return sendJson(res, 200, { error: '해당 건을 찾지 못했어요.' });
+      if (b.scope === 'delete') {
+        if (ret.status === '회수중') return sendJson(res, 200, { error: '회수가 진행 중이에요. 먼저 [회수 취소]를 해주세요.' });
+        db.returns = db.returns.filter(x => x.id !== b.id);
+        saveDb(db);
+        return sendJson(res, 200, { ok: true, db });
+      }
+      if (ret.epost) {
+        if (!epostConfigured(db) || !db.epost) return sendJson(res, 200, { error: '우체국 연결이 필요해요.' });
+        try {
+          await epostCall(db, 'api.GetResCancelCmd.jparcel', {
+            custNo: db.epost.custNo, apprNo: db.epost.apprNo, reqType: '2',
+            reqNo: ret.epost.reqNo, resNo: ret.epost.resNo,
+            regiNo: String(ret.invoice || '').replace(/\D/g, ''),
+            reqYmd: ret.epost.reqYmd, delYn: 'Y'
+          });
+        } catch (e) {
+          return sendJson(res, 200, { error: '우체국 회수 취소 실패: ' + e.message + ' (반품은 운송장이 출력된 뒤에는 취소할 수 없어요. 우체국 1588-1300에 문의해 주세요)' });
+        }
+        delete ret.epost;
+        ret.invoice = '';
+      }
+      ret.status = b.scope === 'pickup' ? '대기' : '취소됨';
+      saveDb(db);
+      return sendJson(res, 200, { ok: true, db });
+    }
+    if (url.pathname === '/api/return/complete' && req.method === 'POST') {
+      // 물건 도착 확인: 재고 복귀 + (교환이면) 재발송 건 자동 생성
+      const b = JSON.parse((await readBody(req)).toString('utf8'));
+      const db = loadDb();
+      const ret = db.returns.find(x => x.id === b.id);
+      if (!ret) return sendJson(res, 200, { error: '해당 건을 찾지 못했어요.' });
+      if (ret.status === '완료') return sendJson(res, 200, { error: '이미 완료된 건이에요.' });
+      const out = { stock: [], resend: null };
+      if (b.restock !== false && ret.product) {
+        const fake = { product: ret.product, color: '', size: '', qty: ret.qty };
+        for (const inv of db.inventory) {
+          if (!stockMatches(inv, fake)) continue;
+          const n = Number(ret.qty) || 1;
+          inv.qty += n;
+          out.stock.push({ name: [inv.name, inv.color, inv.size].filter(Boolean).join(' '), plus: n, left: inv.qty });
+        }
+      }
+      if (ret.kind === '교환') {
+        // 교환 재발송 건은 주문 목록에 넣는다 (시딩 목록은 시트 동기화가 지워버리므로 금지)
+        db.orders.push({
+          id: db.nextId++,
+          name: ret.name, phone: ret.phone, zip: ret.zip, addr: ret.addr,
+          product: ret.exchangeProduct || ret.product, option: ret.option,
+          color: '', size: '', qty: ret.qty, msg: '교환 재발송',
+          exchange: true, status: '대기', invoice: '', regDate: today()
+        });
+        out.resend = { name: ret.name, product: ret.exchangeProduct || ret.product };
+      }
+      ret.status = '완료';
+      ret.doneDate = today();
+      saveDb(db);
+      return sendJson(res, 200, Object.assign({ ok: true, db }, out));
     }
     if (url.pathname === '/api/cafe24/disconnect' && req.method === 'POST') {
       const db = loadDb();

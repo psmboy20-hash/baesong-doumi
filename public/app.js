@@ -100,17 +100,44 @@ function render() {
   else if (PAGE === 'send' || PAGE === 'seeding' || PAGE === 'orders') renderSend();
   else if (PAGE === 'epost') renderEpost();
   else if (PAGE === 'shipping') renderShipping();
+  else if (PAGE === 'returns') renderReturns();
   else if (PAGE === 'inventory') renderInventory();
   else if (PAGE === 'settings') renderSettings();
 }
 
 // ---------- 홈 ----------
+function flowTile(icon, label, n, page, hot) {
+  return `
+    <div class="flow-tile ${n ? (hot ? 'hot' : '') : 'zero'}" onclick="go('${page}')">
+      <div class="f-icon">${icon}</div>
+      <div class="f-num">${n}</div>
+      <div class="f-label">${label}</div>
+    </div>`;
+}
 function renderHome() {
   const total = pendingOf(DB.orders).length + processingOf(DB.orders).length +
                 pendingOf(DB.seeding).length + processingOf(DB.seeding).length;
+  // 진행 흐름 보드: 물건이 지금 어느 단계에 몇 건 있는지
+  const all = [...DB.orders, ...DB.seeding];
+  const toSend = all.filter(x => x.status === '대기' || x.status === '접수중').length;
+  const waitPickup = all.filter(x => x.status === '발송완료' && x.epost && ['00', '01', '02', '04'].includes(x.epost.stus || '01')).length;
+  const sentOut = all.filter(x => x.status === '발송완료').length - waitPickup;
+  const retActive = (DB.returns || []).filter(x => x.status === '대기' || x.status === '회수중').length;
   main().innerHTML = `
     <h1>안녕하세요! 👋</h1>
-    <div class="sub">아래에서 하실 일을 눌러 주세요.</div>
+    <div class="sub">물건이 지금 어디까지 갔는지 한눈에 보여요. 칸을 누르면 그 화면으로 가요.</div>
+    <div class="card">
+      <div class="step-title">📊 지금 물건 흐름</div>
+      <div class="flow-row">
+        ${flowTile('📮', '보낼 준비', toSend, 'send', true)}
+        <div class="flow-arrow">→</div>
+        ${flowTile('📦', '기사님 수거 기다림', waitPickup, 'epost', false)}
+        <div class="flow-arrow">→</div>
+        ${flowTile('🚚', '보냄 (배송중·완료)', sentOut, 'shipping', false)}
+        <div class="flow-arrow" style="color:#e3e8f2">|</div>
+        ${flowTile('🔁', '교환·반품 진행중', retActive, 'returns', true)}
+      </div>
+    </div>
     <div class="home-grid">
       <div class="home-card" onclick="go('send')">
         <div class="icon">📮</div>
@@ -127,6 +154,11 @@ function renderHome() {
         <div class="icon">🚚</div>
         <div class="name">배송 확인</div>
         <div class="desc">보낸 물건이 잘 가고 있는지<br>확인해요</div>
+      </div>
+      <div class="home-card" onclick="go('returns')">
+        <div class="icon">🔁</div>
+        <div class="name">교환/반품</div>
+        <div class="desc">고객 집으로 기사님을 보내<br>물건을 다시 받아와요</div>
       </div>
       <div class="home-card" onclick="go('inventory')">
         <div class="icon">📋</div>
@@ -149,7 +181,7 @@ function renderHome() {
 function renderSend() {
   const notDone = x => x.status !== '발송완료' && x.status !== '취소됨';
   const pending = [
-    ...DB.orders.filter(notDone).map(x => ({ kind: 'orders', icon: '🛒', x })),
+    ...DB.orders.filter(notDone).map(x => ({ kind: 'orders', icon: x.exchange ? '🔁' : '🛒', x })),
     ...DB.seeding.filter(notDone).map(x => ({ kind: 'seeding', icon: '🎁', x }))
   ];
   const selCount = pending.filter(p => p.x._sel !== false).length;
@@ -295,6 +327,152 @@ async function epostCancel(kind, id, name) {
   if (r.warning) setTimeout(() => alert('⚠️ ' + r.warning), 300);
 }
 
+// ---------- 교환/반품 ----------
+const RET_CHIP = { '대기': ['wait', '회수 신청 전'], '회수중': ['processing', '회수 진행중'], '완료': ['done', '완료 ✓'], '취소됨': ['wait', '취소됨 ✕'] };
+function renderReturns() {
+  const items = [...(DB.returns || [])].sort((a, b) => (b.regDate || '').localeCompare(a.regDate || '') || b.id - a.id);
+  const epostOn = SYNC_STATUS && SYNC_STATUS.epost && SYNC_STATUS.epost.connected;
+  const rows = items.map(x => {
+    const [cls, nm] = RET_CHIP[x.status] || ['wait', x.status];
+    const stusNm = x.epost && x.epost.stus ? (EPOST_STUS[x.epost.stus] || [])[1] || '' : '';
+    let btns = '';
+    if (x.status === '대기') {
+      btns = (epostOn ? `<button class="link-btn" onclick="returnPickup(${x.id},'${esc(x.name)}')">🚚 우체국 회수 신청</button>` : '<span class="muted" style="font-size:0.85rem">우체국 연결 필요</span>') +
+        ` <button class="link-btn" style="color:var(--red)" onclick="returnCancel(${x.id},'delete','${esc(x.name)}')">🗑 지우기</button>`;
+    } else if (x.status === '회수중') {
+      btns = `<button class="link-btn" onclick="returnComplete(${x.id},'${esc(x.name)}','${esc(x.kind)}')">📦 물건 도착 확인</button>
+        <button class="link-btn" style="color:var(--red)" onclick="returnCancel(${x.id},'pickup','${esc(x.name)}')">회수 취소</button>`;
+    } else {
+      btns = `<button class="link-btn" onclick="returnCancel(${x.id},'delete','${esc(x.name)}')">🗑 지우기</button>`;
+    }
+    return `
+    <tr>
+      <td style="font-size:1.2rem">${x.kind === '교환' ? '🔄' : '↩️'}</td>
+      <td><b>${esc(x.name)}</b><br><span class="muted" style="font-size:0.85rem">${esc(x.phone)}</span></td>
+      <td style="max-width:240px">${esc(x.product)}${x.option ? ` <b>(${esc(x.option)})</b>` : ''}${x.kind === '교환' && x.exchangeProduct ? `<br><span style="font-size:0.85rem">→ 교환: ${esc(x.exchangeProduct)}</span>` : ''}</td>
+      <td style="max-width:160px">${esc(x.reason || '')}</td>
+      <td>${x.invoice ? trackLink(x.invoice) : '<span class="muted">-</span>'}${stusNm ? `<br><span class="muted" style="font-size:0.85rem">${stusNm}</span>` : ''}</td>
+      <td><span class="chip ${cls}">${nm}</span></td>
+      <td style="white-space:nowrap">${btns}</td>
+    </tr>`;
+  }).join('');
+  main().innerHTML = `
+    <h1>🔁 교환/반품</h1>
+    <div class="sub">고객이 교환·반품을 원하면 여기서 처리해요. 흐름: <b>① 등록</b> → <b>② 우체국 회수 신청</b> (기사님이 고객 집 방문) → <b>③ 물건 도착 확인</b> (재고 복귀 + 교환이면 재발송 준비)</div>
+    <div style="display:flex; gap:0.8rem; flex-wrap:wrap; margin-bottom:1.2rem">
+      <button class="big-btn green" onclick="returnForm()">➕ 교환/반품 등록</button>
+      <button class="big-btn" onclick="epostRefresh()">🔄 회수 진행상태 새로고침</button>
+    </div>
+    <div id="ret-form"></div>
+    <div class="card">
+      ${items.length ? `
+      <div class="table-wrap" style="max-height:65vh">
+        <table>
+          <thead><tr><th>구분</th><th>고객</th><th>제품</th><th>사유</th><th>회수 송장</th><th>상태</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div class="hint" style="margin-top:0.8rem">· <b>회수 신청</b>을 하면 집배원이 운송장을 갖고 고객 집에 방문해요 (별도 출력 필요 없음)<br>· 물건이 도착하면 <b>[📦 물건 도착 확인]</b> — 재고가 다시 채워지고, 교환 건은 [📮 보내기]에 재발송 건이 생겨요<br>· 카페24 주문 건은 카페24 관리자에서도 교환/반품 상태를 처리해 주세요</div>
+      ` : `<div class="hint" style="font-size:1.1rem">진행 중인 교환/반품이 없어요.<br>고객이 교환·반품을 원하면 위의 <b>[➕ 교환/반품 등록]</b>을 누르거나,<br>[🚚 배송 확인]에서 해당 건의 <b>[🔁 교환/반품]</b> 버튼을 누르세요.</div>`}
+    </div>`;
+}
+function returnForm(pre) {
+  pre = pre || {};
+  const box = $('#ret-form');
+  if (!box) return;
+  box.innerHTML = `
+    <div class="card">
+      <div class="step-title">➕ 교환/반품 등록</div>
+      <div class="form-row"><label>구분</label>
+        <div style="display:flex;gap:1.2rem;font-size:1.1rem">
+          <label style="display:flex;align-items:center;gap:0.4rem"><input type="radio" name="ret-kind" value="반품" ${pre.kind === '교환' ? '' : 'checked'} onchange="document.getElementById('ret-ex-row').style.display=this.value==='교환'?'':'none'"> ↩️ 반품 (돈 돌려주기)</label>
+          <label style="display:flex;align-items:center;gap:0.4rem"><input type="radio" name="ret-kind" value="교환" ${pre.kind === '교환' ? 'checked' : ''} onchange="document.getElementById('ret-ex-row').style.display=this.value==='교환'?'':'none'"> 🔄 교환 (다른 걸로 보내기)</label>
+        </div>
+      </div>
+      <div class="form-row"><label>고객 이름</label><input id="ret-name" value="${esc(pre.name || '')}"></div>
+      <div class="form-row"><label>연락처</label><input id="ret-phone" value="${esc(pre.phone || '')}" placeholder="010-0000-0000"></div>
+      <div class="form-row"><label>우편번호 (5자리)</label><input id="ret-zip" value="${esc(pre.zip || '')}" placeholder="예: 07997"></div>
+      <div class="form-row"><label>주소 (물건을 가지러 갈 곳)</label><input id="ret-addr" value="${esc(pre.addr || '')}"></div>
+      <div class="form-row"><label>돌려받을 제품</label><input id="ret-product" value="${esc(pre.product || '')}"></div>
+      <div class="form-row"><label>옵션 (컬러/사이즈)</label><input id="ret-option" value="${esc(pre.option || '')}"></div>
+      <div class="form-row"><label>수량</label><input id="ret-qty" type="number" min="1" value="${Number(pre.qty) || 1}"></div>
+      <div class="form-row"><label>사유</label><input id="ret-reason" placeholder="예: 사이즈가 작아요"></div>
+      <div class="form-row"><label>원래 보낸 송장번호 (있으면)</label><input id="ret-orig" value="${esc(pre.origInvoice || '')}"></div>
+      <div class="form-row" id="ret-ex-row" style="${pre.kind === '교환' ? '' : 'display:none'}"><label>교환으로 새로 보낼 제품 (옵션까지)</label><input id="ret-exchange" placeholder="예: W#03_Elin Pale Blouse (Ivory M)"></div>
+      <button class="big-btn green" onclick="returnSubmit(${pre.sourceType === 'seeding' ? "'seeding'" : pre.sourceType === 'orders' ? "'orders'" : "''"})">✔️ 등록</button>
+      <button class="big-btn gray" onclick="document.getElementById('ret-form').innerHTML=''">취소</button>
+    </div>`;
+  box.scrollIntoView({ behavior: 'smooth' });
+  $('#ret-name').focus();
+}
+async function returnSubmit(sourceType) {
+  const kind = document.querySelector('input[name="ret-kind"]:checked').value;
+  const body = {
+    kind, sourceType,
+    name: $('#ret-name').value, phone: $('#ret-phone').value,
+    zip: $('#ret-zip').value, addr: $('#ret-addr').value,
+    product: $('#ret-product').value, option: $('#ret-option').value,
+    qty: $('#ret-qty').value, reason: $('#ret-reason').value,
+    origInvoice: $('#ret-orig').value,
+    exchangeProduct: kind === '교환' ? $('#ret-exchange').value : ''
+  };
+  busy(true, '등록하는 중…');
+  const r = await api('/api/return/create', { method: 'POST', body: JSON.stringify(body) });
+  busy(false);
+  if (r.error) { toast('⚠️ ' + r.error, 6000); return; }
+  adoptDb(r.db);
+  render();
+  toast(`✔️ ${kind} 건을 등록했어요. 이제 [🚚 우체국 회수 신청]을 누르면 기사님이 고객 집으로 가요.`, 6000);
+}
+// 배송 확인 화면에서 보낸 건을 바로 교환/반품으로 넘기기
+function returnFormFrom(kind, id) {
+  const list = kind === 'seeding' ? DB.seeding : DB.orders;
+  const x = list.find(i => i.id === id);
+  if (!x) return;
+  go('returns');
+  returnForm({
+    sourceType: kind,
+    name: x.name, phone: x.phone, zip: x.zip || '', addr: x.addr,
+    product: x.product, option: x.option || [x.color, x.size].filter(Boolean).join(' '),
+    qty: x.qty || 1, origInvoice: x.invoice || ''
+  });
+}
+async function returnPickup(id, name) {
+  if (!confirm(`${name}님 집으로 우체국 기사님을 보낼까요?\n\n· 집배원이 운송장을 갖고 방문해 물건을 회수해요\n· 회수된 물건은 우리 발송지로 배달돼요\n· 택배 요금은 우리(계약) 앞으로 청구돼요`)) return;
+  busy(true, '우체국에 회수를 신청하는 중…');
+  const r = await api('/api/return/pickup', { method: 'POST', body: JSON.stringify({ id }) });
+  busy(false);
+  if (r.error) { toast('⚠️ ' + r.error, 8000); return; }
+  adoptDb(r.db);
+  render();
+  toast(`✔️ 회수 신청 완료! 송장번호 ${r.regiNo}${r.price ? ' (요금 ' + r.price + '원)' : ''}`, 8000);
+}
+async function returnComplete(id, name, kind) {
+  const extra = kind === '교환' ? '\n· 교환이라서 [📮 보내기]에 재발송 건이 새로 생겨요' : '';
+  if (!confirm(`${name}님의 물건이 도착했나요?\n\n· 재고가 다시 채워져요 (제품 이름이 재고와 맞으면)${extra}`)) return;
+  busy(true, '처리하는 중…');
+  const r = await api('/api/return/complete', { method: 'POST', body: JSON.stringify({ id }) });
+  busy(false);
+  if (r.error) { toast('⚠️ ' + r.error, 6000); return; }
+  adoptDb(r.db);
+  render();
+  let msg = '✔️ 완료했어요.';
+  if (r.stock && r.stock.length) msg += ' 재고 +' + r.stock.map(s => s.name + '(' + s.left + '개)').join(', ');
+  if (r.resend) msg += ` / 재발송 건이 [보내기]에 생겼어요: ${r.resend.product}`;
+  toast(msg, 8000);
+}
+async function returnCancel(id, scope, name) {
+  const q = scope === 'delete' ? `${name}님 건을 목록에서 지울까요?` : `${name}님의 우체국 회수 신청을 취소할까요?\n(건은 남아 있어서 다시 신청할 수 있어요)`;
+  if (!confirm(q)) return;
+  busy(true, '처리하는 중…');
+  const r = await api('/api/return/cancel', { method: 'POST', body: JSON.stringify({ id, scope }) });
+  busy(false);
+  if (r.error) { toast('⚠️ ' + r.error, 8000); return; }
+  adoptDb(r.db);
+  render();
+  toast('✔️ 처리했어요.', 4000);
+}
+
 // ---------- 배송 확인 ----------
 function renderShipping() {
   const all = [
@@ -311,6 +489,7 @@ function renderShipping() {
       <td>${chip(x.status)}</td>
       <td>${x.invoice ? trackLink(x.invoice) : '<span class="muted">아직 없음</span>'}</td>
       <td>${esc(x.sentDate || '')}</td>
+      <td>${x.status === '발송완료' ? `<button class="link-btn" onclick="returnFormFrom('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id})">🔁 교환/반품</button>` : ''}</td>
     </tr>`).join('');
   main().innerHTML = `
     <h1>🚚 배송 확인</h1>
@@ -320,8 +499,8 @@ function renderShipping() {
     <div class="card">
       <div class="table-wrap" style="max-height:70vh">
         <table>
-          <thead><tr><th>구분</th><th>이름</th><th>제품</th><th>상태</th><th>송장번호</th><th>보낸 날</th></tr></thead>
-          <tbody>${rows || '<tr><td colspan="6" class="muted">아직 내역이 없어요.</td></tr>'}</tbody>
+          <thead><tr><th>구분</th><th>이름</th><th>제품</th><th>상태</th><th>송장번호</th><th>보낸 날</th><th></th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="7" class="muted">아직 내역이 없어요.</td></tr>'}</tbody>
         </table>
       </div>
     </div>

@@ -129,6 +129,23 @@ tr.checked-row { background: #f0f8f0; }
 .table-wrap { overflow-x: auto; max-height: 60vh; overflow-y: auto; border: 2px solid var(--line); border-radius: 12px; }
 input[type="checkbox"] { width: 1.6rem; height: 1.6rem; accent-color: var(--green); cursor: pointer; }
 
+/* 홈 진행 흐름 보드 */
+.flow-row { display: flex; align-items: stretch; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.6rem; }
+.flow-tile {
+  flex: 1 1 120px; min-width: 120px; text-align: center; cursor: pointer;
+  background: #fff; border: 3px solid #e3e8f2; border-radius: 16px; padding: 0.9rem 0.6rem;
+  transition: border-color 0.15s;
+}
+.flow-tile:hover { border-color: var(--blue); }
+.flow-tile .f-icon { font-size: 1.8rem; }
+.flow-tile .f-num { font-size: 2.2rem; font-weight: 900; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.flow-tile .f-label { font-size: 1rem; font-weight: 700; color: #5a6478; }
+.flow-tile.hot { border-color: var(--orange); background: #fffaf2; }
+.flow-tile.hot .f-num { color: var(--orange); }
+.flow-tile.zero .f-num { color: #b8c0cf; }
+.flow-arrow { display: flex; align-items: center; font-size: 1.6rem; color: #b8c0cf; font-weight: 900; }
+@media (max-width: 700px) { .flow-arrow { display: none; } }
+
 .chip { display: inline-block; padding: 0.2rem 0.7rem; border-radius: 99px; font-size: 0.9rem; font-weight: 800; white-space: nowrap; }
 .chip.wait { background: #fdeaea; color: var(--red); }
 .chip.processing { background: #fdf3e2; color: var(--orange); }
