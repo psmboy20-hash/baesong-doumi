@@ -170,7 +170,7 @@ function renderSend() {
       <td>${esc(x.phone)}</td>
       <td style="max-width:260px">${esc(x.addr)}</td>
       <td style="max-width:280px">${productCell(x)}</td>
-      <td>${chip(x.status)}</td>
+      <td>${chip(x.status)}<br><button class="link-btn" style="font-size:0.85rem" onclick="manualShip('${kind}',${x.id},'${esc(x.name)}')">따로 보냈어요</button></td>
     </tr>`).join('');
 
   main().innerHTML = `
@@ -581,6 +581,23 @@ async function doExportAll() {
       열린 폴더에 있는 <b>${esc(r.fname)}</b> 파일을 선택하면 됩니다.
     </div>`;
   window.scrollTo(0, document.body.scrollHeight);
+}
+
+// 앱 밖에서 따로 보낸 건 정리 (우체국 창구, 다른 택배 등)
+async function manualShip(kind, id, name) {
+  const inv = prompt(`${name}님 것을 앱 밖에서 이미 보내셨군요!\n\n송장번호가 있으면 입력해 주세요.\n없으면 빈칸 그대로 [확인]을 누르세요.`);
+  if (inv === null) return;
+  busy(true, '발송완료로 정리하는 중…');
+  const r = await api('/api/manual-ship', { method: 'POST', body: JSON.stringify({ type: kind === 'seeding' ? 'seeding' : 'order', id, invoice: (inv || '').trim() }) });
+  busy(false);
+  if (r.error) { toast('⚠️ ' + r.error, 6000); return; }
+  adoptDb(r.db);
+  render();
+  const extras = [];
+  if (r.stock && r.stock.length) extras.push('재고 차감');
+  if (r.cafe24 && r.cafe24.some(c => c.ok)) extras.push('카페24 배송처리');
+  if (r.sheet && r.sheet.ok) extras.push('구글시트 기록');
+  toast(`✔️ ${name}님 건을 발송완료로 정리했어요.` + (extras.length ? ' (자동: ' + extras.join(' · ') + ')' : ''), 7000);
 }
 
 // 우체국 OpenAPI 바로 접수

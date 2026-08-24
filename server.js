@@ -534,6 +534,25 @@ async function syncAll() {
       out.cafe24 = r;
       syncStatus.cafe24 = { configured: true, connected: true, ok: true, error: null, added: r.added };
       changed = true;
+      // 카페24에서 직접 배송처리한 주문의 송장번호를 회수해 채움 (앱 밖 발송 매칭)
+      const codeMap = { '0012': '우체국', '0013': '우체국', '0079': '롯데', '0006': 'CJ대한통운', '0018': '한진', '0004': '로젠' };
+      const needInv = db.orders.filter(o => o.status === '발송완료' && !o.invoice && o.orderNo).slice(0, 5);
+      for (const o of needInv) {
+        try {
+          const token2 = await cafe24EnsureToken(db);
+          const r2 = await cafe24Fetch(db, token2, `/api/v2/admin/orders/${o.orderNo}/shipments`);
+          const sh = r2.json && r2.json.shipments && r2.json.shipments.find(x => x.tracking_no);
+          if (sh) {
+            for (const oo of db.orders) {
+              if (oo.orderNo === o.orderNo && !oo.invoice) {
+                oo.invoice = sh.tracking_no;
+                oo.courier = codeMap[String(sh.shipping_company_code)] || oo.courier || '';
+                oo.cafe24Shipped = true;
+              }
+            }
+          }
+        } catch (e) { /* 다음 동기화 때 재시도 */ }
+      }
     } catch (e) {
       syncStatus.cafe24 = { configured: true, connected: !!db.cafe24Token, ok: false, error: e.message, added: 0 };
     }
@@ -945,7 +964,7 @@ async function postProcessShipped(db, matchedItems) {
   if (cafe24Configured(db) && db.cafe24Token) {
     const done = new Set();
     for (const { type, item } of matchedItems) {
-      if (type !== 'order' || !item.orderNo || item.cafe24Shipped || done.has(item.orderNo)) continue;
+      if (type !== 'order' || !item.orderNo || !item.invoice || item.cafe24Shipped || done.has(item.orderNo)) continue;
       done.add(item.orderNo);
       try {
         await cafe24RegisterShipment(db, item.orderNo, item.invoice);
@@ -1126,6 +1145,23 @@ const server = http.createServer(async (req, res) => {
       if (shippedItems.length) post = await postProcessShipped(db, shippedItems);
       saveDb(db);
       return sendJson(res, 200, { ok: true, results: out, stock: post.stock, cafe24: post.cafe24, sheet: post.sheet, db });
+    }
+    if (url.pathname === '/api/manual-ship' && req.method === 'POST') {
+      // 앱 밖에서(우체국 창구, 다른 택배 등) 따로 보낸 건을 발송완료로 정리
+      const body = JSON.parse((await readBody(req)).toString('utf8'));
+      const db = loadDb();
+      const list = body.type === 'seeding' ? db.seeding : db.orders;
+      const item = list.find(x => x.id === body.id);
+      if (!item) return sendJson(res, 200, { error: '해당 건을 찾지 못했어요.' });
+      if (item.status === '발송완료') return sendJson(res, 200, { error: '이미 발송완료된 건이에요.' });
+      const inv = String(body.invoice || '').trim();
+      item.invoice = inv;
+      item.courier = inv.replace(/\D/g, '').length === 13 ? '우체국' : (inv ? '기타' : '');
+      item.status = '발송완료';
+      item.sentDate = today();
+      const post = await postProcessShipped(db, [{ type: body.type === 'seeding' ? 'seeding' : 'order', item }]);
+      saveDb(db);
+      return sendJson(res, 200, { ok: true, db, stock: post.stock, cafe24: post.cafe24, sheet: post.sheet });
     }
     if (url.pathname === '/api/epost/status' && req.method === 'POST') {
       // 우체국에 접수된 건들의 처리상태(예약/운송장출력/집하 등) 새로고침
