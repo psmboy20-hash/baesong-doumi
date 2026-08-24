@@ -618,7 +618,7 @@ function renderEpost() {
       <button class="big-btn" onclick="epostRefresh()">🔄 진행상태 새로고침</button>
       ${needP.length ? `<button class="big-btn green" onclick="printLabels('${needP.join(',')}')">🖨 안 뽑은 운송장 ${needP.length}장 인쇄</button>` : ''}
       ${printable.length && printable.length !== needP.length ? `<button class="big-btn gray" onclick="printLabels('${printable.join(',')}')">전체 다시 인쇄 (${printable.length}장)</button>` : ''}
-      <button class="big-btn gray" onclick="window.open('https://biz.epost.go.kr','_blank')">우체국 사이트 열기</button>
+      <button class="big-btn gray" onclick="window.open('https://biz.epost.go.kr','_blank')" title="로그인 → 계약소포 → 신청정보등록/운송장출력">🖨 우체국 사이트에서 출력 (오즈뷰어)</button>
     </div>
     <div class="card">
       ${items.length ? `
@@ -628,7 +628,7 @@ function renderEpost() {
           <tbody>${rows}</tbody>
         </table>
       </div>
-      <div class="hint" style="margin-top:0.8rem">· 운송장은 <b>[🖨 운송장 인쇄]</b>를 눌러 라벨기로 바로 뽑아요 (안 되면 [우체국 사이트 열기]에서도 가능)<br>· <b>[취소]</b>는 기사님이 가져가기 전까지 할 수 있어요 — 취소 버튼이 보이면 아직 가능해요. 취소하면 [보내기] 목록으로 돌아갑니다</div>
+      <div class="hint" style="margin-top:0.8rem">· 운송장은 <b>[🖨 운송장 인쇄]</b>로 라벨기에서 바로 뽑는 게 기본이에요<br>· 우체국 사이트(오즈뷰어)로 뽑으려면: <b>[🖨 우체국 사이트에서 출력]</b> → 로그인 → <b>계약소포 → 신청정보등록/운송장출력</b> — 앱에서 접수한 건들이 거기 목록에 그대로 떠 있어요<br>· <b>[취소]</b>는 기사님이 가져가기 전까지 할 수 있어요 — 취소 버튼이 보이면 아직 가능해요. 취소하면 [보내기] 목록으로 돌아갑니다</div>
       ` : `<div class="hint" style="font-size:1.1rem">아직 앱에서 우체국에 접수한 건이 없어요.<br>[📮 보내기]에서 <b>[🚀 우체국 바로 접수]</b>를 누르면 여기에 나타납니다.</div>`}
     </div>
     <div id="epost-page-result"></div>`;
