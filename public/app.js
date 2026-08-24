@@ -91,15 +91,15 @@ function parseOption(x) {
   }
   return { color, size };
 }
-function productCell(x) {
+// 제품 표시를 {name: 제품명(사진 포함), opt: "색상 / 사이즈"} 로 분리
+function productParts(x) {
   const { color, size } = parseOption(x);
   const matches = matchProducts(x.product);
   if (!matches.length) {
-    const opt = [color, size].filter(Boolean).join(' / ');
-    return esc(x.product) + (opt ? ' <b>(' + esc(opt) + ')</b>' : '');
+    return { name: esc(x.product), opt: [color, size].filter(Boolean).join(' / ') };
   }
   const single = matches.length === 1;
-  const lines = matches.map(p => {
+  const name = matches.map(p => {
     const { base, color: c } = splitColor(p.name);
     return `
     <div style="display:flex;align-items:center;gap:0.4rem;margin:0.1rem 0;line-height:1.25">
@@ -107,7 +107,7 @@ function productCell(x) {
       <span><b>${esc(base)}</b>${!single && c ? ` <span class="muted" style="font-size:0.85rem">${esc(c)}</span>` : ''}</span>
     </div>`;
   }).join('');
-  // 옵션 줄은 항상 "색상 / 사이즈" 한 형식 (제품명에서 뺀 색상과 주문 색상이 같으면 한 번만)
+  // 옵션은 항상 "색상 / 사이즈" 한 형식 (제품명에서 뺀 색상과 주문 색상이 같으면 한 번만)
   const parts = [];
   if (single) {
     const nameColor = splitColor(matches[0].name).color;
@@ -117,8 +117,20 @@ function productCell(x) {
     parts.push(color);
   }
   if (size) parts.push(size);
-  const optLine = parts.length ? `<div class="muted" style="font-size:0.85rem;line-height:1.3">옵션: ${esc(parts.join(' / '))}</div>` : '';
-  return lines + optLine;
+  return { name, opt: parts.join(' / ') };
+}
+function productCell(x) {
+  const { name, opt } = productParts(x);
+  return name + (opt ? `<div class="muted" style="font-size:0.85rem;line-height:1.3">옵션: ${esc(opt)}</div>` : '');
+}
+// 송장번호 압축 표시: 조회 링크 + 작은 번호
+function invoiceCell(inv) {
+  if (!inv) return '<span class="muted">아직 없음</span>';
+  const digits = String(inv).replace(/\D/g, '');
+  if (digits.length === 13) {
+    return `<a class="track-link" target="_blank" href="https://service.epost.go.kr/trace.RetrieveDomRigiTraceList.comm?sid1=${digits}">배송조회 🔍</a><div class="muted" style="font-size:0.8rem">${esc(inv)}</div>`;
+  }
+  return `<span class="muted" style="font-size:0.9rem">${esc(inv)}</span>`;
 }
 
 function trackLink(inv) {
@@ -299,16 +311,20 @@ function renderSend() {
         ? '🔴 카페24에서 가져오기 실패: ' + esc(c24.error || '')
         : '🟢 카페24 자동 연동 중';
 
-  const rows = pending.map(({ kind, icon, x }) => `
+  const rows = pending.map(({ kind, icon, x }) => {
+    const pp = productParts(x);
+    return `
     <tr class="${x._sel !== false ? 'checked-row' : ''}">
       <td><input type="checkbox" ${x._sel !== false ? 'checked' : ''} onchange="toggleSel('${kind}',${x.id},this.checked)"></td>
       <td style="white-space:nowrap">${icon} ${x.exchange ? '교환' : kind === 'seeding' ? '시딩' : '주문'}</td>
       <td><b>${esc(x.name)}</b>${x.insta ? `<br><span class="muted" style="font-size:0.85rem">${esc(x.insta)}</span>` : ''}</td>
       <td>${esc(x.phone)}</td>
       <td style="max-width:420px">${esc(x.addr)}</td>
-      <td style="min-width:260px;max-width:520px">${productCell(x)}</td>
+      <td style="min-width:240px;max-width:480px">${pp.name}</td>
+      <td style="white-space:nowrap"><b>${esc(pp.opt) || '<span class="muted">-</span>'}</b></td>
       <td>${chip(x.status)}<br><button class="link-btn" style="font-size:0.85rem" onclick="manualShip('${kind}',${x.id},'${esc(x.name)}')">따로 보냈어요</button></td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 
   main().innerHTML = `
     <h1>📮 보내기</h1>
@@ -330,7 +346,7 @@ function renderSend() {
       <div class="hint">보낼 목록이에요. 빼고 싶은 사람은 체크를 풀면 돼요.</div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>보내기</th><th>구분</th><th>이름</th><th>연락처</th><th>주소</th><th>제품</th><th>상태</th></tr></thead>
+          <thead><tr><th>보내기</th><th>구분</th><th>이름</th><th>연락처</th><th>주소</th><th>제품</th><th>옵션</th><th>상태</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
@@ -377,9 +393,9 @@ function renderEpost() {
       <td style="white-space:nowrap">${icon} ${kind === 'seeding' ? '시딩' : '주문'}</td>
       <td><b>${esc(x.name)}</b></td>
       <td style="max-width:420px">${esc(String(x.product || '').slice(0, 90))}</td>
-      <td>${x.invoice ? trackLink(x.invoice) : '<span class="muted">-</span>'}</td>
+      <td style="max-width:150px">${x.invoice ? invoiceCell(x.invoice) : '<span class="muted">-</span>'}</td>
       <td><span class="chip ${cls}">${nm}</span></td>
-      <td>${esc(x.sentDate || '')}</td>
+      <td style="white-space:nowrap">${esc(x.sentDate || '')}</td>
       <td style="white-space:nowrap">
         ${x.epost.label ? `<button class="link-btn" onclick="printLabels('${kind}:${x.id}')">🖨 인쇄</button>` : `<button class="link-btn" onclick="window.open('https://biz.epost.go.kr','_blank')" title="이 건은 우체국 사이트에서 출력">🖨 사이트에서</button>`}
         ${cancelable ? `<button class="link-btn" style="color:var(--red)" onclick="epostCancel('${kind}',${x.id},'${esc(x.name)}')">취소</button>` : ''}
@@ -399,7 +415,7 @@ function renderEpost() {
       ${items.length ? `
       <div class="table-wrap" style="max-height:65vh">
         <table>
-          <thead><tr><th>구분</th><th>이름</th><th>제품</th><th>송장번호</th><th>진행상태</th><th>접수일</th><th></th></tr></thead>
+          <thead><tr><th>구분</th><th>이름</th><th>제품</th><th>송장번호</th><th>진행상태</th><th>접수일</th><th>인쇄·취소</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
@@ -456,7 +472,7 @@ function renderReturns() {
       <td><b>${esc(x.name)}</b><br><span class="muted" style="font-size:0.85rem">${esc(x.phone)}</span></td>
       <td style="max-width:420px">${esc(x.product)}${x.option ? ` <b>(${esc(x.option)})</b>` : ''}${x.kind === '교환' && x.exchangeProduct ? `<br><span style="font-size:0.85rem">→ 교환: ${esc(x.exchangeProduct)}</span>` : ''}</td>
       <td style="max-width:280px">${esc(x.reason || '')}</td>
-      <td>${x.invoice ? trackLink(x.invoice) : '<span class="muted">-</span>'}${stusNm ? `<br><span class="muted" style="font-size:0.85rem">${stusNm}</span>` : ''}</td>
+      <td style="max-width:150px">${x.invoice ? invoiceCell(x.invoice) : '<span class="muted">-</span>'}${stusNm ? `<span class="muted" style="font-size:0.85rem">${stusNm}</span>` : ''}</td>
       <td><span class="chip ${cls}">${nm}</span></td>
       <td style="white-space:nowrap">${btns}</td>
     </tr>`;
@@ -473,7 +489,7 @@ function renderReturns() {
       ${items.length ? `
       <div class="table-wrap" style="max-height:65vh">
         <table>
-          <thead><tr><th>구분</th><th>고객</th><th>제품</th><th>사유</th><th>회수 송장</th><th>상태</th><th></th></tr></thead>
+          <thead><tr><th>구분</th><th>고객</th><th>제품</th><th>사유</th><th>회수 송장</th><th>상태</th><th>처리</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
@@ -586,16 +602,20 @@ function renderShipping() {
   ].sort((a, b) => (b.sentDate || b.regDate || '').localeCompare(a.sentDate || a.regDate || ''));
   const q = (window._shipQ || '').trim();
   const filtered = q ? all.filter(x => (x.name + x.phone + (x.invoice || '') + (x.product || '')).includes(q)) : all;
-  const rows = filtered.slice(0, 200).map(x => `
+  const rows = filtered.slice(0, 200).map(x => {
+    const pp = productParts(x);
+    return `
     <tr>
       <td style="white-space:nowrap">${x._kind === '주문' ? '🛒' : '🎁'} ${x._kind}</td>
       <td style="white-space:nowrap">${esc(x.sentDate || '')}</td>
       <td><b>${esc(x.name)}</b></td>
-      <td style="min-width:260px;max-width:520px">${productCell(x)}</td>
+      <td style="min-width:240px;max-width:480px">${pp.name}</td>
+      <td style="white-space:nowrap"><b>${esc(pp.opt) || '<span class="muted">-</span>'}</b></td>
       <td>${chip(x.delivered ? '배달완료' : x.status)}</td>
-      <td>${x.invoice ? trackLink(x.invoice) : '<span class="muted">아직 없음</span>'}</td>
+      <td style="max-width:150px">${invoiceCell(x.invoice)}</td>
       <td>${x.status === '발송완료' ? `<button class="link-btn" onclick="returnFormFrom('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id})">🔁 교환/반품</button>` : ''}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
   main().innerHTML = `
     <h1>🚚 배송 확인</h1>
     <div class="sub">보낸 물건들을 확인해요. <b>파란 송장번호를 누르면</b> 지금 어디까지 갔는지 볼 수 있어요.</div>
@@ -604,8 +624,8 @@ function renderShipping() {
     <div class="card">
       <div class="table-wrap" style="max-height:70vh">
         <table>
-          <thead><tr><th>구분</th><th>보낸 날</th><th>이름</th><th>제품</th><th>상태</th><th>송장번호</th><th></th></tr></thead>
-          <tbody>${rows || '<tr><td colspan="7" class="muted">아직 내역이 없어요.</td></tr>'}</tbody>
+          <thead><tr><th>구분</th><th>보낸 날</th><th>이름</th><th>제품</th><th>옵션</th><th>상태</th><th>송장번호</th><th>교환/반품</th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="8" class="muted">아직 내역이 없어요.</td></tr>'}</tbody>
         </table>
       </div>
     </div>
