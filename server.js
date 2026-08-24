@@ -675,6 +675,18 @@ async function checkDelivered(db) {
       }
     } catch (e) { /* 다음 동기화 때 재시도 */ }
   }
+  // 우체국 외 택배사(롯데·CJ 등)나 조회 안 되는 건: 발송 7일 지나면 배달 끝으로 자동 처리
+  const cutoff = new Date(Date.now() - 7 * 86400 * 1000).toISOString().slice(0, 10);
+  for (const arr of [db.orders, db.seeding]) {
+    for (const o of arr) {
+      if (o.status === '발송완료' && !o.delivered && o.sentDate && o.sentDate <= cutoff) {
+        o.delivered = true;
+        o.deliveredDate = o.deliveredDate || today();
+        o.deliveredAuto = true; // 실조회가 아니라 날짜 기준 자동 처리 표시
+        found++;
+      }
+    }
+  }
   return found;
 }
 

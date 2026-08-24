@@ -170,12 +170,25 @@ function productCell(x) {
   const { name, opt } = productParts(x);
   return name + (opt || '');
 }
+// 택배사별 배송조회 주소 (courier 필드나 송장 문자열에서 택배사 판별)
+function trackUrl(inv, courier) {
+  const digits = String(inv || '').replace(/\D/g, '');
+  if (!digits) return '';
+  const c = String(courier || '') + ' ' + String(inv || '');
+  if (c.includes('롯데')) return 'https://www.lotteglogis.com/home/reservation/tracking/linkView?InvNo=' + digits;
+  if (c.includes('CJ') || c.includes('대한통운')) return 'https://trace.cjlogistics.com/next/tracking.html?wblNo=' + digits;
+  if (c.includes('한진')) return 'https://www.hanjin.com/kor/CMS/DeliveryMgr/WaybillResult.do?mCode=MN038&schLang=KR&wblnumText2=' + digits;
+  if (c.includes('로젠')) return 'https://www.ilogen.com/web/personal/trace/' + digits;
+  if (digits.length === 13) return 'https://service.epost.go.kr/trace.RetrieveDomRigiTraceList.comm?sid1=' + digits;
+  return '';
+}
 // 송장번호 압축 표시: 조회 링크 + 작은 번호
-function invoiceCell(inv) {
+function invoiceCell(inv, courier) {
   if (!inv) return '<span class="muted">아직 없음</span>';
-  const digits = String(inv).replace(/\D/g, '');
-  if (digits.length === 13) {
-    return `<a class="track-link" target="_blank" href="https://service.epost.go.kr/trace.RetrieveDomRigiTraceList.comm?sid1=${digits}">배송조회 🔍</a><div class="muted" style="font-size:0.8rem">${esc(inv)}</div>`;
+  const url = trackUrl(inv, courier);
+  if (url) {
+    const label = (courier && !String(inv).includes(courier) ? courier + ' ' : '') + inv;
+    return `<a class="track-link" target="_blank" href="${url}">배송조회 🔍</a><div class="muted" style="font-size:0.8rem">${esc(label)}</div>`;
   }
   return `<span class="muted" style="font-size:0.9rem">${esc(inv)}</span>`;
 }
@@ -746,6 +759,19 @@ async function restoreSend(kind, id, name) {
   render();
   toast(`✔️ ${name}님 건을 [보내기] 목록으로 되돌렸어요.`, 5000);
 }
+// 다른 택배사 등 자동 확인이 안 되는 건을 손으로 [배달 끝] 처리
+async function markDelivered(kind, id, name) {
+  if (!confirm(`${name}님 택배를 [배달 끝]으로 표시할까요?`)) return;
+  const list = kind === 'seeding' ? DB.seeding : DB.orders;
+  const x = list.find(i => i.id === id);
+  if (!x) return;
+  const d = new Date(), p = n => String(n).padStart(2, '0');
+  x.delivered = true;
+  x.deliveredDate = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  await saveDb();
+  render();
+  toast('✔️ 배달 끝으로 표시했어요.');
+}
 // 배송 확인 화면에서 보낸 건을 바로 교환/반품으로 넘기기
 function returnFormFrom(kind, id) {
   const list = kind === 'seeding' ? DB.seeding : DB.orders;
@@ -852,8 +878,10 @@ function renderShipping() {
       <td style="min-width:240px;max-width:480px">${pp.name}</td>
       <td>${pp.opt || '<span class="muted">-</span>'}</td>
       <td>${chip(x.delivered ? '배달완료' : x.status)}</td>
-      <td style="max-width:150px">${invoiceCell(x.invoice)}</td>
-      <td>${x.status === '발송완료' ? `<button class="link-btn" onclick="returnFormFrom('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id})">🔁 교환/반품</button>` : x.status === '취소됨' ? `<button class="link-btn" onclick="restoreSend('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id},'${jsq(x.name)}')">↩️ 다시 보내기</button>` : ''}</td>
+      <td style="max-width:150px">${invoiceCell(x.invoice, x.courier)}</td>
+      <td>${x.status === '발송완료'
+        ? `<button class="link-btn" onclick="returnFormFrom('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id})">🔁 교환/반품</button>${!x.delivered ? `<br><button class="link-btn" style="font-size:0.9rem" onclick="markDelivered('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id},'${jsq(x.name)}')">✔ 배달 끝 처리</button>` : ''}`
+        : x.status === '취소됨' ? `<button class="link-btn" onclick="restoreSend('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id},'${jsq(x.name)}')">↩️ 다시 보내기</button>` : ''}</td>
     </tr>`;
   }).join('');
   main().innerHTML = `
