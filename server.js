@@ -590,6 +590,29 @@ async function fillMissingZips(db) {
   return filled;
 }
 
+// ---------- 설정 자동 배달 ----------
+// 노트북에서 만든 sync-settings.enc(우체국 보안키로 암호화)를 풀어 빈 설정을 채움
+// — 키 같은 값을 공개 저장소에 평문으로 올리지 않고도 다른 PC에 자동 전달
+function applySyncedSettings(db) {
+  try {
+    const f = path.join(__dirname, 'sync-settings.enc');
+    const sec = (db.settings.epostSecKey || '').trim();
+    if (!sec || !fs.existsSync(f)) return false;
+    const pkg = JSON.parse(fs.readFileSync(f, 'utf8'));
+    if (pkg.v !== 1) return false;
+    const crypto = require('crypto');
+    const key = crypto.createHash('sha256').update(sec).digest();
+    const d = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(pkg.iv, 'base64'));
+    d.setAuthTag(Buffer.from(pkg.tag, 'base64'));
+    const vals = JSON.parse(Buffer.concat([d.update(Buffer.from(pkg.data, 'base64')), d.final()]).toString('utf8'));
+    let changed = false;
+    for (const [k, v] of Object.entries(vals)) {
+      if (v && !String(db.settings[k] || '').trim()) { db.settings[k] = v; changed = true; }
+    }
+    return changed;
+  } catch (e) { return false; } // 보안키가 다르거나 파일이 깨졌으면 조용히 무시
+}
+
 // ---------- 자동 백업 (하루 1개, 30일 보관) ----------
 const BACKUP_DIR = path.join(DATA_DIR, 'backup');
 function backupDb() {
@@ -704,6 +727,8 @@ async function syncAll() {
   }
   // 카페24 제품이 재고 목록에 전부 있도록 자동 등록 (새 제품은 수량 0으로)
   if (syncInventoryFromProducts(db) > 0) changed = true;
+  // 노트북에서 보낸 설정(카카오 키 등) 자동 반영
+  if (applySyncedSettings(db)) changed = true;
   // 우편번호 없는 건 자동 채우기 (카카오 키 설정 시)
   if (await fillMissingZips(db) > 0) changed = true;
   backupDb(); // 하루 1개 자동 백업
