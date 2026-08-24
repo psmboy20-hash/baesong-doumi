@@ -605,16 +605,21 @@ function applySyncedSettings(db) {
     const sec = (db.settings.epostSecKey || '').trim();
     if (!sec || !fs.existsSync(f)) return false;
     const pkg = JSON.parse(fs.readFileSync(f, 'utf8'));
-    if (pkg.v !== 1) return false;
+    if (pkg.v !== 1 && pkg.v !== 2) return false;
     const crypto = require('crypto');
     const key = crypto.createHash('sha256').update(sec).digest();
     const d = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(pkg.iv, 'base64'));
     d.setAuthTag(Buffer.from(pkg.tag, 'base64'));
     const vals = JSON.parse(Buffer.concat([d.update(Buffer.from(pkg.data, 'base64')), d.final()]).toString('utf8'));
     let changed = false;
+    // 새 배달분(stamp가 바뀜)이면 값 교체까지 허용, 같은 배달분이면 빈 칸만 채움
+    const fresh = pkg.stamp && db._syncStamp !== pkg.stamp;
     for (const [k, v] of Object.entries(vals)) {
-      if (v && !String(db.settings[k] || '').trim()) { db.settings[k] = v; changed = true; }
+      if (v == null || v === '') continue;
+      const cur = String(db.settings[k] || '').trim();
+      if (fresh ? cur !== String(v) : !cur) { db.settings[k] = v; changed = true; }
     }
+    if (fresh) { db._syncStamp = pkg.stamp; changed = true; }
     return changed;
   } catch (e) { return false; } // 보안키가 다르거나 파일이 깨졌으면 조용히 무시
 }
