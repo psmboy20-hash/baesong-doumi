@@ -234,7 +234,8 @@ function labelC(L, i) { // 오즈뷰어 C형 출력과 같은 배치
   const zip = String(it.zip || lb.refineZip || '').replace(/\D/g, '').slice(0, 5);
   const addr = cleanA(it.addr);
   const vtel = lb.vTelNo ? fmtVtel(lb.vTelNo) : (it.phone || '');
-  const prod = L.products.join(' ') + (it.msg ? ' ※' + esc(it.msg) : '');
+  const prod = L.products.map(p => `<div style="margin-bottom:0.9mm">${p}</div>`).join('') +
+    (it.msg ? `<div style="margin-top:0.5mm"><b>※ ${esc(it.msg)}</b></div>` : '');
   const invCn = a.cn && !/^[ABC]/.test(a.cn);
   return `
   <div class="clabel">
@@ -270,12 +271,10 @@ function labelC(L, i) { // 오즈뷰어 C형 출력과 같은 배치
     <!-- 우측 세로 절취 스트립 -->
     <div class="vstrip">
       <div class="vinner">
-        <svg id="vregi${i}" style="width:34mm;height:8mm;flex-shrink:0"></svg>
-        <b style="font-size:2.8mm">${esc(fmtRegi(it.invoice))}</b>
-        <span style="overflow:hidden">내용품 : ${esc(L.products.join(' ').slice(0, 55))}</span>
-        <b>${esc(maskName(it.name))} 님</b>
-        <span>${esc(vtel)}</span>
-        <span style="overflow:hidden">${esc(addr.slice(0, 22))}</span>
+        <svg id="vregi${i}" style="width:26mm;height:8mm;flex-shrink:0"></svg>
+        <b style="font-size:2.6mm;flex-shrink:0">${esc(fmtRegi(it.invoice))}</b>
+        <b style="font-size:3.1mm;flex:1;overflow:hidden;white-space:nowrap">${L.products.join(' / ')}</b>
+        <b style="flex-shrink:0">${esc(maskName(it.name))} 님</b>
       </div>
     </div>
   </div>`;
@@ -347,14 +346,22 @@ async function main() {
   }
   const seen = new Set();
   LABELS = [];
-  const prodLine = it => {
+  // 제품이 여러 개면 한 줄에 하나씩 (시트 원문의 줄바꿈으로 나눔)
+  const prodLines = it => {
+    const names = String(it.product || '').split(/\n+/).map(s => s.replace(/\s+/g, ' ').trim()).filter(Boolean);
     const opt = [it.color, it.size].filter(Boolean).join(' ') || it.option || '';
-    return esc(String(it.product || '').replace(/\s+/g, ' ').trim().slice(0, 130)) + (opt ? ', ' + esc(opt) : '') + ', 수량:' + (it.qty || 1);
+    const qty = it.qty || 1;
+    if (names.length <= 1) {
+      return [esc((names[0] || '').slice(0, 60)) + (opt ? ', ' + esc(opt) : '') + ', 수량:' + qty];
+    }
+    const out = names.map((n, i) => (i + 1) + '. ' + esc(n.slice(0, 55)));
+    out.push('(' + (opt ? esc(opt) + ' · ' : '') + '수량: 각 ' + qty + ')');
+    return out;
   };
   for (const { it } of items) {
-    if (seen.has(it.epost.orderNo)) { LABELS[LABELS.length - 1].products.push(prodLine(it)); continue; }
+    if (seen.has(it.epost.orderNo)) { LABELS[LABELS.length - 1].products.push(...prodLines(it)); continue; }
     seen.add(it.epost.orderNo);
-    LABELS.push({ it, products: [prodLine(it)] });
+    LABELS.push({ it, products: prodLines(it) });
   }
   if (!LABELS.length) { document.getElementById('sheet').innerHTML = '<p style="padding:2rem">인쇄할 운송장이 없어요. (앱에서 접수한 건만 인쇄할 수 있습니다)</p>'; return; }
   setPaper(localStorage.getItem('labelPaper') || 'post');
