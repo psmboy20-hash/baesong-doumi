@@ -57,7 +57,7 @@ function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 function chip(status) {
-  const map = { '대기': ['wait', '보낼 준비'], '접수중': ['processing', '우체국 접수중'], '발송완료': ['done', '보냄 ✓'], '배달완료': ['done', '배달완료 ✓✓'], '취소됨': ['wait', '취소됨 ✕'] };
+  const map = { '대기': ['wait', '보낼 준비'], '접수중': ['processing', '엑셀 접수 중 ⚠️'], '발송완료': ['done', '보냄 ✓'], '배달완료': ['done', '배달 끝 ✓✓'], '취소됨': ['wait', '취소됨 ✕'] };
   const [cls, label] = map[status] || ['wait', status];
   return `<span class="chip ${cls}">${label}</span>`;
 }
@@ -180,8 +180,9 @@ function trackLink(inv) {
   }
   return esc(inv);
 }
-function go(page) {
+function go(page, sub) {
   PAGE = page;
+  if (page === 'shipping') window._shipFilter = sub || 'all'; // 홈 타일에서 오면 그 단계만 보이게
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('active', b.dataset.page === page));
   render();
   window.scrollTo(0, 0);
@@ -196,11 +197,12 @@ const HELP = {
 ① 목록에서 보낼 사람이 맞는지 체크 확인<br>
 ② <b>[🚀 우체국 바로 접수]</b> — 송장번호가 그 자리에서 나와요. 인쇄는 [📦 우체국 접수]에서<br>
 ③ 우체국 창구 등 <b>앱 밖에서 이미 보낸 건</b>은 그 줄의 <b>[따로 보냈어요]</b>를 누르면 정리돼요<br>
-④ 안 보낼 건은 <b>[안 보내요 ✕]</b> — 마음이 바뀌면 [🚚 배송 확인]에서 <b>[다시 보내기]</b>로 되돌려요`,
+④ 안 보낼 건은 <b>[안 보내요 ✕]</b> — 마음이 바뀌면 [🚚 배송 확인]에서 <b>[다시 보내기]</b>로 되돌려요<br>
+⑤ <b>⚠️ 우편번호 없음</b>이 뜬 줄은 5자리를 넣고 [저장] — 옷 꺼낼 땐 <b>[📋 오늘 쌀 목록 인쇄]</b>가 편해요`,
   epost: `앱으로 우체국에 접수한 택배 목록이에요.<br>
 · <b>[🖨 인쇄]</b> — 라벨기로 운송장을 뽑아 상자에 붙여요<br>
 · <b>[🔄 새로고침]</b> — 예약·수거가 어디까지 됐는지 우체국에 물어봐요<br>
-· <b>[취소]</b> — 기사님이 가져가기 전(예약완료)까지만 가능해요. 취소하면 [보내기]로 돌아갑니다`,
+· <b>[취소]</b> — 기사님이 가져가기 전까지 할 수 있어요. 취소 버튼이 보이면 아직 가능하다는 뜻이에요. 취소하면 [보내기]로 돌아갑니다`,
   shipping: `보낸 물건 전체 기록이에요.<br>
 · <b>파란 송장번호</b>를 누르면 지금 어디쯤 가는지 우체국 페이지가 열려요<br>
 · 배달이 끝나면 <b>배달완료 ✓✓</b>가 자동으로 붙어요 (5분마다 확인)<br>
@@ -213,7 +215,7 @@ const HELP = {
 · 택배를 보내면 <b>자동으로 −</b>, 교환·반품으로 돌아오면 <b>자동으로 +</b> 돼요<br>
 · 새 옷이 들어왔을 때만 ＋를 직접 눌러 채우세요<br>
 · <span style="color:var(--red)"><b>빨간 숫자</b></span>는 2개 이하 — 곧 떨어진다는 뜻이에요!`,
-  settings: `구글시트·카페24·우체국 연결을 관리해요.<br>한 번 연결해두면 계속 유지되니 평소엔 들어올 일이 없어요.<br>무언가 "연결이 필요해요"라고 뜨면 여기서 해당 [연결] 버튼만 다시 누르면 됩니다.`
+  settings: `구글시트·카페24·우체국 연결과 알림·백업을 관리해요.<br>한 번 해두면 계속 유지되니 평소엔 들어올 일이 없어요.<br>무언가 "연결이 필요해요"라고 뜨면 여기서 🔗 로 시작하는 파란 버튼만 다시 누르면 됩니다.<br>장부는 💾 <b>하루 한 번 자동 백업</b>되고, 잘못됐을 땐 여기서 예전 날짜로 되돌릴 수 있어요.`
 };
 function injectHelp() {
   if (document.getElementById('help-box')) return;
@@ -241,9 +243,9 @@ function render() {
 }
 
 // ---------- 홈 ----------
-function flowTile(icon, label, n, page, hot) {
+function flowTile(icon, label, n, page, hot, sub) {
   return `
-    <div class="flow-tile ${n ? (hot ? 'hot' : '') : 'zero'}" onclick="go('${page}')">
+    <div class="flow-tile ${n ? (hot ? 'hot' : '') : 'zero'}" onclick="go('${page}'${sub ? `,'${sub}'` : ''})">
       <div class="f-icon">${icon}</div>
       <div class="f-num">${n}</div>
       <div class="f-label">${label}</div>
@@ -253,9 +255,10 @@ function renderHome() {
   // 진행 흐름 보드: 물건이 지금 어느 단계에 몇 건 있는지
   const all = [...DB.orders, ...DB.seeding];
   const toSend = all.filter(x => x.status === '대기' || x.status === '접수중').length;
-  const waitPickup = all.filter(x => x.status === '발송완료' && !x.delivered && x.epost && ['00', '01', '02', '04'].includes(x.epost.stus || '01')).length;
+  const waitPickup = all.filter(x => x.status === '발송완료' && !x.delivered && x.epost && ['00', '01', '02'].includes(x.epost.stus || '01')).length;
+  const problem = all.filter(x => x.status === '발송완료' && !x.delivered && x.epost && x.epost.stus === '04').length;
   const delivered = all.filter(x => x.status === '발송완료' && x.delivered).length;
-  const moving = all.filter(x => x.status === '발송완료').length - waitPickup - delivered;
+  const moving = all.filter(x => x.status === '발송완료').length - waitPickup - delivered - problem;
   const retActive = (DB.returns || []).filter(x => x.status === '대기' || x.status === '회수중').length;
   // 이번 달 통계: 발송 건수 / 택배비(우체국 접수 요금, 묶음당 1회) / 배달완료
   const _d = new Date();
@@ -282,11 +285,12 @@ function renderHome() {
         <div class="flow-arrow">→</div>
         ${flowTile('📦', '수거 기다림', waitPickup, 'epost', false)}
         <div class="flow-arrow">→</div>
-        ${flowTile('🚚', '가는 중', moving, 'shipping', false)}
+        ${flowTile('🚚', '가는 중', moving, 'shipping', false, 'moving')}
         <div class="flow-arrow">→</div>
-        ${flowTile('✅', '배달완료', delivered, 'shipping', false)}
+        ${flowTile('✅', '배달 끝', delivered, 'shipping', false, 'done')}
         <div class="flow-arrow" style="color:#e3e8f2">|</div>
         ${flowTile('🔁', '교환·반품', retActive, 'returns', true)}
+        ${problem ? `<div class="flow-arrow" style="color:#e3e8f2">|</div>${flowTile('⚠️', '기사님이 못 가져감', problem, 'epost', true)}` : ''}
       </div>
       <div class="hint" style="margin:0.9rem 0 0; font-size:1.05rem">
         📅 <b>이번 달(${Number(ym.slice(5))}월)</b>: 보낸 택배 <b>${sentThis.length}건</b>
@@ -306,7 +310,7 @@ function renderHome() {
       <div class="hint" style="font-size:1.1rem">
         ① 주문·시딩은 <b>5분마다 저절로</b> 들어와요<br>
         ② [📮 보내기]에서 <b>[🚀 우체국 바로 접수]</b> — 송장번호가 즉시 발급돼요<br>
-        ③ <b>[🖨 운송장 바로 인쇄]</b> — 라벨기에서 뽑아 상자에 붙여요<br>
+        ③ [📦 우체국 접수]에서 <b>[🖨 운송장 인쇄]</b> — 라벨기에서 뽑아 상자에 붙여요<br>
         ④ 끝! 카페24 배송처리·재고 차감·구글시트 기록은 저절로 됩니다
       </div>
     </div>`;
@@ -319,8 +323,14 @@ function renderSend() {
     ...DB.orders.filter(notDone).map(x => ({ kind: 'orders', icon: x.exchange ? '🔁' : '🛒', x })),
     ...DB.seeding.filter(notDone).map(x => ({ kind: 'seeding', icon: '🎁', x }))
   ];
+  // 엑셀로 접수 중인 건은 기본 체크 해제 (바로 접수와 겹쳐 두 번 보내는 것 방지)
+  for (const p of pending) if (p.x.status === '접수중' && p.x._sel === undefined) p.x._sel = false;
   const selCount = pending.filter(p => p.x._sel !== false).length;
   const c24 = SYNC_STATUS && SYNC_STATUS.cafe24;
+  const goo = SYNC_STATUS && SYNC_STATUS.google;
+  const gline = !goo || goo.ok == null ? ''
+    : goo.ok ? '🟢 구글시트(시딩) 자동 연동 중'
+    : '🔴 구글시트에서 못 가져왔어요 — 인터넷과 시트 공유 설정을 확인하세요. <button class="link-btn" onclick="go(\'settings\')">설정 보기</button>';
   const c24line = !c24 || !c24.configured
     ? '⚪ 카페24 자동 연동이 아직 설정되지 않았어요. <button class="link-btn" onclick="go(\'settings\')">설정하러 가기</button>'
     : !c24.connected
@@ -337,10 +347,13 @@ function renderSend() {
       <td style="white-space:nowrap">${icon} ${x.exchange ? '교환' : kind === 'seeding' ? '시딩' : '주문'}</td>
       <td><b>${esc(x.name)}</b>${x.insta ? `<br><span class="muted" style="font-size:0.85rem">${esc(x.insta)}</span>` : ''}</td>
       <td>${esc(x.phone)}</td>
-      <td style="max-width:420px">${esc(x.addr)}</td>
+      <td style="max-width:420px">${esc(x.addr)}${!/^\d{5}$/.test(String(x.zip || '').trim()) && !matchZipInAddr(x.addr) ? `
+        <div style="margin-top:0.3rem;white-space:nowrap"><span class="note-badge">⚠️ 우편번호 없음</span>
+        <input id="zip-${kind}-${x.id}" style="width:5.5rem;font-size:0.95rem;padding:0.25rem 0.4rem;border:2px solid var(--line);border-radius:8px" placeholder="5자리" maxlength="5">
+        <button class="link-btn" style="font-size:0.9rem" onclick="fixZip('${kind}',${x.id})">저장</button></div>` : ''}</td>
       <td style="min-width:240px;max-width:480px">${pp.name}</td>
       <td>${pp.opt || '<span class="muted">-</span>'}</td>
-      <td>${chip(x.status)}<br><button class="link-btn" style="font-size:0.85rem" onclick="manualShip('${kind}',${x.id},'${jsq(x.name)}')">따로 보냈어요</button><br><button class="link-btn" style="font-size:0.85rem;color:var(--red)" onclick="cancelSend('${kind}',${x.id},'${jsq(x.name)}')">안 보내요 ✕</button></td>
+      <td>${chip(x.status)}${x.status === '접수중' ? `<br><button class="link-btn" style="font-size:0.85rem" onclick="cancelExcel('${kind}',${x.id},'${jsq(x.name)}')">↩️ 엑셀 접수 취소</button>` : ''}<br><button class="link-btn" style="font-size:0.85rem" onclick="manualShip('${kind}',${x.id},'${jsq(x.name)}')">따로 보냈어요</button><br><button class="link-btn" style="font-size:0.85rem;color:var(--red)" onclick="cancelSend('${kind}',${x.id},'${jsq(x.name)}')">안 보내요 ✕</button></td>
     </tr>`;
   }).join('');
 
@@ -349,7 +362,7 @@ function renderSend() {
     <div class="sub">카페24 주문(🛒)과 시딩 선물(🎁)을 한 번에 우체국으로 보낼 준비를 해요.</div>
     <div class="card">
       <div class="step-title"><span class="step-num">1</span> 새로 들어온 것 확인</div>
-      <div class="hint">주문과 시딩 신청은 <b>5분마다 자동으로</b> 들어와요. 방금 들어온 걸 바로 보고 싶으면 버튼을 누르세요.<br>${c24line}</div>
+      <div class="hint">주문과 시딩 신청은 <b>5분마다 자동으로</b> 들어와요. 방금 들어온 걸 바로 보고 싶으면 버튼을 누르세요.<br>${c24line}${gline ? '<br>' + gline : ''}</div>
       <button class="big-btn" onclick="doSync()">🔄 지금 바로 확인하기</button>
       <details style="margin-top:1rem">
         <summary style="font-size:1rem;cursor:pointer;color:#5a6478">카페24 주문 엑셀 파일로 직접 넣기 <span class="note-badge">⚠️ 자동 연동이 안 될 때만</span></summary>
@@ -371,8 +384,9 @@ function renderSend() {
       <div style="margin-top:1rem; display:flex; gap:0.8rem; flex-wrap:wrap">
         ${SYNC_STATUS && SYNC_STATUS.epost && SYNC_STATUS.epost.connected
           ? `<button class="big-btn green" onclick="doEpostRegister()">🚀 선택한 ${selCount}건 우체국 바로 접수</button>
-             <button class="big-btn gray" onclick="doExportAll()">📄 엑셀로 만들기 (예비)</button>`
+             <button class="big-btn gray" onclick="doExportAll()">📄 엑셀 파일로 만들기 (바로 접수가 안 될 때)</button>`
           : `<button class="big-btn green" onclick="doExportAll()">📄 선택한 ${selCount}건 우체국 엑셀 만들기</button>`}
+        <button class="big-btn orange" onclick="window.open('/pick.html','_blank')">📋 오늘 쌀 목록 인쇄</button>
       </div>
       <div id="export-result"></div>` : `
       <div class="hint" style="font-size:1.1rem">지금은 보낼 것이 없어요. 새 주문·신청이 들어오면 여기에 자동으로 나타나요. 😊</div>`}
@@ -389,6 +403,36 @@ function renderSend() {
   setupDropzones();
 }
 
+// 주소 안에 5자리 우편번호가 이미 들어있는지
+function matchZipInAddr(addr) {
+  const s = String(addr || '');
+  return /\((\d{5})\)/.test(s) || /\(우\)?\s*\d{5}/.test(s) || /우편번호[:\s]*\d{5}/.test(s) || /(^|\s)\d{5}(\s|$|\))/.test(s);
+}
+// 우편번호 없는 건에 손으로 5자리 넣기
+async function fixZip(kind, id) {
+  const inp = document.getElementById(`zip-${kind}-${id}`);
+  const z = (inp ? inp.value : '').replace(/\D/g, '');
+  if (z.length !== 5) { toast('우편번호는 숫자 5자리예요. 예: 07997'); if (inp) inp.focus(); return; }
+  const list = kind === 'seeding' ? DB.seeding : DB.orders;
+  const x = list.find(i => i.id === id);
+  if (!x) return;
+  x.zip = z;
+  await saveDb();
+  render();
+  toast('✔️ 우편번호를 저장했어요. 이제 접수할 수 있어요.');
+}
+// 엑셀로 만든 접수를 취소하고 다시 [보낼 준비]로
+async function cancelExcel(kind, id, name) {
+  if (!confirm(`${name}님 건의 엑셀 접수를 취소하고 [보낼 준비]로 되돌릴까요?\n(우체국 사이트에 이미 파일을 올렸다면 거기서도 지워 주세요)`)) return;
+  const list = kind === 'seeding' ? DB.seeding : DB.orders;
+  const x = list.find(i => i.id === id);
+  if (!x) return;
+  x.status = '대기';
+  await saveDb();
+  render();
+  toast('✔️ [보낼 준비]로 되돌렸어요.');
+}
+
 function toggleSel(kind, id, checked) {
   const list = kind === 'seeding' ? DB.seeding : DB.orders;
   const item = list.find(x => x.id === id);
@@ -397,7 +441,10 @@ function toggleSel(kind, id, checked) {
 }
 
 // ---------- 우체국 접수 현황 ----------
-const EPOST_STUS = { '00': ['processing', '신청준비'], '01': ['processing', '예약완료 ✓'], '02': ['done', '운송장 출력됨'], '03': ['done', '집하완료 (수거됨)'], '04': ['wait', '미집하'], '05': ['wait', '취소됨'] };
+// 우체국 처리코드 → 쉬운 말 (발송용)
+const EPOST_STUS = { '00': ['processing', '접수 준비중'], '01': ['processing', '접수됨 ✓'], '02': ['processing', '접수됨 · 🖨 인쇄하세요'], '03': ['done', '기사님이 가져감 ✓'], '04': ['wait', '⚠️ 아직 못 가져감'], '05': ['wait', '취소됨 ✕'] };
+// 회수(교환/반품)용 — 기사님이 고객 집으로 가는 방향
+const RET_STUS = { '00': ['processing', '회수 준비중'], '01': ['processing', '기사님 방문 예정'], '02': ['processing', '기사님 방문 예정'], '03': ['done', '물건 가져옴 ✓'], '04': ['wait', '⚠️ 아직 못 가져옴'], '05': ['wait', '취소됨 ✕'] };
 function renderEpost() {
   const items = [
     ...DB.orders.filter(x => x.epost).map(x => ({ kind: 'order', icon: '🛒', x })),
@@ -417,18 +464,18 @@ function renderEpost() {
       <td><span class="chip ${cls}">${nm}</span></td>
       <td style="white-space:nowrap">${esc(x.sentDate || '')}</td>
       <td style="white-space:nowrap">
-        ${x.epost.label ? `<button class="link-btn" onclick="printLabels('${kind}:${x.id}')">🖨 인쇄</button>` : `<button class="link-btn" onclick="window.open('https://biz.epost.go.kr','_blank')" title="이 건은 우체국 사이트에서 출력">🖨 사이트에서</button>`}
+        ${x.epost.label ? `<button class="link-btn" onclick="printLabels('${kind}:${x.id}')">🖨 운송장 인쇄</button>` : `<button class="link-btn" onclick="window.open('https://biz.epost.go.kr','_blank')" title="이 건은 우체국 사이트에서 출력">🖨 사이트에서</button>`}
         ${cancelable ? `<button class="link-btn" style="color:var(--red)" onclick="epostCancel('${kind}',${x.id},'${jsq(x.name)}')">취소</button>` : ''}
       </td>
     </tr>`;
   }).join('');
   const printable = items.filter(({ x }) => x.epost.label).map(({ kind, x }) => kind + ':' + x.id);
   main().innerHTML = `
-    <h1>📦 우체국 접수 현황</h1>
+    <h1>📦 우체국 접수</h1>
     <div class="sub">앱에서 우체국에 접수한 택배들이에요. 순서: <b>① 접수</b> → <b>② [🖨 인쇄]로 운송장 출력</b> → <b>③ 상자에 붙이면 기사님이 수거</b></div>
     <div style="display:flex; gap:0.8rem; flex-wrap:wrap; margin-bottom:1.2rem">
       <button class="big-btn" onclick="epostRefresh()">🔄 진행상태 새로고침</button>
-      ${printable.length ? `<button class="big-btn green" onclick="printLabels('${printable.join(',')}')">🖨 운송장 전체 인쇄 (${printable.length}장)</button>` : ''}
+      ${printable.length ? `<button class="big-btn green" onclick="printLabels('${printable.join(',')}')">🖨 운송장 인쇄 (${printable.length}장)</button>` : ''}
       <button class="big-btn gray" onclick="window.open('https://biz.epost.go.kr','_blank')">우체국 사이트 열기</button>
     </div>
     <div class="card">
@@ -439,7 +486,7 @@ function renderEpost() {
           <tbody>${rows}</tbody>
         </table>
       </div>
-      <div class="hint" style="margin-top:0.8rem">· 운송장은 <b>[🖨 인쇄]</b>를 눌러 라벨기로 바로 뽑아요 (안 되면 [우체국 사이트 열기]에서도 가능)<br>· 기사님이 가져가기 전("예약완료")까지는 <b>[취소]</b>가 가능해요 — 취소하면 [보내기] 목록으로 돌아갑니다</div>
+      <div class="hint" style="margin-top:0.8rem">· 운송장은 <b>[🖨 운송장 인쇄]</b>를 눌러 라벨기로 바로 뽑아요 (안 되면 [우체국 사이트 열기]에서도 가능)<br>· <b>[취소]</b>는 기사님이 가져가기 전까지 할 수 있어요 — 취소 버튼이 보이면 아직 가능해요. 취소하면 [보내기] 목록으로 돌아갑니다</div>
       ` : `<div class="hint" style="font-size:1.1rem">아직 앱에서 우체국에 접수한 건이 없어요.<br>[📮 보내기]에서 <b>[🚀 우체국 바로 접수]</b>를 누르면 여기에 나타납니다.</div>`}
     </div>
     <div id="epost-page-result"></div>`;
@@ -475,7 +522,7 @@ function renderReturns() {
   const epostOn = SYNC_STATUS && SYNC_STATUS.epost && SYNC_STATUS.epost.connected;
   const rows = items.map(x => {
     const [cls, nm] = RET_CHIP[x.status] || ['wait', x.status];
-    const stusNm = x.epost && x.epost.stus ? (EPOST_STUS[x.epost.stus] || [])[1] || '' : '';
+    const stusNm = x.epost && x.epost.stus ? (RET_STUS[x.epost.stus] || [])[1] || '' : '';
     let btns = '';
     if (x.status === '대기') {
       btns = (epostOn ? `<button class="link-btn" onclick="returnPickup(${x.id},'${jsq(x.name)}')">🚚 우체국 회수 신청</button>` : '<span class="muted" style="font-size:0.85rem">우체국 연결 필요</span>') +
@@ -483,6 +530,9 @@ function renderReturns() {
     } else if (x.status === '회수중') {
       btns = `<button class="link-btn" onclick="returnComplete(${x.id},'${esc(x.name)}','${jsq(x.kind)}')">📦 물건 도착 확인</button>
         <button class="link-btn" style="color:var(--red)" onclick="returnCancel(${x.id},'pickup','${jsq(x.name)}')">회수 취소</button>`;
+    } else if (x.status === '취소됨') {
+      btns = `<button class="link-btn" onclick="returnReopen(${x.id},'${jsq(x.name)}')">↩️ 다시 신청하기</button>
+        <button class="link-btn" style="color:var(--red)" onclick="returnCancel(${x.id},'delete','${jsq(x.name)}')">🗑 지우기</button>`;
     } else {
       btns = `<button class="link-btn" onclick="returnCancel(${x.id},'delete','${jsq(x.name)}')">🗑 지우기</button>`;
     }
@@ -506,8 +556,10 @@ function renderReturns() {
       <button class="big-btn" onclick="epostRefresh()">🔄 회수 진행상태 새로고침</button>
     </div>
     <div id="ret-form"></div>
+    <div id="ret-result"></div>
     <div class="card">
       ${items.length ? `
+      ${items.some(x => x.status === '대기' || x.status === '회수중') ? '' : '<div class="hint" style="font-size:1.05rem"><b>지금 처리할 일은 없어요.</b> 아래는 지난 기록이에요.</div>'}
       <div class="table-wrap" style="max-height:65vh">
         <table>
           <thead><tr><th>구분</th><th>고객</th><th>제품</th><th>옵션</th><th>사유</th><th>회수 송장</th><th>상태</th><th>처리</th></tr></thead>
@@ -637,7 +689,11 @@ async function returnPickup(id, name) {
   if (r.error) { toast('⚠️ ' + r.error, 8000); return; }
   adoptDb(r.db);
   render();
-  toast(`✔️ 회수 신청 완료! 송장번호 ${r.regiNo}${r.price ? ' (요금 ' + r.price + '원)' : ''}`, 8000);
+  const box = $('#ret-result');
+  if (box) box.innerHTML = `<div class="result-box ok"><div class="big">✅ 회수 신청 완료!</div>
+    ${esc(name)}님 집으로 기사님이 갈 거예요.<br>회수 송장번호: <b>${esc(r.regiNo || '')}</b>${r.price ? ' (요금 ' + esc(r.price) + '원)' : ''}<br>
+    <span style="font-weight:400">진행상황은 이 화면의 [🔄 회수 진행상태 새로고침]으로 확인해요.</span></div>`;
+  toast('✔️ 회수 신청 완료!', 5000);
 }
 async function returnComplete(id, name, kind) {
   const extra = kind === '교환' ? '\n· 교환이라서 [📮 보내기]에 재발송 건이 새로 생겨요' : '';
@@ -654,7 +710,9 @@ async function returnComplete(id, name, kind) {
   toast(msg, 8000);
 }
 async function returnCancel(id, scope, name) {
-  const q = scope === 'delete' ? `${name}님 건을 목록에서 지울까요?` : `${name}님의 우체국 회수 신청을 취소할까요?\n(건은 남아 있어서 다시 신청할 수 있어요)`;
+  const q = scope === 'delete'
+    ? `${name}님의 교환/반품 기록을 완전히 지울까요?\n\n· 한 번 지우면 되돌릴 수 없어요\n· 기록만 남겨두려면 [취소]를 누르세요`
+    : `${name}님의 우체국 회수 신청을 취소할까요?\n(건은 남아 있어서 다시 신청할 수 있어요)`;
   if (!confirm(q)) return;
   busy(true, '처리하는 중…');
   const r = await api('/api/return/cancel', { method: 'POST', body: JSON.stringify({ id, scope }) });
@@ -664,6 +722,18 @@ async function returnCancel(id, scope, name) {
   render();
   toast('✔️ 처리했어요.', 4000);
 }
+// 우체국 쪽에서 취소된(또는 앱에서 취소한) 회수 건을 다시 신청 가능 상태로
+async function returnReopen(id, name) {
+  if (!confirm(`${name}님 건을 다시 [회수 신청 전] 상태로 되돌릴까요?`)) return;
+  const ret = (DB.returns || []).find(x => x.id === id);
+  if (!ret) return;
+  ret.status = '대기';
+  ret.invoice = '';
+  delete ret.epost;
+  await saveDb();
+  render();
+  toast('✔️ 되돌렸어요. [🚚 우체국 회수 신청]을 다시 누르면 됩니다.', 6000);
+}
 
 // ---------- 배송 확인 ----------
 function renderShipping() {
@@ -671,8 +741,29 @@ function renderShipping() {
     ...DB.orders.map(x => Object.assign({ _kind: '주문' }, x)),
     ...DB.seeding.map(x => Object.assign({ _kind: '시딩' }, x))
   ].sort((a, b) => (b.sentDate || b.regDate || '').localeCompare(a.sentDate || a.regDate || ''));
+  // 단계 필터 (홈 타일에서 넘어오면 그 단계만)
+  const f = window._shipFilter || 'all';
+  const byF = x =>
+    f === 'pending' ? (x.status === '대기' || x.status === '접수중') :
+    f === 'moving' ? (x.status === '발송완료' && !x.delivered) :
+    f === 'done' ? (x.status === '발송완료' && !!x.delivered) :
+    f === 'canceled' ? x.status === '취소됨' : true;
+  const cnt = k => all.filter(x => (k === 'all' ? true : (
+    k === 'pending' ? (x.status === '대기' || x.status === '접수중') :
+    k === 'moving' ? (x.status === '발송완료' && !x.delivered) :
+    k === 'done' ? (x.status === '발송완료' && !!x.delivered) : x.status === '취소됨'))).length;
+  const TABS = [['all', '전체'], ['pending', '보낼 준비'], ['moving', '가는 중'], ['done', '배달 끝'], ['canceled', '취소됨']];
+  const tabs = TABS.map(([k, nm]) =>
+    `<button class="big-btn ${f === k ? '' : 'gray'}" style="font-size:1rem;padding:0.5rem 1rem" onclick="go('shipping','${k}')">${nm} ${cnt(k)}</button>`).join('');
+  const base = all.filter(byF);
   const q = (window._shipQ || '').trim();
-  const filtered = q ? all.filter(x => (x.name + x.phone + (x.invoice || '') + (x.product || '')).includes(q)) : all;
+  const filtered = q ? base.filter(x => (x.name + x.phone + (x.invoice || '') + (x.product || '')).includes(q)) : base;
+  const cutNote = filtered.length > 200 ? `<div class="hint" style="margin-top:0.6rem">최근 200건만 보여줘요. 더 찾으려면 위 검색창에 이름이나 송장번호를 넣어 주세요.</div>` : '';
+  const emptyMsg = q
+    ? `'${esc(q)}'(으)로 찾은 것이 없어요. <button class="link-btn" onclick="window._shipQ='';renderShipping()">🔄 전체 보기</button>`
+    : f !== 'all'
+      ? `이 단계에는 지금 아무것도 없어요. <button class="link-btn" onclick="go('shipping','all')">전체 보기</button>`
+      : `아직 보낸 택배가 없어요.<br><button class="link-btn" onclick="go('send')">📮 보내기에서 첫 택배를 접수해 보세요</button>`;
   const rows = filtered.slice(0, 200).map(x => {
     const pp = productParts(x);
     return `
@@ -689,24 +780,19 @@ function renderShipping() {
   }).join('');
   main().innerHTML = `
     <h1>🚚 배송 확인</h1>
-    <div class="sub">보낸 물건들을 확인해요. <b>파란 송장번호를 누르면</b> 지금 어디까지 갔는지 볼 수 있어요.</div>
+    <div class="sub">택배 <b>전체 내역</b>이에요 (보낼 것 · 보낸 것 · 취소한 것 모두). <b>[배송조회 🔍]</b>를 누르면 지금 어디까지 갔는지 볼 수 있어요.</div>
+    <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:1rem">${tabs}</div>
     <input class="search-input" placeholder="🔍 이름이나 송장번호로 찾기" value="${esc(q)}"
       oninput="window._shipQ=this.value; renderShipping(); this.focus(); this.setSelectionRange(this.value.length,this.value.length)">
     <div class="card">
       <div class="table-wrap" style="max-height:70vh">
         <table>
           <thead><tr><th>구분</th><th>보낸 날</th><th>이름</th><th>제품</th><th>옵션</th><th>상태</th><th>송장번호</th><th>교환/반품</th></tr></thead>
-          <tbody>${rows || '<tr><td colspan="8" class="muted">아직 내역이 없어요.</td></tr>'}</tbody>
+          <tbody>${rows || `<tr><td colspan="8" class="muted" style="font-size:1.05rem;padding:1.5rem">${emptyMsg}</td></tr>`}</tbody>
         </table>
       </div>
-    </div>
-    <div class="card">
-      <div class="step-title">📥 송장번호 붙이기</div>
-      <div class="hint">우체국에서 받은 송장 엑셀을 여기에 끌어다 놓아도 돼요.</div>
-      <div class="dropzone" id="dz-invoice" onclick="pickFile('invoice')">📥 여기에 송장 엑셀을 끌어다 놓으세요</div>
-      <div id="invoice-result"></div>
+      ${cutNote}
     </div>`;
-  setupDropzones();
   injectHelp();
 }
 
@@ -741,7 +827,9 @@ function renderInventory() {
       ${DB.products && DB.products.length ? `<button class="big-btn orange" onclick="invImportProducts()">📥 카페24 제품 전부 불러오기</button>` : ''}
     </div>
     <div id="inv-form"></div>
-    <div class="inv-grid">${cards || '<div class="muted" style="font-size:1.1rem">아직 등록된 제품이 없어요. 위의 [새 제품 넣기]를 눌러 주세요.</div>'}</div>`;
+    <div class="inv-grid">${cards || (q
+      ? `<div class="muted" style="font-size:1.1rem">'${esc(q)}'(으)로 찾은 제품이 없어요. <button class="link-btn" onclick="window._invQ='';renderInventory()">🔄 전체 보기</button></div>`
+      : '<div class="muted" style="font-size:1.1rem">아직 등록된 제품이 없어요. 카페24와 연결돼 있으면 자동으로 들어와요. 직접 넣으려면 위의 [새 제품 넣기]를 눌러 주세요.</div>')}</div>`;
   injectHelp();
 }
 
@@ -808,7 +896,7 @@ function renderSettings() {
   const connected = c24 && c24.connected;
   main().innerHTML = `
     <h1>⚙️ 설정</h1>
-    <div class="sub">우체국 엑셀에 들어가는 <b>보내는 분</b> 정보예요. 한 번만 적어두면 돼요.</div>
+    <div class="sub">택배를 보낼 때 쓰는 <b>보내는 분(우리 가게)</b> 정보와 연결 관리예요. 한 번만 해두면 돼요.</div>
     <div class="card">
       <div class="form-row"><label>보내는 분 이름 (가게 이름)</label><input id="set-name" value="${esc(s.senderName)}"></div>
       <div class="form-row"><label>보내는 분 전화번호</label><input id="set-phone" value="${esc(s.senderPhone)}" placeholder="예: 010-1234-5678"></div>
@@ -866,9 +954,54 @@ function renderSettings() {
         구글시트에 스크립트를 한 번 설치해야 해요 — 방법은 프로젝트 폴더의 <b>구글시트-자동기록-설치법.md</b> 참고.
       </div>
       <div class="form-row"><label>웹 앱 주소 (스크립트 배포 후 받은 URL)</label><input id="set-whurl" value="${esc(s.sheetWebhookUrl)}" placeholder="https://script.google.com/macros/s/..../exec"></div>
-      <div class="form-row"><label>비밀 암호 (스크립트에 적은 것과 같게)</label><input id="set-whtoken" value="${esc(s.sheetWebhookToken)}" placeholder="예: nusolvere123"></div>
+      <div class="form-row"><label>비밀 암호 (스크립트에 적은 것과 같게, 비워도 됨)</label><input id="set-whtoken" value="${esc(s.sheetWebhookToken)}" placeholder="비워두면 암호 검사 안 함"></div>
       <button class="big-btn green" onclick="saveSettings()">✔️ 저장</button>
+    </div>
+    <div class="card">
+      <div class="step-title">🔔 알림 ${'Notification' in window && Notification.permission === 'granted' ? '<span class="chip done">켜짐 ✓</span>' : '<span class="chip wait">꺼짐</span>'}</div>
+      <div class="hint">창을 안 보고 있어도 <b>새 주문·교환반품이 오면 컴퓨터 알림</b>으로 알려줘요.<br>그리고 기사님 오시기 <b>1시간 전</b>에 아직 안 보낸 게 있으면 알려드립니다.</div>
+      <div class="form-row"><label>기사님 수거 시각</label><input id="set-deadline" value="${esc(s.pickupDeadline || '16:00')}" placeholder="예: 16:00" style="max-width:140px"></div>
+      <div style="display:flex; gap:0.8rem; flex-wrap:wrap">
+        <button class="big-btn green" onclick="saveSettings()">✔️ 저장</button>
+        ${'Notification' in window && Notification.permission === 'granted' ? '' : '<button class="big-btn" onclick="enableNotify()">🔔 알림 켜기</button>'}
+      </div>
+    </div>
+    <div class="card">
+      <div class="step-title">📮 주소 → 우편번호 자동 변환 <span class="chip ${s.kakaoRestKey ? 'done' : 'wait'}">${s.kakaoRestKey ? '켜짐 ✓' : '꺼짐 (선택)'}</span></div>
+      <div class="hint">시딩 신청에 우편번호가 없으면 접수가 안 돼요. 이걸 켜면 <b>주소만으로 우편번호를 자동으로</b> 찾아줍니다.<br>
+      <a class="track-link" target="_blank" href="https://developers.kakao.com">카카오 개발자 사이트</a>에서 무료로 <b>REST API 키</b>를 받아 붙여넣으세요. (없어도 목록에서 직접 5자리를 넣을 수 있어요)</div>
+      <div class="form-row"><label>카카오 REST API 키</label><input id="set-kakao" value="${esc(s.kakaoRestKey || '')}" placeholder="카카오에서 받은 긴 영문+숫자 키"></div>
+      <button class="big-btn green" onclick="saveSettings()">✔️ 저장</button>
+    </div>
+    <div class="card">
+      <div class="step-title">💾 자동 백업</div>
+      <div class="hint">장부(주문·시딩·재고·기록 전부)를 <b>하루에 한 번 자동으로</b> 복사해 30일치 보관해요.<br>뭔가 크게 잘못됐을 때 예전 날짜로 되돌릴 수 있어요.</div>
+      <div style="display:flex; gap:0.8rem; flex-wrap:wrap; margin-bottom:0.8rem">
+        <button class="big-btn gray" onclick="api('/api/backup/open',{method:'POST'})">📂 백업 폴더 열기</button>
+      </div>
+      <div id="backup-list" class="hint">백업 목록을 불러오는 중…</div>
     </div>`;
+  loadBackups();
+}
+async function loadBackups() {
+  const r = await api('/api/backup/list');
+  const box = document.getElementById('backup-list');
+  if (!box) return;
+  if (r.error || !r.files) { box.textContent = '백업 목록을 못 불러왔어요.'; return; }
+  if (!r.files.length) { box.textContent = '아직 백업이 없어요. 내일부터 자동으로 쌓여요.'; return; }
+  box.innerHTML = '최근 백업: ' + r.files.slice(0, 7).map(f =>
+    `<button class="link-btn" onclick="restoreBackup('${f.file}','${f.date}')">${f.date}</button>`).join(' · ') +
+    `<div class="muted" style="font-size:0.9rem;margin-top:0.4rem">날짜를 누르면 그 시점으로 되돌려요 (총 ${r.files.length}개 보관 중)</div>`;
+}
+async function restoreBackup(file, date) {
+  if (!confirm(`정말 ${date} 시점의 장부로 되돌릴까요?\n\n· 그 이후에 한 모든 작업(접수·재고 변경 등)이 화면에서 사라져요\n· 되돌리기 직전 상태도 백업 폴더에 따로 저장돼요\n· 되돌린 뒤엔 [📦 우체국 접수]에서 [🔄 진행상태 새로고침]을 꼭 눌러 주세요`)) return;
+  busy(true, '되돌리는 중…');
+  const r = await api('/api/backup/restore', { method: 'POST', body: JSON.stringify({ file }) });
+  busy(false);
+  if (r.error) { toast('⚠️ ' + r.error, 7000); return; }
+  adoptDb(r.db);
+  render();
+  toast(`✔️ ${date} 시점으로 되돌렸어요. [📦 우체국 접수]에서 진행상태를 새로고침해 주세요.`, 10000);
 }
 async function saveSettings() {
   const s = DB.settings;
@@ -891,6 +1024,11 @@ async function saveSettings() {
     s.epostApiKey = $('#set-epkey').value.trim();
     s.epostSecKey = $('#set-epsec').value.trim();
     s.epostMemberId = $('#set-epid').value.trim() || 'allincrew';
+  }
+  if ($('#set-kakao')) s.kakaoRestKey = $('#set-kakao').value.trim();
+  if ($('#set-deadline')) {
+    const v = $('#set-deadline').value.trim();
+    if (/^\d{1,2}:\d{2}$/.test(v)) s.pickupDeadline = v;
   }
   await saveDb();
   toast('저장했어요! ✔️');
@@ -923,7 +1061,7 @@ async function cafe24Disconnect() {
 
 // ---------- 동작: 불러오기 / 내보내기 / 업로드 ----------
 async function doSync() {
-  busy(true, '구글시트에서 가져오는 중…');
+  busy(true, '새 주문과 시딩을 가져오는 중…');
   try {
     const r = await api('/api/sync', { method: 'POST' });
     busy(false);
@@ -950,6 +1088,7 @@ async function doExportAll() {
     ...DB.seeding.filter(sendable).map(x => ({ type: 'seeding', id: x.id }))
   ];
   if (!selected.length) { toast('선택된 사람이 없어요.'); return; }
+  if (!confirm(`${selected.length}건짜리 우체국 엑셀 파일을 만들까요?\n\n· 목록이 [엑셀 접수 중]으로 바뀌어요 (잘못 눌렀으면 [↩️ 엑셀 접수 취소]로 되돌려요)\n· 파일 폴더와 우체국 사이트가 자동으로 열려요`)) return;
   busy(true, '우체국 엑셀을 만드는 중…');
   const r = await api('/api/export/epost', { method: 'POST', body: JSON.stringify({ selected }) });
   busy(false);
@@ -969,6 +1108,7 @@ async function doExportAll() {
 
 // 앱 밖에서 따로 보낸 건 정리 (우체국 창구, 다른 택배 등)
 async function manualShip(kind, id, name) {
+  if (!confirm(`${name}님 것을 우체국 창구 등 앱 밖에서 정말 이미 보내셨나요?\n\n· [보냄 ✓]으로 확정돼요 (재고 차감 · 카페24 배송처리 · 시트 기록까지 자동)\n· 한 번 확정하면 되돌리기 어려워요`)) return;
   const inv = prompt(`${name}님 것을 앱 밖에서 이미 보내셨군요!\n\n송장번호가 있으면 입력해 주세요.\n없으면 빈칸 그대로 [확인]을 누르세요.`);
   if (inv === null) return;
   busy(true, '발송완료로 정리하는 중…');
@@ -986,7 +1126,8 @@ async function manualShip(kind, id, name) {
 
 // 우체국 OpenAPI 바로 접수
 async function doEpostRegister() {
-  const sendable = x => x.status !== '발송완료' && x.status !== '취소됨' && x._sel !== false;
+  // '접수중'(엑셀로 이미 접수)은 제외 — 같은 사람에게 두 번 보내는 것 방지
+  const sendable = x => x.status !== '발송완료' && x.status !== '취소됨' && x.status !== '접수중' && x._sel !== false;
   const selected = [
     ...DB.orders.filter(sendable).map(x => ({ type: 'order', id: x.id })),
     ...DB.seeding.filter(sendable).map(x => ({ type: 'seeding', id: x.id }))
@@ -1009,8 +1150,8 @@ async function doEpostRegister() {
     ];
     html += `<div class="result-box ok"><div class="big">✅ 우체국 접수 완료! 송장번호가 나왔어요.</div>` +
       ok.map(x => `${esc(x.name)} → 송장 <b>${esc(x.regiNo)}</b>${x.price ? ' (예상요금 ' + esc(x.price) + '원)' : ''}`).join('<br>') +
-      (printSel.length ? `<div style="margin-top:0.8rem"><button class="big-btn green" onclick="printLabels('${printSel.join(',')}')">🖨 운송장 바로 인쇄</button></div>` : '') +
-      `</div>`;
+      (printSel.length ? `<div style="margin-top:0.8rem"><button class="big-btn green" onclick="printLabels('${printSel.join(',')}')">🖨 운송장 인쇄</button></div>` : '') +
+      `<div class="muted" style="font-size:0.95rem;font-weight:400;margin-top:0.6rem">이 내용은 [📦 우체국 접수] 화면에서 언제든 다시 볼 수 있어요.</div></div>`;
   }
   if (fail.length) {
     html += `<div class="result-box err"><div class="big">⚠️ 접수 못 한 건 ${fail.length}건</div>` +
@@ -1049,8 +1190,9 @@ async function epostTest() {
   busy(false);
   const box = $('#epost-result');
   if (r.error) { if (box) box.innerHTML = `<div class="result-box err">⚠️ ${esc(r.error)}</div>`; return; }
-  if (box) box.innerHTML = `<div class="result-box ok">🧪 테스트 성공! 응답 송장번호: <b>${esc(r.result.regiNo)}</b><br>
-    <span style="font-weight:400">TESTREGINOAPI라고 나오면 정상이에요. 실제 접수는 되지 않았습니다.</span></div>`;
+  if (box) box.innerHTML = r.result && r.result.regiNo === 'TESTREGINOAPI'
+    ? `<div class="result-box ok">🧪 <b>연결이 잘 돼 있어요!</b> (실제 접수는 되지 않았습니다)</div>`
+    : `<div class="result-box warn">🧪 응답이 평소와 달라요: ${esc((r.result && r.result.regiNo) || '없음')}<br><span style="font-weight:400">계속 이러면 [🔗 우체국 연결]을 다시 눌러 주세요.</span></div>`;
 }
 
 function pickFile(which) {
@@ -1126,6 +1268,39 @@ function setupDropzones() {
   }
 }
 
+// ---------- 알림 (새 주문/교환반품 · 출고 마감) ----------
+function notify(title, body) {
+  try {
+    if ('Notification' in window && Notification.permission === 'granted' && document.hidden) {
+      new Notification(title, { body });
+    }
+  } catch (e) { /* 알림 미지원 */ }
+}
+async function enableNotify() {
+  if (!('Notification' in window)) { toast('이 브라우저는 알림을 지원하지 않아요.'); return; }
+  const p = await Notification.requestPermission();
+  toast(p === 'granted'
+    ? '✔️ 알림을 켰어요! 창을 안 보고 있어도 새 주문이 오면 알려드릴게요.'
+    : '알림이 허용되지 않았어요. 주소창 왼쪽 자물쇠 🔒를 눌러 알림을 [허용]으로 바꿔 주세요.', 7000);
+  if (PAGE === 'settings') renderSettings();
+}
+// 출고 마감 1시간 전, 아직 안 보낸 게 있으면 하루 한 번 알림
+function deadlineCheck() {
+  if (!DB || !DB.settings) return;
+  const dl = String(DB.settings.pickupDeadline || '16:00').split(':');
+  const dlMin = Number(dl[0]) * 60 + Number(dl[1] || 0);
+  const now = new Date();
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const pendingN = pendingOf(DB.orders).length + pendingOf(DB.seeding).length;
+  const key = 'dlAlert-' + now.getFullYear() + '-' + (now.getMonth() + 1) + '-' + now.getDate();
+  if (nowMin >= dlMin - 60 && nowMin < dlMin && pendingN > 0 && !localStorage.getItem(key)) {
+    localStorage.setItem(key, '1');
+    const msg = `⏰ 기사님이 ${Number(dl[0])}시에 오세요! 아직 안 보낸 것이 ${pendingN}건 있어요.`;
+    toast(msg, 12000);
+    notify('배송 도우미', msg);
+  }
+}
+
 // ---------- 자동 새로고침 (30초마다 확인) ----------
 async function refreshStatus(force) {
   try {
@@ -1134,12 +1309,22 @@ async function refreshStatus(force) {
     if (r.version) { const v = document.getElementById('ver'); if (v) v.textContent = 'v' + r.version; }
     if (force || (DB && r.rev !== DB.rev)) {
       const before = DB ? pendingOf(DB.seeding).length + pendingOf(DB.orders).length : 0;
+      const retBefore = DB ? (DB.returns || []).filter(x => x.status === '대기').length : 0;
       adoptDb(await api('/api/db'));
       const after = pendingOf(DB.seeding).length + pendingOf(DB.orders).length;
-      // 입력 중인 화면(설정, 재고 추가 폼)은 건드리지 않음
-      const formOpen = PAGE === 'settings' || document.querySelector('#inv-form input');
+      const retAfter = (DB.returns || []).filter(x => x.status === '대기').length;
+      // 입력 중인 화면(설정, 재고 추가 폼)이나 접수 결과가 떠 있을 땐 건드리지 않음 (송장번호·인쇄 버튼 소실 방지)
+      const formOpen = PAGE === 'settings' || document.querySelector('#inv-form input') ||
+        document.querySelector('#export-result .result-box') || document.querySelector('#ret-form input');
       if (!formOpen) render();
-      if (after > before) toast(`🔔 새로 들어온 것이 ${after - before}건 있어요!`, 6000);
+      if (after > before) {
+        toast(`🔔 새로 들어온 것이 ${after - before}건 있어요!`, 6000);
+        notify('배송 도우미', `🔔 새 주문·시딩이 ${after - before}건 들어왔어요!`);
+      }
+      if (retAfter > retBefore) {
+        toast(`🔁 교환/반품 신청이 ${retAfter - retBefore}건 들어왔어요!`, 8000);
+        notify('배송 도우미', `🔁 교환/반품 신청 ${retAfter - retBefore}건 — 확인해 주세요`);
+      }
     }
   } catch (e) { /* 서버 꺼짐 등은 조용히 넘어감 */ }
 }
@@ -1155,5 +1340,7 @@ async function refreshStatus(force) {
   await refreshStatus(false);
   go('home');
   setInterval(() => refreshStatus(false), 30 * 1000);
+  deadlineCheck();
+  setInterval(deadlineCheck, 60 * 1000);
 })();
 

@@ -43,6 +43,8 @@ function defaultDb() {
       epostSecKey: '',
       epostMemberId: 'allincrew',
       epostContCd: '025', // 내용품코드: 의류/패션잡화
+      kakaoRestKey: '',      // 카카오 REST API 키 (주소→우편번호 자동 변환, 선택)
+      pickupDeadline: '16:00', // 기사님 수거 시각 (마감 알림 기준)
       // 우체국 계약고객시스템 > 파일등록 > "주문접수처 양식다운로드"에서 확인한 NUSOLVERE 실제 양식
       epostColumns: [
         '주문번호', '수취인명', '수취인 우편번호', '수취인 주소',
@@ -560,6 +562,47 @@ function syncInventoryFromProducts(db) {
   return added;
 }
 
+// 주소 → 우편번호 자동 변환 (카카오 REST 키가 설정된 경우만)
+async function kakaoZip(db, addr) {
+  const key = (db.settings.kakaoRestKey || '').trim();
+  if (!key) return '';
+  const q = encodeURIComponent(cleanAddr(addr).slice(0, 80));
+  const r = await httpsJson('GET', 'https://dapi.kakao.com/v2/local/search/address.json?query=' + q,
+    { Authorization: 'KakaoAK ' + key }, null);
+  const d = r.json && r.json.documents && r.json.documents[0];
+  return (d && ((d.road_address && d.road_address.zone_no) || (d.address && d.address.zip_code))) || '';
+}
+async function fillMissingZips(db) {
+  if (!(db.settings.kakaoRestKey || '').trim()) return 0;
+  const need = [...db.orders, ...db.seeding].filter(x =>
+    (x.status === '대기' || x.status === '접수중') && x.addr &&
+    !/^\d{5}$/.test(String(x.zip || '').trim()) && !extractZip(x.addr) &&
+    x._zipTried !== today()
+  ).slice(0, 5);
+  let filled = 0;
+  for (const it of need) {
+    try {
+      const z = await kakaoZip(db, it.addr);
+      if (/^\d{5}$/.test(z)) { it.zip = z; filled++; }
+      else it._zipTried = today(); // 오늘은 더 안 물어봄 (내일 재시도)
+    } catch (e) { it._zipTried = today(); }
+  }
+  return filled;
+}
+
+// ---------- 자동 백업 (하루 1개, 30일 보관) ----------
+const BACKUP_DIR = path.join(DATA_DIR, 'backup');
+function backupDb() {
+  try {
+    if (!fs.existsSync(DB_PATH)) return;
+    if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const f = path.join(BACKUP_DIR, 'db-' + today() + '.json');
+    if (!fs.existsSync(f)) fs.copyFileSync(DB_PATH, f);
+    const files = fs.readdirSync(BACKUP_DIR).filter(x => /^db-\d{4}-\d{2}-\d{2}\.json$/.test(x)).sort();
+    while (files.length > 30) fs.unlinkSync(path.join(BACKUP_DIR, files.shift()));
+  } catch (e) { console.error('백업 실패:', e.message); }
+}
+
 // ---------- 자동 동기화 ----------
 const syncStatus = {
   lastRun: null, lastOk: null,
@@ -661,6 +704,9 @@ async function syncAll() {
   }
   // 카페24 제품이 재고 목록에 전부 있도록 자동 등록 (새 제품은 수량 0으로)
   if (syncInventoryFromProducts(db) > 0) changed = true;
+  // 우편번호 없는 건 자동 채우기 (카카오 키 설정 시)
+  if (await fillMissingZips(db) > 0) changed = true;
+  backupDb(); // 하루 1개 자동 백업
   try { if (await checkDelivered(db)) changed = true; } catch (e) { /* 무시 */ }
   if (changed) saveDb(db);
   syncStatus.lastOk = syncStatus.google.ok || syncStatus.cafe24.ok ? new Date().toISOString() : syncStatus.lastOk;
@@ -681,6 +727,7 @@ function parseSeedingSheet(ws) {
     insta: findCol(H, ['인스타그램']),
     phone: findCol(H, ['연락처']),
     addr: findCol(H, ['상세주소', '주소']),
+    zip: findCol(H, ['우편번호']),
     product: findCol(H, ['희망제품', '제품정보']),
     size: findCol(H, ['희망사이즈', '사이즈선택']),
     request: findCol(H, ['기타요청', '전달메세지', '전달메시지']),
@@ -700,6 +747,7 @@ function parseSeedingSheet(ws) {
       insta: String(col.insta >= 0 ? row[col.insta] : '').trim(),
       phone: String(col.phone >= 0 ? row[col.phone] : '').trim(),
       addr: String(col.addr >= 0 ? row[col.addr] : '').trim(),
+      zip: String(col.zip >= 0 ? row[col.zip] : '').replace(/\D/g, '').slice(0, 5),
       product: String(col.product >= 0 ? row[col.product] : '').trim(),
       size: String(col.size >= 0 ? row[col.size] : '').trim(),
       seedType: String(col.type >= 0 ? row[col.type] : '').trim(),
@@ -791,7 +839,7 @@ function mergeSeeding(db, parsed) {
       }
       // 내용 갱신은 아직 안 보낸 건만 — 발송완료 기록을 재신청이 덮어쓰지 않게
       if (ex.status === '대기' || ex.status === '접수중') {
-        for (const f of ['insta', 'addr', 'product', 'size', 'request', 'note']) {
+        for (const f of ['insta', 'addr', 'zip', 'product', 'size', 'request', 'note']) {
           if (p[f] && p[f] !== ex[f]) { ex[f] = p[f]; ch = true; }
         }
       }
@@ -1429,6 +1477,33 @@ const server = http.createServer(async (req, res) => {
         ok: true, db,
         warning: warn.length ? `카페24에는 이미 배송처리로 등록돼 있어요 (${warn.join(', ')}). 카페24 관리자에서 배송상태를 되돌려 주세요.` : null
       });
+    }
+    // ---------- 백업 ----------
+    if (url.pathname === '/api/backup/list' && req.method === 'GET') {
+      backupDb();
+      let files = [];
+      try {
+        files = fs.readdirSync(BACKUP_DIR).filter(x => /^db-\d{4}-\d{2}-\d{2}\.json$/.test(x)).sort().reverse()
+          .map(f => ({ file: f, date: f.slice(3, 13), size: fs.statSync(path.join(BACKUP_DIR, f)).size }));
+      } catch (e) { /* 폴더 없으면 빈 목록 */ }
+      return sendJson(res, 200, { ok: true, files });
+    }
+    if (url.pathname === '/api/backup/restore' && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req)).toString('utf8'));
+      if (!/^db-\d{4}-\d{2}-\d{2}\.json$/.test(String(b.file || ''))) return sendJson(res, 200, { error: '백업 파일 이름이 이상해요.' });
+      const src = path.join(BACKUP_DIR, b.file);
+      if (!fs.existsSync(src)) return sendJson(res, 200, { error: '그 날짜의 백업이 없어요.' });
+      // 되돌리기 직전 상태도 안전하게 보관
+      if (fs.existsSync(DB_PATH)) fs.copyFileSync(DB_PATH, path.join(BACKUP_DIR, 'db-before-restore-' + nowStamp() + '.json'));
+      fs.copyFileSync(src, DB_PATH);
+      const db = loadDb();
+      saveDb(db); // rev를 올려 모든 화면이 새로 받게
+      return sendJson(res, 200, { ok: true, db });
+    }
+    if (url.pathname === '/api/backup/open' && req.method === 'POST') {
+      if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
+      exec('explorer "' + BACKUP_DIR + '"');
+      return sendJson(res, 200, { ok: true });
     }
     // ---------- 교환/반품 ----------
     if (url.pathname === '/api/return/create' && req.method === 'POST') {

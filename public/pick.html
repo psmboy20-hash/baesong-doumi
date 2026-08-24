@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>오늘 쌀 목록</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Malgun Gothic", "맑은 고딕", sans-serif; padding: 24px; color: #1c2333; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  .sub { color: #5a6478; font-size: 13px; margin-bottom: 16px; }
+  h2 { font-size: 16px; margin: 18px 0 8px; border-bottom: 2px solid #d8dee8; padding-bottom: 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { border-bottom: 1px solid #d8dee8; padding: 6px 8px; text-align: left; vertical-align: middle; }
+  th { background: #eef1f7; font-size: 12px; }
+  img { width: 44px; height: 44px; object-fit: cover; border-radius: 6px; vertical-align: middle; }
+  .qty { font-size: 20px; font-weight: 900; text-align: center; width: 70px; }
+  .chk { width: 40px; text-align: center; font-size: 18px; }
+  .opt { font-weight: 700; }
+  .muted { color: #8a93a5; font-size: 12px; }
+  .btn { font-size: 15px; font-weight: 700; padding: 8px 16px; border: none; border-radius: 10px; background: #1a6ee0; color: #fff; cursor: pointer; margin-bottom: 14px; }
+  @media print { .btn { display: none; } body { padding: 0; } }
+</style>
+</head>
+<body>
+<button class="btn" onclick="window.print()">🖨 인쇄하기</button>
+<h1>📋 오늘 쌀 목록</h1>
+<div class="sub" id="meta"></div>
+<div id="out">불러오는 중…</div>
+<script>
+const lettersOnly = s => String(s || '').toLowerCase().replace(/[^a-z가-힣]/g, '');
+function splitColor(name) {
+  const m = String(name || '').match(/^(.*?)\s*\(([^()]+)\)\s*$/);
+  return m ? { base: m[1], color: m[2] } : { base: String(name || ''), color: '' };
+}
+function matchProducts(products, text) {
+  const t = lettersOnly(text);
+  if (!t) return [];
+  const hits = [];
+  for (const p of products) {
+    const stripped = String(p.name).replace(/^[A-Za-z]#?\d+_?/, '');
+    const core = lettersOnly(stripped);
+    if (!core || core.length < 6) continue;
+    if (t.includes(core)) { hits.push({ p, pos: t.indexOf(core), exact: 1 }); continue; }
+    const words = stripped.split(/[^A-Za-z가-힣]+/).map(lettersOnly).filter(w => w.length >= 3);
+    if (words.length >= 2 && words.every(w => t.includes(w))) hits.push({ p, pos: t.indexOf(words[0]), exact: 0 });
+  }
+  hits.sort((a, b) => (b.exact - a.exact) || a.pos - b.pos);
+  const seen = new Set();
+  return hits.filter(h => !seen.has(h.p.no) && seen.add(h.p.no)).map(h => h.p);
+}
+function optOf(x) {
+  let size = String(x.size || '').trim();
+  const raw = String(x.option || '').trim();
+  const ms = raw.match(/사이즈\s*=\s*([^,/]+)/);
+  if (ms && !size) size = ms[1].trim();
+  if (!size && raw && !raw.includes('=')) size = raw;
+  return size;
+}
+(async () => {
+  const db = await (await fetch('/api/db')).json();
+  const items = [];
+  for (const list of [db.orders, db.seeding]) {
+    for (const x of list) if ((x.status === '대기' || x.status === '접수중') && x._sel !== false) items.push(x);
+  }
+  const d = new Date();
+  document.getElementById('meta').textContent =
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} · 보낼 사람 ${items.length}명`;
+  // 제품×옵션별 합산
+  const agg = new Map();
+  for (const x of items) {
+    const size = optOf(x);
+    const matches = matchProducts(db.products || [], x.product);
+    if (matches.length) {
+      for (const p of matches) {
+        const { base, color } = splitColor(p.name);
+        const key = p.no + '|' + size;
+        if (!agg.has(key)) agg.set(key, { img: p.img, name: base, opt: [color, size].filter(Boolean).join(', '), qty: 0 });
+        agg.get(key).qty += Number(x.qty) || 1;
+      }
+    } else {
+      const key = 'raw|' + lettersOnly(x.product) + '|' + size;
+      if (!agg.has(key)) agg.set(key, { img: '', name: String(x.product || '(제품명 없음)'), opt: size, qty: 0 });
+      agg.get(key).qty += Number(x.qty) || 1;
+    }
+  }
+  const rows = [...agg.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const totalQty = rows.reduce((a, r) => a + r.qty, 0);
+  let html = `
+    <h2>① 꺼낼 옷 (제품별 합계 — 총 ${totalQty}개)</h2>
+    <table><thead><tr><th></th><th>사진</th><th>제품</th><th>옵션</th><th style="text-align:center">개수</th></tr></thead><tbody>`;
+  for (const r of rows) {
+    html += `<tr><td class="chk">☐</td><td>${r.img ? `<img src="${r.img}">` : ''}</td><td><b>${r.name}</b></td><td class="opt">${r.opt || '-'}</td><td class="qty">${r.qty}</td></tr>`;
+  }
+  html += `</tbody></table>
+    <h2>② 사람별 확인 (${items.length}명)</h2>
+    <table><thead><tr><th></th><th>이름</th><th>제품</th><th>요청사항</th></tr></thead><tbody>`;
+  for (const x of items) {
+    const size = optOf(x);
+    html += `<tr><td class="chk">☐</td><td><b>${x.name}</b></td><td>${x.product || ''}${size ? ` <b>(${size})</b>` : ''}</td><td class="muted">${x.msg || x.request || ''}</td></tr>`;
+  }
+  html += '</tbody></table>';
+  document.getElementById('out').innerHTML = html;
+  if (new URLSearchParams(location.search).get('print') === '1') setTimeout(() => window.print(), 600);
+})();
+</script>
+</body>
+</html>
