@@ -152,11 +152,12 @@ function processingOf(list) { return list.filter(x => x.status === '접수중');
 
 // ---------- 도움말 말풍선 ----------
 const HELP = {
-  home: `여기는 <b>전체 요약</b> 화면이에요.<br>위의 칸들은 물건이 지금 어느 단계에 몇 건 있는지 보여줘요. 칸이나 아래 카드를 누르면 그 화면으로 이동합니다.<br>아래 통계는 이번 달에 보낸 택배와 택배비 합계예요.`,
+  home: `여기는 <b>전체 요약</b> 화면이에요.<br>칸들은 물건이 지금 어느 단계에 몇 건 있는지 보여줘요. 칸을 누르면 그 화면으로 이동합니다.<br>아래엔 이번 달 통계(보낸 택배·택배비)와 재고 요약이 있어요.`,
   send: `주문(🛒)과 시딩(🎁)은 <b>5분마다 자동으로</b> 들어와요. 직접 입력할 필요 없어요.<br>
 ① 목록에서 보낼 사람이 맞는지 체크 확인<br>
 ② <b>[🚀 우체국 바로 접수]</b> — 송장번호가 그 자리에서 나와요. 인쇄는 [📦 우체국 접수]에서<br>
-③ 우체국 창구 등 <b>앱 밖에서 이미 보낸 건</b>은 그 줄의 <b>[따로 보냈어요]</b>를 누르면 정리돼요`,
+③ 우체국 창구 등 <b>앱 밖에서 이미 보낸 건</b>은 그 줄의 <b>[따로 보냈어요]</b>를 누르면 정리돼요<br>
+④ 안 보낼 건은 <b>[안 보내요 ✕]</b> — 마음이 바뀌면 [🚚 배송 확인]에서 <b>[다시 보내기]</b>로 되돌려요`,
   epost: `앱으로 우체국에 접수한 택배 목록이에요.<br>
 · <b>[🖨 인쇄]</b> — 라벨기로 운송장을 뽑아 상자에 붙여요<br>
 · <b>[🔄 새로고침]</b> — 예약·수거가 어디까지 됐는지 우체국에 물어봐요<br>
@@ -210,8 +211,6 @@ function flowTile(icon, label, n, page, hot) {
     </div>`;
 }
 function renderHome() {
-  const total = pendingOf(DB.orders).length + processingOf(DB.orders).length +
-                pendingOf(DB.seeding).length + processingOf(DB.seeding).length;
   // 진행 흐름 보드: 물건이 지금 어느 단계에 몇 건 있는지
   const all = [...DB.orders, ...DB.seeding];
   const toSend = all.filter(x => x.status === '대기' || x.status === '접수중').length;
@@ -233,6 +232,7 @@ function renderHome() {
   }
   const dlvThis = sentThis.filter(x => x.delivered).length;
   const retThis = (DB.returns || []).filter(x => (x.regDate || '').startsWith(ym) && x.status !== '취소됨').length;
+  const lowStock = DB.inventory.filter(i => i.qty <= 2).length;
   main().innerHTML = `
     <h1>안녕하세요! 👋</h1>
     <div class="sub">물건이 지금 어디까지 갔는지 한눈에 보여요. 칸을 누르면 그 화면으로 가요.</div>
@@ -255,33 +255,12 @@ function renderHome() {
         · 배달완료 <b>${dlvThis}건</b>${retThis ? ` · 교환/반품 <b>${retThis}건</b>` : ''}
       </div>
     </div>
-    <div class="home-grid">
-      <div class="home-card" onclick="go('send')">
-        <div class="icon">📮</div>
-        <div class="name">보내기</div>
-        <div class="desc">주문·시딩을 한 번에<br>우체국으로 보낼 준비를 해요</div>
-        <div class="badge ${total ? '' : 'zero'}">${total ? '보낼 것 ' + total + '건' : '보낼 것 없음'}</div>
+    <div class="card" style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;cursor:pointer" onclick="go('inventory')">
+      <div style="font-size:2rem">📋</div>
+      <div style="flex:1;min-width:200px">
+        <b style="font-size:1.15rem">재고</b> — 전체 <b>${DB.inventory.length}종</b>${lowStock ? ` · <span style="color:var(--red)"><b>2개 이하 ${lowStock}종 ⚠️</b></span>` : ' · 모두 넉넉해요 ✓'}
       </div>
-      <div class="home-card" onclick="go('epost')">
-        <div class="icon">📦</div>
-        <div class="name">우체국 접수</div>
-        <div class="desc">접수된 택배의 진행상황을 보고<br>취소도 할 수 있어요</div>
-      </div>
-      <div class="home-card" onclick="go('shipping')">
-        <div class="icon">🚚</div>
-        <div class="name">배송 확인</div>
-        <div class="desc">보낸 물건이 잘 가고 있는지<br>확인해요</div>
-      </div>
-      <div class="home-card" onclick="go('returns')">
-        <div class="icon">🔁</div>
-        <div class="name">교환/반품</div>
-        <div class="desc">고객 집으로 기사님을 보내<br>물건을 다시 받아와요</div>
-      </div>
-      <div class="home-card" onclick="go('inventory')">
-        <div class="icon">📋</div>
-        <div class="name">재고</div>
-        <div class="desc">남은 옷 개수를<br>적어두고 확인해요</div>
-      </div>
+      <button class="link-btn">보러 가기 →</button>
     </div>
     <div class="card" style="margin-top:1.5rem">
       <div class="step-title">💡 보내는 순서</div>
@@ -322,7 +301,7 @@ function renderSend() {
       <td style="max-width:420px">${esc(x.addr)}</td>
       <td style="min-width:240px;max-width:480px">${pp.name}</td>
       <td>${pp.opt || '<span class="muted">-</span>'}</td>
-      <td>${chip(x.status)}<br><button class="link-btn" style="font-size:0.85rem" onclick="manualShip('${kind}',${x.id},'${esc(x.name)}')">따로 보냈어요</button></td>
+      <td>${chip(x.status)}<br><button class="link-btn" style="font-size:0.85rem" onclick="manualShip('${kind}',${x.id},'${esc(x.name)}')">따로 보냈어요</button><br><button class="link-btn" style="font-size:0.85rem;color:var(--red)" onclick="cancelSend('${kind}',${x.id},'${esc(x.name)}')">안 보내요 ✕</button></td>
     </tr>`;
   }).join('');
 
@@ -576,6 +555,28 @@ function retPick(v) {
   $('#ret-qty').value = x.qty || 1;
   $('#ret-orig').value = x.invoice || '';
 }
+// 발송 전 취소: 보내기 목록에서 빼기 (배송 확인에서 되돌릴 수 있음)
+async function cancelSend(kind, id, name) {
+  if (!confirm(`${name}님 건을 보내지 않기로 할까요?\n\n· 보내기 목록에서 빠져요\n· [🚚 배송 확인]에서 [다시 보내기]로 언제든 되돌릴 수 있어요`)) return;
+  const list = kind === 'seeding' ? DB.seeding : DB.orders;
+  const x = list.find(i => i.id === id);
+  if (!x) return;
+  x.status = '취소됨';
+  x.manualCanceled = true; // 자동 동기화가 되살리지 않게 표시
+  await saveDb();
+  render();
+  toast('✔️ 취소했어요. 마음이 바뀌면 [배송 확인]에서 [다시 보내기]를 누르세요.', 6000);
+}
+async function restoreSend(kind, id, name) {
+  const list = kind === 'seeding' ? DB.seeding : DB.orders;
+  const x = list.find(i => i.id === id);
+  if (!x) return;
+  x.status = '대기';
+  x.manualCanceled = false;
+  await saveDb();
+  render();
+  toast(`✔️ ${name}님 건을 [보내기] 목록으로 되돌렸어요.`, 5000);
+}
 // 배송 확인 화면에서 보낸 건을 바로 교환/반품으로 넘기기
 function returnFormFrom(kind, id) {
   const list = kind === 'seeding' ? DB.seeding : DB.orders;
@@ -644,7 +645,7 @@ function renderShipping() {
       <td>${pp.opt || '<span class="muted">-</span>'}</td>
       <td>${chip(x.delivered ? '배달완료' : x.status)}</td>
       <td style="max-width:150px">${invoiceCell(x.invoice)}</td>
-      <td>${x.status === '발송완료' ? `<button class="link-btn" onclick="returnFormFrom('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id})">🔁 교환/반품</button>` : ''}</td>
+      <td>${x.status === '발송완료' ? `<button class="link-btn" onclick="returnFormFrom('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id})">🔁 교환/반품</button>` : x.status === '취소됨' ? `<button class="link-btn" onclick="restoreSend('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id},'${esc(x.name)}')">↩️ 다시 보내기</button>` : ''}</td>
     </tr>`;
   }).join('');
   main().innerHTML = `

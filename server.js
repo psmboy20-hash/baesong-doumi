@@ -780,8 +780,8 @@ function mergeSeeding(db, parsed) {
     if ((s.status === '대기' || s.status === '접수중') && !liveKeys.has(seedKey(s))) {
       s.status = '취소됨';
       canceled++;
-    } else if (s.status === '취소됨' && liveKeys.has(seedKey(s)) && !s.invoice) {
-      s.status = '대기'; // 행이 다시 생기면 복구
+    } else if (s.status === '취소됨' && liveKeys.has(seedKey(s)) && !s.invoice && !s.manualCanceled) {
+      s.status = '대기'; // 행이 다시 생기면 복구 (앱에서 손으로 취소한 건은 제외)
     }
   }
   return { added, updated, canceled };
@@ -844,8 +844,8 @@ function mergeOrders(db, parsed) {
           if (p[f] != null && String(p[f]) !== '' && String(p[f]) !== String(ex[f] ?? '')) { ex[f] = p[f]; ch = true; }
         }
       }
-      // 취소 철회 복구는 카페24가 다시 정상 주문으로 보내줄 때만 (시트 잔여 행 때문에 되살아나는 것 방지)
-      if (!shipped && ex.status === '취소됨' && src === 'c24') { ex.status = '대기'; ch = true; }
+      // 취소 철회 복구는 카페24가 다시 정상 주문으로 보내줄 때만 (시트 잔여 행/앱에서 손으로 취소한 건은 제외)
+      if (!shipped && ex.status === '취소됨' && src === 'c24' && !ex.manualCanceled) { ex.status = '대기'; ch = true; }
       if (ch) updated++;
     } else {
       const item = Object.assign({}, p, {
