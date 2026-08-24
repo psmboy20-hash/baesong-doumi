@@ -470,7 +470,7 @@ function renderReturns() {
     }
     return `
     <tr>
-      <td style="font-size:1.2rem">${x.kind === '교환' ? '🔄' : '↩️'}</td>
+      <td style="white-space:nowrap">${x.kind === '교환' ? '🔄 교환' : '↩️ 반품'}${x._src === 'c24' ? '<br><span class="note-badge">카페24 신청</span>' : ''}</td>
       <td><b>${esc(x.name)}</b><br><span class="muted" style="font-size:0.85rem">${esc(x.phone)}</span></td>
       <td style="min-width:200px;max-width:420px">${productParts(x).name}${x.kind === '교환' && x.exchangeProduct ? `<div class="muted" style="font-size:0.85rem">→ 교환으로 보낼 것: ${esc(x.exchangeProduct)}</div>` : ''}</td>
       <td>${productParts(x).opt || '<span class="muted">-</span>'}</td>
@@ -482,7 +482,7 @@ function renderReturns() {
   }).join('');
   main().innerHTML = `
     <h1>🔁 교환/반품</h1>
-    <div class="sub">고객이 교환·반품을 원하면 여기서 처리해요. 흐름: <b>① 등록</b> → <b>② 우체국 회수 신청</b> (기사님이 고객 집 방문) → <b>③ 물건 도착 확인</b> (재고 복귀 + 교환이면 재발송 준비)</div>
+    <div class="sub">카페24에서 고객이 교환·반품을 신청하면 <b>여기 자동으로 떠요</b> (5분마다 확인). 직접 등록할 땐 보낸 것 중에서 고르면 돼요.<br>흐름: <b>① 등록/자동감지</b> → <b>② 우체국 회수 신청</b> (기사님이 고객 집 방문) → <b>③ 물건 도착 확인</b> (재고 복귀 + 교환이면 재발송 준비)</div>
     <div style="display:flex; gap:0.8rem; flex-wrap:wrap; margin-bottom:1.2rem">
       <button class="big-btn green" onclick="returnForm()">➕ 교환/반품 등록</button>
       <button class="big-btn" onclick="epostRefresh()">🔄 회수 진행상태 새로고침</button>
@@ -504,9 +504,21 @@ function returnForm(pre) {
   pre = pre || {};
   const box = $('#ret-form');
   if (!box) return;
+  const shipped = [
+    ...DB.orders.filter(x => x.status === '발송완료').map(x => ({ kind: 'orders', x })),
+    ...DB.seeding.filter(x => x.status === '발송완료').map(x => ({ kind: 'seeding', x }))
+  ].sort((a, b) => (b.x.sentDate || '').localeCompare(a.x.sentDate || '')).slice(0, 80);
+  const pickOpts = shipped.map(({ kind, x }) =>
+    `<option value="${kind}:${x.id}">${esc(x.name)} — ${esc(String(x.product || '').slice(0, 40))} (${esc(x.sentDate || '날짜없음')})</option>`).join('');
   box.innerHTML = `
     <div class="card">
       <div class="step-title">➕ 교환/반품 등록</div>
+      <div class="form-row"><label>📦 보낸 것에서 고르기 — 고르면 아래 칸이 저절로 채워져요</label>
+        <select id="ret-pick" onchange="retPick(this.value)">
+          <option value="">(직접 입력할래요)</option>
+          ${pickOpts}
+        </select>
+      </div>
       <div class="form-row"><label>구분</label>
         <div style="display:flex;gap:1.2rem;font-size:1.1rem">
           <label style="display:flex;align-items:center;gap:0.4rem"><input type="radio" name="ret-kind" value="반품" ${pre.kind === '교환' ? '' : 'checked'} onchange="document.getElementById('ret-ex-row').style.display=this.value==='교환'?'':'none'"> ↩️ 반품 (돈 돌려주기)</label>
@@ -547,6 +559,22 @@ async function returnSubmit(sourceType) {
   adoptDb(r.db);
   render();
   toast(`✔️ ${kind} 건을 등록했어요. 이제 [🚚 우체국 회수 신청]을 누르면 기사님이 고객 집으로 가요.`, 6000);
+}
+// 폼의 "보낸 것에서 고르기" 선택 시 칸 자동 채움
+function retPick(v) {
+  if (!v) return;
+  const [kind, id] = v.split(':');
+  const list = kind === 'seeding' ? DB.seeding : DB.orders;
+  const x = list.find(i => i.id === Number(id));
+  if (!x) return;
+  $('#ret-name').value = x.name || '';
+  $('#ret-phone').value = x.phone || '';
+  $('#ret-zip').value = x.zip || '';
+  $('#ret-addr').value = x.addr || '';
+  $('#ret-product').value = x.product || '';
+  $('#ret-option').value = x.option || [x.color, x.size].filter(Boolean).join(' ');
+  $('#ret-qty').value = x.qty || 1;
+  $('#ret-orig').value = x.invoice || '';
 }
 // 배송 확인 화면에서 보낸 건을 바로 교환/반품으로 넘기기
 function returnFormFrom(kind, id) {

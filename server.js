@@ -305,15 +305,6 @@ async function cafe24FetchOrders(db) {
       const msg = rc.shipping_message || '';
       for (const it of (o.items || [])) {
         const st = String(it.order_status || '');
-        if (/^[CRE]/.test(st)) {
-          // 취소/반품/교환: 이미 앱에 들어와 있는 대기 건을 취소 처리하기 위해 표시만 남김
-          parsed.push({
-            orderNo: o.order_id || '', name, phone,
-            product: it.product_name || '', _canceled: true, _src: 'c24'
-          });
-          continue;
-        }
-        if (st === 'N10' || st === 'N00') continue; // 입금 전 제외
         // option_value 예: "색상=Indigo Blue, 사이즈=M"
         let color = '', size = '';
         for (const part of String(it.option_value || '').split(/[,/]/)) {
@@ -324,6 +315,18 @@ async function cafe24FetchOrders(db) {
             else if (k.includes('사이즈') || k.toLowerCase().includes('size')) size = v;
           }
         }
+        if (/^[CRE]/.test(st)) {
+          // 취소(C)/반품(R)/교환(E): 미발송 건은 취소 처리, 발송된 건의 R/E는 교환/반품 목록에 자동 등록
+          parsed.push({
+            orderNo: o.order_id || '', name, phone,
+            zip: String(zip), addr, color, size,
+            option: it.option_value || '', qty: Number(it.quantity) || 1,
+            product: it.product_name || '', _canceled: true, _src: 'c24',
+            _retKind: st[0] === 'R' ? '반품' : st[0] === 'E' ? '교환' : ''
+          });
+          continue;
+        }
+        if (st === 'N10' || st === 'N00') continue; // 입금 전 제외
         const shipped = st === 'N30' || st === 'N40';
         parsed.push({
           orderNo: o.order_id || '',
@@ -795,12 +798,32 @@ function mergeOrders(db, parsed) {
   for (const o of db.orders) if (!fuzzy.has(fuzzyOrderKey(o))) fuzzy.set(fuzzyOrderKey(o), o);
   let added = 0, updated = 0, canceled = 0;
   for (const p of parsed) {
-    // 카페24에서 취소/반품된 주문: 아직 안 보낸 건이면 취소 처리
+    // 카페24에서 취소/반품/교환된 주문: 아직 안 보낸 건이면 취소 처리
     if (p._canceled) {
       const ex = map.get(orderKey(p)) || fuzzy.get(fuzzyOrderKey(p));
       if (ex && (ex.status === '대기' || ex.status === '접수중')) {
         ex.status = '취소됨';
         canceled++;
+      }
+      // 이미 발송된 건의 반품(R)/교환(E) 신청 → 교환/반품 목록에 자동 등록 (한 번만)
+      if (p._retKind && ex && ex.status === '발송완료') {
+        const key = 'c24:' + p.orderNo + '|' + normName(p.product) + '|' + p._retKind;
+        if (!Array.isArray(db.c24RetSeen)) db.c24RetSeen = [];
+        if (!db.c24RetSeen.includes(key)) {
+          db.c24RetSeen.push(key);
+          db.returns.push({
+            id: db.nextId++,
+            kind: p._retKind,
+            sourceType: 'orders', _src: 'c24',
+            name: p.name, phone: p.phone,
+            zip: String(p.zip || ex.zip || ''), addr: p.addr || ex.addr || '',
+            product: p.product, option: [p.color, p.size].filter(Boolean).join(' ') || p.option || '',
+            qty: p.qty || 1,
+            reason: '카페24에서 ' + p._retKind + ' 신청 들어옴',
+            origInvoice: ex.invoice || '', exchangeProduct: '',
+            status: '대기', invoice: '', regDate: today()
+          });
+        }
       }
       continue;
     }
