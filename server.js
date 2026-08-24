@@ -919,6 +919,8 @@ function fuzzyOrderKey(o) {
     String(o.product || '').replace(/\s/g, '').replace(/\(P[0-9A-Z]+\)/g, '').slice(0, 14) + '|' + optKey(o);
 }
 function mergeOrders(db, parsed) {
+  // 카페24 교환(E) 신청이 있는 주문번호: 그 주문의 미발송 품목은 교환 재발송분
+  const exchNos = new Set(parsed.filter(p => p._retKind === '교환' && p.orderNo).map(p => p.orderNo));
   const map = new Map(db.orders.map(o => [orderKey(o), o]));
   // 느슨한 키는 아직 안 보낸 건에만 — 과거 발송완료 건이 재주문을 흡수해 누락시키는 것 방지
   const fuzzy = new Map();
@@ -930,7 +932,8 @@ function mergeOrders(db, parsed) {
     // 카페24에서 취소/반품/교환된 주문: 아직 안 보낸 건이면 취소 처리
     if (p._canceled) {
       const ex = map.get(orderKey(p)) || fuzzy.get(fuzzyOrderKey(p));
-      if (ex && (ex.status === '대기' || ex.status === '접수중')) {
+      // 교환(E)은 이미 보낸 원래 품목 얘기라, 대기 중인 재발송분을 취소하면 안 됨
+      if (ex && (ex.status === '대기' || ex.status === '접수중') && p._retKind !== '교환') {
         ex.status = '취소됨';
         canceled++;
       }
@@ -989,6 +992,12 @@ function mergeOrders(db, parsed) {
       map.set(orderKey(item), item);
       if (!fuzzy.has(fuzzyOrderKey(item))) fuzzy.set(fuzzyOrderKey(item), item);
       added++;
+    }
+  }
+  // 교환 신청이 있는 주문의 미발송 품목 → 🔁 교환 재발송분으로 표시
+  if (exchNos.size) {
+    for (const o of db.orders) {
+      if (exchNos.has(o.orderNo) && (o.status === '대기' || o.status === '접수중') && !o.exchange) o.exchange = true;
     }
   }
   return { added, updated, canceled };
