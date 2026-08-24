@@ -352,7 +352,9 @@ function renderSend() {
   const gline = !goo || goo.ok == null ? ''
     : goo.ok ? '🟢 구글시트(시딩) 자동 연동 중'
     : '🔴 구글시트에서 못 가져왔어요 — 인터넷과 시트 공유 설정을 확인하세요. <button class="link-btn" onclick="go(\'settings\')">설정 보기</button>';
-  const c24line = !c24 || !c24.configured
+  const c24line = window._VIEW
+    ? '🔵 카페24 자동 수집은 매장 컴퓨터가 담당해요 (노트북은 보기 모드 — 시딩·우체국은 실시간)'
+    : !c24 || !c24.configured
     ? '⚪ 카페24 자동 연동이 아직 설정되지 않았어요. <button class="link-btn" onclick="go(\'settings\')">설정하러 가기</button>'
     : !c24.connected
       ? '🟡 카페24 연결이 필요해요. <button class="link-btn" onclick="go(\'settings\')">설정에서 연결하기</button>'
@@ -1412,7 +1414,8 @@ async function refreshStatus(force) {
   try {
     const r = await api('/api/status');
     SYNC_STATUS = r.status;
-    if (r.version) { const v = document.getElementById('ver'); if (v) v.textContent = 'v' + r.version + (r.viewOnly ? ' · 👁 보기 전용' : ''); }
+    window._VIEW = !!r.viewOnly;
+    if (r.version) { const v = document.getElementById('ver'); if (v) v.textContent = 'v' + r.version + (r.viewOnly ? ' · 👁 보기 모드' : ''); }
     if (force || (DB && r.rev !== DB.rev)) {
       const before = DB ? pendingOf(DB.seeding).length + pendingOf(DB.orders).length : 0;
       const retBefore = DB ? (DB.returns || []).filter(x => x.status === '대기').length : 0;

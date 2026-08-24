@@ -692,9 +692,8 @@ async function checkDelivered(db) {
 
 async function syncAll() {
   const db = loadDb();
-  if (VIEW_ONLY) { // 보기 전용: 외부 접속(카페24 토큰 갱신 포함) 전부 건너뜀
-    return { db, out: { seeding: { added: 0, updated: 0 }, orders: { added: 0, updated: 0 }, cafe24: { added: 0, updated: 0 } } };
-  }
+  // 보기 모드(노트북): 구글시트·우체국·우편번호는 실시간 동기화하되,
+  // 카페24만 건너뜀 (두 PC가 동시에 붙으면 토큰이 서로 뺏겨 매장 연결이 풀림)
   syncStatus.lastRun = new Date().toISOString();
   let changed = false;
   const out = { seeding: { added: 0, updated: 0 }, orders: { added: 0, updated: 0 }, cafe24: { added: 0, updated: 0 } };
@@ -708,7 +707,7 @@ async function syncAll() {
   }
   syncStatus.cafe24.configured = cafe24Configured(db);
   syncStatus.cafe24.connected = !!db.cafe24Token;
-  if (cafe24Configured(db) && db.cafe24Token) {
+  if (!VIEW_ONLY && cafe24Configured(db) && db.cafe24Token) {
     try {
       const parsed = await cafe24FetchOrders(db);
       const r = mergeOrders(db, parsed);
@@ -1276,9 +1275,11 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 403, { error: '허용되지 않은 요청이에요.' });
       }
     }
-    // 보기 전용 모드에선 실제 접수/회수/동기화 같은 외부 동작 차단 (실수 방지)
-    if (VIEW_ONLY && req.method === 'POST' && /^\/api\/(epost|return|cafe24|sync|manual-ship|export|upload)/.test(url.pathname)) {
-      return sendJson(res, 200, { error: '지금은 보기 전용 모드예요. 실제 접수·처리는 매장 컴퓨터에서 해주세요.' });
+    // 보기 모드에선 실제 접수/회수 같은 동작 차단 (새로고침·동기화 같은 읽기는 허용)
+    if (VIEW_ONLY && req.method === 'POST' &&
+        /^\/api\/(epost|return|cafe24|manual-ship|export|upload)/.test(url.pathname) &&
+        url.pathname !== '/api/epost/status') {
+      return sendJson(res, 200, { error: '지금은 보기 모드예요. 실제 접수·처리는 매장 컴퓨터에서 해주세요.' });
     }
     if (url.pathname === '/api/db' && req.method === 'GET') {
       return sendJson(res, 200, loadDb());
