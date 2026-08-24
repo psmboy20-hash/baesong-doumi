@@ -148,6 +148,23 @@ input[type="checkbox"] { width: 1.6rem; height: 1.6rem; accent-color: var(--gree
 .flow-arrow { display: flex; align-items: center; font-size: 1.6rem; color: #b8c0cf; font-weight: 900; }
 @media (max-width: 700px) { .flow-arrow { display: none; } }
 
+/* 도움말 말풍선 */
+.help-btn {
+  font-size: 0.85rem; font-weight: 700; padding: 0.25rem 0.7rem; border-radius: 99px;
+  border: 2px solid var(--line); background: #fff; cursor: pointer;
+  vertical-align: middle; margin-left: 0.5rem; font-family: inherit; color: #5a6478;
+}
+.help-btn:hover { border-color: var(--blue); color: var(--blue); }
+.help-box {
+  position: relative; background: #fffbe8; border: 2px solid #e8d48a; border-radius: 14px;
+  padding: 1rem 1.2rem; margin: 0.7rem 0 1rem; font-size: 1.05rem; line-height: 1.7;
+}
+.help-box.hidden { display: none; }
+.help-box::before {
+  content: ''; position: absolute; top: -10px; left: 2rem;
+  border: 10px solid transparent; border-bottom-color: #e8d48a; border-top: 0;
+}
+
 .chip { display: inline-block; padding: 0.2rem 0.7rem; border-radius: 99px; font-size: 0.9rem; font-weight: 800; white-space: nowrap; }
 .chip.wait { background: #fdeaea; color: var(--red); }
 .chip.processing { background: #fdf3e2; color: var(--orange); }

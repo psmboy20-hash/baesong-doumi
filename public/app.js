@@ -44,7 +44,7 @@ function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 function chip(status) {
-  const map = { '대기': ['wait', '보낼 준비'], '접수중': ['processing', '우체국 접수중'], '발송완료': ['done', '보냄 ✓'], '취소됨': ['wait', '취소됨 ✕'] };
+  const map = { '대기': ['wait', '보낼 준비'], '접수중': ['processing', '우체국 접수중'], '발송완료': ['done', '보냄 ✓'], '배달완료': ['done', '배달완료 ✓✓'], '취소됨': ['wait', '취소됨 ✕'] };
   const [cls, label] = map[status] || ['wait', status];
   return `<span class="chip ${cls}">${label}</span>`;
 }
@@ -129,6 +129,43 @@ function go(page) {
 function pendingOf(list) { return list.filter(x => x.status === '대기'); }
 function processingOf(list) { return list.filter(x => x.status === '접수중'); }
 
+// ---------- 도움말 말풍선 ----------
+const HELP = {
+  home: `여기는 <b>전체 요약</b> 화면이에요.<br>위의 칸들은 물건이 지금 어느 단계에 몇 건 있는지 보여줘요. 칸이나 아래 카드를 누르면 그 화면으로 이동합니다.<br>아래 통계는 이번 달에 보낸 택배와 택배비 합계예요.`,
+  send: `주문(🛒)과 시딩(🎁)은 <b>5분마다 자동으로</b> 들어와요. 직접 입력할 필요 없어요.<br>
+① 목록에서 보낼 사람이 맞는지 체크 확인<br>
+② <b>[🚀 우체국 바로 접수]</b> — 송장번호가 그 자리에서 나와요. 인쇄는 [📦 우체국 접수]에서<br>
+③ 우체국 창구 등 <b>앱 밖에서 이미 보낸 건</b>은 그 줄의 <b>[따로 보냈어요]</b>를 누르면 정리돼요`,
+  epost: `앱으로 우체국에 접수한 택배 목록이에요.<br>
+· <b>[🖨 인쇄]</b> — 라벨기로 운송장을 뽑아 상자에 붙여요<br>
+· <b>[🔄 새로고침]</b> — 예약·수거가 어디까지 됐는지 우체국에 물어봐요<br>
+· <b>[취소]</b> — 기사님이 가져가기 전(예약완료)까지만 가능해요. 취소하면 [보내기]로 돌아갑니다`,
+  shipping: `보낸 물건 전체 기록이에요.<br>
+· <b>파란 송장번호</b>를 누르면 지금 어디쯤 가는지 우체국 페이지가 열려요<br>
+· 배달이 끝나면 <b>배달완료 ✓✓</b>가 자동으로 붙어요 (5분마다 확인)<br>
+· 고객이 교환·반품을 원하면 그 줄의 <b>[🔁 교환/반품]</b>을 누르세요 — 정보가 자동으로 채워져요`,
+  returns: `교환·반품은 3단계예요.<br>
+① <b>등록</b> — [🚚 배송 확인]에서 [🔁]를 누르면 자동으로 채워져요<br>
+② <b>[🚚 우체국 회수 신청]</b> — 기사님이 운송장을 갖고 <b>고객 집으로 가서</b> 물건을 받아와요<br>
+③ 물건이 도착하면 <b>[📦 물건 도착 확인]</b> — 재고가 다시 채워지고, 교환이면 [보내기]에 재발송 건이 생겨요`,
+  inventory: `남은 옷 개수예요.<br>
+· 택배를 보내면 <b>자동으로 −</b>, 교환·반품으로 돌아오면 <b>자동으로 +</b> 돼요<br>
+· 새 옷이 들어왔을 때만 ＋를 직접 눌러 채우세요<br>
+· <span style="color:var(--red)"><b>빨간 숫자</b></span>는 2개 이하 — 곧 떨어진다는 뜻이에요!`,
+  settings: `구글시트·카페24·우체국 연결을 관리해요.<br>한 번 연결해두면 계속 유지되니 평소엔 들어올 일이 없어요.<br>무언가 "연결이 필요해요"라고 뜨면 여기서 해당 [연결] 버튼만 다시 누르면 됩니다.`
+};
+function injectHelp() {
+  if (document.getElementById('help-box')) return;
+  const h1 = document.querySelector('#main h1');
+  if (!h1 || !HELP[PAGE]) return;
+  h1.insertAdjacentHTML('beforeend', ` <button class="help-btn" onclick="toggleHelp()">❓ 도움말</button>`);
+  h1.insertAdjacentHTML('afterend', `<div id="help-box" class="help-box hidden">${HELP[PAGE]}</div>`);
+}
+function toggleHelp() {
+  const b = document.getElementById('help-box');
+  if (b) b.classList.toggle('hidden');
+}
+
 // ---------- 페이지 렌더 ----------
 function render() {
   if (!DB) return;
@@ -139,6 +176,7 @@ function render() {
   else if (PAGE === 'returns') renderReturns();
   else if (PAGE === 'inventory') renderInventory();
   else if (PAGE === 'settings') renderSettings();
+  injectHelp();
 }
 
 // ---------- 홈 ----------
@@ -156,9 +194,24 @@ function renderHome() {
   // 진행 흐름 보드: 물건이 지금 어느 단계에 몇 건 있는지
   const all = [...DB.orders, ...DB.seeding];
   const toSend = all.filter(x => x.status === '대기' || x.status === '접수중').length;
-  const waitPickup = all.filter(x => x.status === '발송완료' && x.epost && ['00', '01', '02', '04'].includes(x.epost.stus || '01')).length;
-  const sentOut = all.filter(x => x.status === '발송완료').length - waitPickup;
+  const waitPickup = all.filter(x => x.status === '발송완료' && !x.delivered && x.epost && ['00', '01', '02', '04'].includes(x.epost.stus || '01')).length;
+  const delivered = all.filter(x => x.status === '발송완료' && x.delivered).length;
+  const moving = all.filter(x => x.status === '발송완료').length - waitPickup - delivered;
   const retActive = (DB.returns || []).filter(x => x.status === '대기' || x.status === '회수중').length;
+  // 이번 달 통계: 발송 건수 / 택배비(우체국 접수 요금, 묶음당 1회) / 배달완료
+  const _d = new Date();
+  const ym = _d.getFullYear() + '-' + String(_d.getMonth() + 1).padStart(2, '0');
+  const sentThis = all.filter(x => x.status === '발송완료' && (x.sentDate || '').startsWith(ym));
+  const seenNo = new Set();
+  let cost = 0;
+  for (const x of sentThis) {
+    if (x.epost && x.epost.orderNo && !seenNo.has(x.epost.orderNo)) {
+      seenNo.add(x.epost.orderNo);
+      cost += Number(x.epost.price) || 0;
+    }
+  }
+  const dlvThis = sentThis.filter(x => x.delivered).length;
+  const retThis = (DB.returns || []).filter(x => (x.regDate || '').startsWith(ym) && x.status !== '취소됨').length;
   main().innerHTML = `
     <h1>안녕하세요! 👋</h1>
     <div class="sub">물건이 지금 어디까지 갔는지 한눈에 보여요. 칸을 누르면 그 화면으로 가요.</div>
@@ -167,11 +220,18 @@ function renderHome() {
       <div class="flow-row">
         ${flowTile('📮', '보낼 준비', toSend, 'send', true)}
         <div class="flow-arrow">→</div>
-        ${flowTile('📦', '기사님 수거 기다림', waitPickup, 'epost', false)}
+        ${flowTile('📦', '수거 기다림', waitPickup, 'epost', false)}
         <div class="flow-arrow">→</div>
-        ${flowTile('🚚', '보냄 (배송중·완료)', sentOut, 'shipping', false)}
+        ${flowTile('🚚', '가는 중', moving, 'shipping', false)}
+        <div class="flow-arrow">→</div>
+        ${flowTile('✅', '배달완료', delivered, 'shipping', false)}
         <div class="flow-arrow" style="color:#e3e8f2">|</div>
-        ${flowTile('🔁', '교환·반품 진행중', retActive, 'returns', true)}
+        ${flowTile('🔁', '교환·반품', retActive, 'returns', true)}
+      </div>
+      <div class="hint" style="margin:0.9rem 0 0; font-size:1.05rem">
+        📅 <b>이번 달(${Number(ym.slice(5))}월)</b>: 보낸 택배 <b>${sentThis.length}건</b>
+        · 택배비 <b>${cost.toLocaleString()}원</b> <span class="muted" style="font-size:0.85rem">(우체국 앱 접수 기준)</span>
+        · 배달완료 <b>${dlvThis}건</b>${retThis ? ` · 교환/반품 <b>${retThis}건</b>` : ''}
       </div>
     </div>
     <div class="home-grid">
@@ -256,7 +316,7 @@ function renderSend() {
       </details>
     </div>
     <div class="card">
-      <div class="step-title"><span class="step-num">2</span> 우체국 엑셀 만들기</div>
+      <div class="step-title"><span class="step-num">2</span> 우체국 접수하기</div>
       ${pending.length ? `
       <div class="hint">보낼 목록이에요. 빼고 싶은 사람은 체크를 풀면 돼요.</div>
       <div class="table-wrap">
@@ -275,8 +335,8 @@ function renderSend() {
       <div class="hint" style="font-size:1.1rem">지금은 보낼 것이 없어요. 새 주문·신청이 들어오면 여기에 자동으로 나타나요. 😊</div>`}
     </div>
     <div class="card">
-      <div class="step-title"><span class="step-num">3</span> 송장번호 붙이기</div>
-      <div class="hint">우체국 접수가 끝나고 받은 <b>송장번호 엑셀</b>을 아래 상자에 끌어다 놓으면,<br>짝 맞추기 → 카페24 배송처리 → 재고 차감 → 구글시트 기록까지 한 번에 됩니다.</div>
+      <div class="step-title"><span class="step-num">3</span> 송장번호 붙이기 <span class="muted" style="font-size:0.95rem;font-weight:400">(엑셀로 접수했을 때만)</span></div>
+      <div class="hint"><b>[🚀 우체국 바로 접수]</b>로 보냈다면 이 단계는 필요 없어요 — 송장번호가 자동으로 붙어요.<br>엑셀(예비)로 접수했을 때만, 우체국에서 받은 <b>송장번호 엑셀</b>을 아래 상자에 끌어다 놓으세요.<br>짝 맞추기 → 카페24 배송처리 → 재고 차감 → 구글시트 기록까지 한 번에 됩니다.</div>
       <div class="dropzone" id="dz-invoice" onclick="pickFile('invoice')">
         📥 여기에 우체국 송장 엑셀을 끌어다 놓으세요
         <span class="small">또는 이 상자를 눌러서 파일을 선택하세요</span>
@@ -301,8 +361,8 @@ function renderEpost() {
     ...DB.seeding.filter(x => x.epost).map(x => ({ kind: 'seeding', icon: '🎁', x }))
   ].sort((a, b) => (b.x.sentDate || '').localeCompare(a.x.sentDate || ''));
   const rows = items.map(({ kind, icon, x }) => {
-    const [cls, nm] = EPOST_STUS[x.epost.stus] || ['processing', '확인 필요'];
-    const cancelable = ['00', '01', '02'].includes(x.epost.stus || '01');
+    const [cls, nm] = x.delivered ? ['done', '배달완료 ✓✓'] : (EPOST_STUS[x.epost.stus] || ['processing', '확인 필요']);
+    const cancelable = !x.delivered && ['00', '01', '02'].includes(x.epost.stus || '01');
     return `
     <tr>
       <td style="white-space:nowrap">${icon} ${kind === 'seeding' ? '시딩' : '주문'}</td>
@@ -320,7 +380,7 @@ function renderEpost() {
   const printable = items.filter(({ x }) => x.epost.label).map(({ kind, x }) => kind + ':' + x.id);
   main().innerHTML = `
     <h1>📦 우체국 접수 현황</h1>
-    <div class="sub">앱에서 우체국에 접수한 택배들이에요. 출고 흐름: <b>① 접수(여기)</b> → <b>② 운송장 출력(우체국 사이트)</b> → <b>③ 기사님 수거</b></div>
+    <div class="sub">앱에서 우체국에 접수한 택배들이에요. 순서: <b>① 접수</b> → <b>② [🖨 인쇄]로 운송장 출력</b> → <b>③ 상자에 붙이면 기사님이 수거</b></div>
     <div style="display:flex; gap:0.8rem; flex-wrap:wrap; margin-bottom:1.2rem">
       <button class="big-btn" onclick="epostRefresh()">🔄 진행상태 새로고침</button>
       ${printable.length ? `<button class="big-btn green" onclick="printLabels('${printable.join(',')}')">🖨 운송장 전체 인쇄 (${printable.length}장)</button>` : ''}
@@ -334,7 +394,7 @@ function renderEpost() {
           <tbody>${rows}</tbody>
         </table>
       </div>
-      <div class="hint" style="margin-top:0.8rem">· "예약완료"까지는 <b>[접수 취소]</b>가 가능해요 (취소하면 보내기 목록으로 돌아갑니다)<br>· 운송장 출력은 우체국 사이트 <b>계약소포 → 운송장출력</b> 메뉴에서 해요</div>
+      <div class="hint" style="margin-top:0.8rem">· 운송장은 <b>[🖨 인쇄]</b>를 눌러 라벨기로 바로 뽑아요 (안 되면 [우체국 사이트 열기]에서도 가능)<br>· 기사님이 가져가기 전("예약완료")까지는 <b>[취소]</b>가 가능해요 — 취소하면 [보내기] 목록으로 돌아갑니다</div>
       ` : `<div class="hint" style="font-size:1.1rem">아직 앱에서 우체국에 접수한 건이 없어요.<br>[📮 보내기]에서 <b>[🚀 우체국 바로 접수]</b>를 누르면 여기에 나타납니다.</div>`}
     </div>
     <div id="epost-page-result"></div>`;
@@ -523,7 +583,7 @@ function renderShipping() {
       <td style="white-space:nowrap">${esc(x.sentDate || '')}</td>
       <td><b>${esc(x.name)}</b></td>
       <td style="min-width:260px;max-width:520px">${productCell(x)}</td>
-      <td>${chip(x.status)}</td>
+      <td>${chip(x.delivered ? '배달완료' : x.status)}</td>
       <td>${x.invoice ? trackLink(x.invoice) : '<span class="muted">아직 없음</span>'}</td>
       <td>${x.status === '발송완료' ? `<button class="link-btn" onclick="returnFormFrom('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id})">🔁 교환/반품</button>` : ''}</td>
     </tr>`).join('');
@@ -547,6 +607,7 @@ function renderShipping() {
       <div id="invoice-result"></div>
     </div>`;
   setupDropzones();
+  injectHelp();
 }
 
 // ---------- 재고 ----------
@@ -575,6 +636,7 @@ function renderInventory() {
     </div>
     <div id="inv-form"></div>
     <div class="inv-grid">${cards || '<div class="muted" style="font-size:1.1rem">아직 등록된 제품이 없어요. 위의 [새 제품 넣기]를 눌러 주세요.</div>'}</div>`;
+  injectHelp();
 }
 
 function invAddForm() {

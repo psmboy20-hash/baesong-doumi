@@ -554,6 +554,35 @@ async function syncGoogle(db) {
   }
   return { seeding: seedRes, orders: ordRes };
 }
+// 우체국 배달완료 자동 확인 (키 불필요, 회당 10건):
+// 조회 페이지의 hidden input #deliveryVal 값이 "배달완료"/"수취함투함"일 때만 완료 —
+// 우체국 페이지 자신이 STEP4 표시에 쓰는 것과 동일한 기준 (본문 글자 검색은 항상 있는 라벨 때문에 오탐)
+async function checkDelivered(db) {
+  const targets = [...db.orders, ...db.seeding].filter(x =>
+    x.status === '발송완료' && !x.delivered &&
+    String(x.invoice || '').replace(/\D/g, '').length === 13 &&
+    (!x.courier || x.courier === '우체국')
+  ).slice(0, 10);
+  let found = 0;
+  for (const it of targets) {
+    const no = String(it.invoice).replace(/\D/g, '');
+    try {
+      const html = (await fetchUrl('https://service.epost.go.kr/trace.RetrieveDomRigiTraceList.comm?sid1=' + no, 0)).toString('utf8');
+      const m = html.match(/id="deliveryVal"[^>]*value="([^"]*)"/) || html.match(/value="([^"]*)"[^>]*id="deliveryVal"/);
+      const val = m ? m[1].trim() : '';
+      if (val === '배달완료' || val === '수취함투함') {
+        for (const arr of [db.orders, db.seeding]) {
+          for (const o of arr) {
+            if (String(o.invoice || '').replace(/\D/g, '') === no) { o.delivered = true; o.deliveredDate = today(); }
+          }
+        }
+        found++;
+      }
+    } catch (e) { /* 다음 동기화 때 재시도 */ }
+  }
+  return found;
+}
+
 async function syncAll() {
   const db = loadDb();
   syncStatus.lastRun = new Date().toISOString();
@@ -603,6 +632,7 @@ async function syncAll() {
       try { await cafe24FetchProducts(db); changed = true; } catch (e) { /* 다음 동기화 때 재시도 */ }
     }
   }
+  try { if (await checkDelivered(db)) changed = true; } catch (e) { /* 무시 */ }
   if (changed) saveDb(db);
   syncStatus.lastOk = syncStatus.google.ok || syncStatus.cafe24.ok ? new Date().toISOString() : syncStatus.lastOk;
   return { db, out };
