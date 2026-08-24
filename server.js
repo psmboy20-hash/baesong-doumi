@@ -11,6 +11,8 @@ const XLSX = require('xlsx');
 const seed = require('./lib/seed128');
 
 const PORT = 8899;
+// 보기 전용 모드: 화면만 보고 카페24/우체국/시트에 일절 접속 안 함 (노트북에서 매장 PC와 충돌 없이 확인용)
+const VIEW_ONLY = !!process.env.HAM_VIEW;
 const DATA_DIR = path.join(__dirname, 'data');
 const DB_PATH = path.join(DATA_DIR, 'db.json');
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -678,6 +680,9 @@ async function checkDelivered(db) {
 
 async function syncAll() {
   const db = loadDb();
+  if (VIEW_ONLY) { // 보기 전용: 외부 접속(카페24 토큰 갱신 포함) 전부 건너뜀
+    return { db, out: { seeding: { added: 0, updated: 0 }, orders: { added: 0, updated: 0 }, cafe24: { added: 0, updated: 0 } } };
+  }
   syncStatus.lastRun = new Date().toISOString();
   let changed = false;
   const out = { seeding: { added: 0, updated: 0 }, orders: { added: 0, updated: 0 }, cafe24: { added: 0, updated: 0 } };
@@ -1250,6 +1255,10 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 403, { error: '허용되지 않은 요청이에요.' });
       }
     }
+    // 보기 전용 모드에선 실제 접수/회수/동기화 같은 외부 동작 차단 (실수 방지)
+    if (VIEW_ONLY && req.method === 'POST' && /^\/api\/(epost|return|cafe24|sync|manual-ship|export|upload)/.test(url.pathname)) {
+      return sendJson(res, 200, { error: '지금은 보기 전용 모드예요. 실제 접수·처리는 매장 컴퓨터에서 해주세요.' });
+    }
     if (url.pathname === '/api/db' && req.method === 'GET') {
       return sendJson(res, 200, loadDb());
     }
@@ -1277,7 +1286,7 @@ const server = http.createServer(async (req, res) => {
       syncStatus.epost = { configured: epostConfigured(db), connected: !!db.epost };
       let ver = '';
       try { ver = JSON.parse(fs.readFileSync(path.join(__dirname, 'version.json'), 'utf8')).version; } catch (e) { /* 무시 */ }
-      return sendJson(res, 200, { rev: db.rev || 0, version: ver, status: syncStatus });
+      return sendJson(res, 200, { rev: db.rev || 0, version: ver, viewOnly: VIEW_ONLY, status: syncStatus });
     }
     if (url.pathname === '/api/cafe24/authurl' && req.method === 'GET') {
       const db = loadDb();

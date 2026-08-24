@@ -1306,7 +1306,7 @@ async function refreshStatus(force) {
   try {
     const r = await api('/api/status');
     SYNC_STATUS = r.status;
-    if (r.version) { const v = document.getElementById('ver'); if (v) v.textContent = 'v' + r.version; }
+    if (r.version) { const v = document.getElementById('ver'); if (v) v.textContent = 'v' + r.version + (r.viewOnly ? ' · 👁 보기 전용' : ''); }
     if (force || (DB && r.rev !== DB.rev)) {
       const before = DB ? pendingOf(DB.seeding).length + pendingOf(DB.orders).length : 0;
       const retBefore = DB ? (DB.returns || []).filter(x => x.status === '대기').length : 0;
