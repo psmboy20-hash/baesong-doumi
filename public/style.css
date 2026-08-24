@@ -125,7 +125,7 @@ h1 { font-size: 1.6rem; margin-bottom: 0.4rem; }
 .dropzone .small { display: block; font-size: 0.95rem; font-weight: 400; color: #5a6478; margin-top: 0.5rem; }
 
 table { width: 100%; border-collapse: collapse; font-size: 1rem; }
-th, td { border-bottom: 2px solid var(--line); padding: 0.7rem 0.5rem; text-align: left; vertical-align: top; }
+th, td { border-bottom: 2px solid var(--line); padding: 0.55rem 0.5rem; text-align: left; vertical-align: top; }
 th { background: #eef1f7; font-size: 0.95rem; position: sticky; top: 0; white-space: nowrap; }
 tr.checked-row { background: #f0f8f0; }
 .table-wrap { overflow-x: auto; max-height: 60vh; overflow-y: auto; border: 2px solid var(--line); border-radius: 12px; }

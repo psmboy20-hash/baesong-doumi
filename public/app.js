@@ -62,18 +62,35 @@ function matchProducts(text) {
   hits.sort((a, b) => a.pos - b.pos);
   return hits.map(h => h.p);
 }
+// "B#05_Tessa Pigment Pants(Brown)" → 이름 "B#05_Tessa Pigment Pants" + 색상 "Brown"
+function splitColor(name) {
+  const m = String(name || '').match(/^(.*?)\s*\(([^()]+)\)\s*$/);
+  return m ? { base: m[1], color: m[2] } : { base: String(name || ''), color: '' };
+}
 function productCell(x) {
   const optTxt = x.option || x.size || '';
   const matches = matchProducts(x.product);
   if (!matches.length) {
     return esc(x.product) + (optTxt ? ' <b>(' + esc(optTxt) + ')</b>' : '');
   }
-  return matches.map(p => `
-    <div style="display:flex;align-items:center;gap:0.5rem;margin:0.15rem 0">
-      ${p.img ? `<img src="${esc(p.img)}" style="width:44px;height:44px;object-fit:cover;border-radius:8px;flex-shrink:0" onerror="this.style.display='none'">` : ''}
-      <span><b>${esc(p.name)}</b></span>
-    </div>`).join('') +
-    (optTxt ? `<div class="muted" style="font-size:0.85rem">옵션: ${esc(optTxt)}</div>` : '');
+  const single = matches.length === 1;
+  const lines = matches.map(p => {
+    const { base, color } = splitColor(p.name);
+    return `
+    <div style="display:flex;align-items:center;gap:0.4rem;margin:0.1rem 0;line-height:1.25">
+      ${p.img ? `<img src="${esc(p.img)}" style="width:30px;height:30px;object-fit:cover;border-radius:6px;flex-shrink:0" onerror="this.style.display='none'">` : ''}
+      <span><b>${esc(base)}</b>${!single && color ? ` <span class="muted" style="font-size:0.85rem">${esc(color)}</span>` : ''}</span>
+    </div>`;
+  }).join('');
+  // 옵션 줄: 색상 / 사이즈 (제품이 하나일 때는 이름에서 뺀 색상을 여기로)
+  let optParts = [];
+  if (single) {
+    const { color } = splitColor(matches[0].name);
+    if (color) optParts.push(color);
+  }
+  if (optTxt) optParts.push(optTxt);
+  const optLine = optParts.length ? `<div class="muted" style="font-size:0.85rem;line-height:1.3">옵션: ${esc(optParts.join(' / '))}</div>` : '';
+  return lines + optLine;
 }
 
 function trackLink(inv) {
@@ -201,7 +218,7 @@ function renderSend() {
       <td><b>${esc(x.name)}</b>${x.insta ? `<br><span class="muted" style="font-size:0.85rem">${esc(x.insta)}</span>` : ''}</td>
       <td>${esc(x.phone)}</td>
       <td style="max-width:260px">${esc(x.addr)}</td>
-      <td style="max-width:280px">${productCell(x)}</td>
+      <td style="min-width:260px;max-width:360px">${productCell(x)}</td>
       <td>${chip(x.status)}<br><button class="link-btn" style="font-size:0.85rem" onclick="manualShip('${kind}',${x.id},'${esc(x.name)}')">따로 보냈어요</button></td>
     </tr>`).join('');
 
@@ -485,7 +502,7 @@ function renderShipping() {
     <tr>
       <td>${x._kind === '주문' ? '🛒' : '🎁'} ${x._kind}</td>
       <td><b>${esc(x.name)}</b></td>
-      <td style="max-width:280px">${productCell(x)}</td>
+      <td style="min-width:260px;max-width:360px">${productCell(x)}</td>
       <td>${chip(x.status)}</td>
       <td>${x.invoice ? trackLink(x.invoice) : '<span class="muted">아직 없음</span>'}</td>
       <td>${esc(x.sentDate || '')}</td>
