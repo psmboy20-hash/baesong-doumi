@@ -272,7 +272,7 @@ function labelC(L, i) { // 오즈뷰어 C형 출력과 같은 배치
       <div class="vinner">
         <svg id="vregi${i}" style="width:34mm;height:8mm;flex-shrink:0"></svg>
         <b style="font-size:2.8mm">${esc(fmtRegi(it.invoice))}</b>
-        <span style="overflow:hidden">내용품 : ${esc(L.products.join(' ').slice(0, 34))}</span>
+        <span style="overflow:hidden">내용품 : ${esc(L.products.join(' ').slice(0, 55))}</span>
         <b>${esc(maskName(it.name))} 님</b>
         <span>${esc(vtel)}</span>
         <span style="overflow:hidden">${esc(addr.slice(0, 22))}</span>
@@ -349,7 +349,7 @@ async function main() {
   LABELS = [];
   const prodLine = it => {
     const opt = [it.color, it.size].filter(Boolean).join(' ') || it.option || '';
-    return esc(String(it.product || '').slice(0, 44)) + (opt ? ', ' + esc(opt) : '') + ', 수량:' + (it.qty || 1);
+    return esc(String(it.product || '').replace(/\s+/g, ' ').trim().slice(0, 130)) + (opt ? ', ' + esc(opt) : '') + ', 수량:' + (it.qty || 1);
   };
   for (const { it } of items) {
     if (seen.has(it.epost.orderNo)) { LABELS[LABELS.length - 1].products.push(prodLine(it)); continue; }
