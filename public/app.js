@@ -67,29 +67,48 @@ function splitColor(name) {
   const m = String(name || '').match(/^(.*?)\s*\(([^()]+)\)\s*$/);
   return m ? { base: m[1], color: m[2] } : { base: String(name || ''), color: '' };
 }
+function normOpt(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9가-힣]/g, ''); }
+// 옵션 표기 통일: 어디서 왔든(구글폼 size, 카페24 "색상=X, 사이즈=Y") → {color, size}
+function parseOption(x) {
+  let color = String(x.color || '').trim();
+  let size = String(x.size || '').trim();
+  const raw = String(x.option || '').trim();
+  if (raw) {
+    const mc = raw.match(/색상\s*=\s*([^,/]+)/);
+    const ms = raw.match(/사이즈\s*=\s*([^,/]+)/);
+    if (mc && !color) color = mc[1].trim();
+    if (ms && !size) size = ms[1].trim();
+    if (!mc && !ms && !color && !size) size = raw; // 자유 텍스트 옵션은 그대로
+  }
+  return { color, size };
+}
 function productCell(x) {
-  const optTxt = x.option || x.size || '';
+  const { color, size } = parseOption(x);
   const matches = matchProducts(x.product);
   if (!matches.length) {
-    return esc(x.product) + (optTxt ? ' <b>(' + esc(optTxt) + ')</b>' : '');
+    const opt = [color, size].filter(Boolean).join(' / ');
+    return esc(x.product) + (opt ? ' <b>(' + esc(opt) + ')</b>' : '');
   }
   const single = matches.length === 1;
   const lines = matches.map(p => {
-    const { base, color } = splitColor(p.name);
+    const { base, color: c } = splitColor(p.name);
     return `
     <div style="display:flex;align-items:center;gap:0.4rem;margin:0.1rem 0;line-height:1.25">
       ${p.img ? `<img src="${esc(p.img)}" style="width:30px;height:30px;object-fit:cover;border-radius:6px;flex-shrink:0" onerror="this.style.display='none'">` : ''}
-      <span><b>${esc(base)}</b>${!single && color ? ` <span class="muted" style="font-size:0.85rem">${esc(color)}</span>` : ''}</span>
+      <span><b>${esc(base)}</b>${!single && c ? ` <span class="muted" style="font-size:0.85rem">${esc(c)}</span>` : ''}</span>
     </div>`;
   }).join('');
-  // 옵션 줄: 색상 / 사이즈 (제품이 하나일 때는 이름에서 뺀 색상을 여기로)
-  let optParts = [];
+  // 옵션 줄은 항상 "색상 / 사이즈" 한 형식 (제품명에서 뺀 색상과 주문 색상이 같으면 한 번만)
+  const parts = [];
   if (single) {
-    const { color } = splitColor(matches[0].name);
-    if (color) optParts.push(color);
+    const nameColor = splitColor(matches[0].name).color;
+    if (nameColor) parts.push(nameColor);
+    if (color && normOpt(color) !== normOpt(nameColor)) parts.push(color);
+  } else if (color) {
+    parts.push(color);
   }
-  if (optTxt) optParts.push(optTxt);
-  const optLine = optParts.length ? `<div class="muted" style="font-size:0.85rem;line-height:1.3">옵션: ${esc(optParts.join(' / '))}</div>` : '';
+  if (size) parts.push(size);
+  const optLine = parts.length ? `<div class="muted" style="font-size:0.85rem;line-height:1.3">옵션: ${esc(parts.join(' / '))}</div>` : '';
   return lines + optLine;
 }
 
@@ -214,7 +233,7 @@ function renderSend() {
   const rows = pending.map(({ kind, icon, x }) => `
     <tr class="${x._sel !== false ? 'checked-row' : ''}">
       <td><input type="checkbox" ${x._sel !== false ? 'checked' : ''} onchange="toggleSel('${kind}',${x.id},this.checked)"></td>
-      <td style="font-size:1.2rem">${icon}</td>
+      <td style="white-space:nowrap">${icon} ${x.exchange ? '교환' : kind === 'seeding' ? '시딩' : '주문'}</td>
       <td><b>${esc(x.name)}</b>${x.insta ? `<br><span class="muted" style="font-size:0.85rem">${esc(x.insta)}</span>` : ''}</td>
       <td>${esc(x.phone)}</td>
       <td style="max-width:420px">${esc(x.addr)}</td>
@@ -286,7 +305,7 @@ function renderEpost() {
     const cancelable = ['00', '01', '02'].includes(x.epost.stus || '01');
     return `
     <tr>
-      <td style="font-size:1.2rem">${icon}</td>
+      <td style="white-space:nowrap">${icon} ${kind === 'seeding' ? '시딩' : '주문'}</td>
       <td><b>${esc(x.name)}</b></td>
       <td style="max-width:420px">${esc(String(x.product || '').slice(0, 90))}</td>
       <td>${x.invoice ? trackLink(x.invoice) : '<span class="muted">-</span>'}</td>
