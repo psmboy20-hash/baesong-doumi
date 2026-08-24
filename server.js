@@ -1000,12 +1000,20 @@ async function matchInvoices(db, rows) {
   return results;
 }
 
-// 재고 항목과 발송 제품이 같은 물건인지 (품번/특수문자 무시, 글자만 비교)
+// 재고 항목과 발송 제품이 같은 물건인지 (품번/특수문자 무시, 글자만 비교 + 단어 단위 느슨 매칭)
 function stockMatches(inv, item) {
   const lo = s => String(s || '').toLowerCase().replace(/[^a-z가-힣]/g, '');
-  const core = lo(String(inv.name || '').replace(/^[A-Za-z]#?\d+_?/, ''));
+  const stripped = String(inv.name || '').replace(/^[A-Za-z]#?\d+_?/, '');
+  const core = lo(stripped);
   const text = lo(item.product);
-  if (!core || core.length < 6 || !text.includes(core)) return false;
+  if (!core || core.length < 6) return false;
+  let nameOk = text.includes(core);
+  if (!nameOk) {
+    // 단어들이 순서 상관없이 전부 들어있으면 인정 ("Margot Denim(Indigoblue)" ↔ "Margot Denim Pants (Indigo Blue)")
+    const words = stripped.split(/[^A-Za-z가-힣]+/).map(lo).filter(w => w.length >= 3);
+    nameOk = words.length >= 2 && words.every(w => text.includes(w));
+  }
+  if (!nameOk) return false;
   if (inv.color && !text.includes(lo(inv.color)) && lo(item.color) !== lo(inv.color)) return false;
   if (inv.size && String(item.size || '').trim().toUpperCase() !== String(inv.size).trim().toUpperCase()) return false;
   return true;

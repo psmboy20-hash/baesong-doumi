@@ -148,6 +148,14 @@ input[type="checkbox"] { width: 1.6rem; height: 1.6rem; accent-color: var(--gree
 .flow-arrow { display: flex; align-items: center; font-size: 1.6rem; color: #b8c0cf; font-weight: 900; }
 @media (max-width: 700px) { .flow-arrow { display: none; } }
 
+/* 조건 강조 배지: "~일 때만" 같은 주의 문구 */
+.note-badge {
+  display: inline-block; background: #fdf3e2; color: var(--orange);
+  border: 2px solid var(--orange); border-radius: 99px;
+  font-size: 0.85rem; font-weight: 800; padding: 0.1rem 0.7rem;
+  vertical-align: middle; white-space: nowrap;
+}
+
 /* 도움말 말풍선 */
 .help-btn {
   font-size: 0.85rem; font-weight: 700; padding: 0.25rem 0.7rem; border-radius: 99px;

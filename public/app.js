@@ -56,11 +56,20 @@ function matchProducts(text) {
   if (!t) return [];
   const hits = [];
   for (const p of DB.products) {
-    const core = lettersOnly(String(p.name).replace(/^[A-Za-z]#?\d+_?/, ''));
-    if (core && core.length >= 6 && t.includes(core)) hits.push({ p, pos: t.indexOf(core) });
+    const stripped = String(p.name).replace(/^[A-Za-z]#?\d+_?/, '');
+    const core = lettersOnly(stripped);
+    if (!core || core.length < 6) continue;
+    if (t.includes(core)) { hits.push({ p, pos: t.indexOf(core), exact: 1 }); continue; }
+    // 느슨한 매칭: 품번명 단어가 순서 상관없이 전부 들어있으면
+    // (예: "Margot Denim(Indigoblue)" ↔ "Margot Denim Pants (Indigo Blue)")
+    const words = stripped.split(/[^A-Za-z가-힣]+/).map(lettersOnly).filter(w => w.length >= 3);
+    if (words.length >= 2 && words.every(w => t.includes(w))) {
+      hits.push({ p, pos: t.indexOf(words[0]), exact: 0 });
+    }
   }
-  hits.sort((a, b) => a.pos - b.pos);
-  return hits.map(h => h.p);
+  hits.sort((a, b) => (b.exact - a.exact) || a.pos - b.pos);
+  const seen = new Set();
+  return hits.filter(h => !seen.has(h.p.no) && seen.add(h.p.no)).map(h => h.p);
 }
 // "B#05_Tessa Pigment Pants(Brown)" → 이름 "B#05_Tessa Pigment Pants" + 색상 "Brown"
 function splitColor(name) {
@@ -309,7 +318,7 @@ function renderSend() {
       <div class="hint">주문과 시딩 신청은 <b>5분마다 자동으로</b> 들어와요. 방금 들어온 걸 바로 보고 싶으면 버튼을 누르세요.<br>${c24line}</div>
       <button class="big-btn" onclick="doSync()">🔄 지금 바로 확인하기</button>
       <details style="margin-top:1rem">
-        <summary style="font-size:1rem;cursor:pointer;color:#5a6478">카페24 주문 엑셀 파일로 직접 넣기 (자동 연동이 안 될 때)</summary>
+        <summary style="font-size:1rem;cursor:pointer;color:#5a6478">카페24 주문 엑셀 파일로 직접 넣기 <span class="note-badge">⚠️ 자동 연동이 안 될 때만</span></summary>
         <div class="dropzone" id="dz-cafe24" onclick="pickFile('cafe24')" style="margin-top:0.8rem">
           📂 여기에 카페24 주문 엑셀 파일을 끌어다 놓으세요
         </div>
@@ -335,7 +344,7 @@ function renderSend() {
       <div class="hint" style="font-size:1.1rem">지금은 보낼 것이 없어요. 새 주문·신청이 들어오면 여기에 자동으로 나타나요. 😊</div>`}
     </div>
     <div class="card">
-      <div class="step-title"><span class="step-num">3</span> 송장번호 붙이기 <span class="muted" style="font-size:0.95rem;font-weight:400">(엑셀로 접수했을 때만)</span></div>
+      <div class="step-title"><span class="step-num">3</span> 송장번호 붙이기 <span class="note-badge">⚠️ 엑셀로 접수했을 때만</span></div>
       <div class="hint"><b>[🚀 우체국 바로 접수]</b>로 보냈다면 이 단계는 필요 없어요 — 송장번호가 자동으로 붙어요.<br>엑셀(예비)로 접수했을 때만, 우체국에서 받은 <b>송장번호 엑셀</b>을 아래 상자에 끌어다 놓으세요.<br>짝 맞추기 → 카페24 배송처리 → 재고 차감 → 구글시트 기록까지 한 번에 됩니다.</div>
       <div class="dropzone" id="dz-invoice" onclick="pickFile('invoice')">
         📥 여기에 우체국 송장 엑셀을 끌어다 놓으세요
