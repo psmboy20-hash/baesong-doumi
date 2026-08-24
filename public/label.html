@@ -95,6 +95,18 @@
   .longbar { flex: 1; text-align: center; }
   .longbar svg { height: 16mm; width: 95%; }
 
+  /* ===== 양식지 모드: 틀(빨간선·로고·고정문구)이 미리 인쇄된 우체국 용지 → 데이터만 인쇄 ===== */
+  body.formpaper .label, body.formpaper .top, body.formpaper .left, body.formpaper .left .box,
+  body.formpaper .zipbar, body.formpaper .sender, body.formpaper .regino, body.formpaper .bottom,
+  body.formpaper .contract, body.formpaper .logo { border-color: transparent !important; }
+  body.formpaper .logo *, body.formpaper .contract *, body.formpaper .regino .rt { visibility: hidden; }
+  body.formpaper .contract, body.formpaper .logo { color: transparent; }
+  body.formpaper .areacd .team .tt { background: transparent; }
+  @media screen {
+    /* 화면에서는 위치 확인용으로 틀을 연하게 보여줌 */
+    body.formpaper .label { outline: 1px dashed #bbb; }
+  }
+
   @media screen {
     .rlabel { border: 1px dashed #999; }
   }
@@ -114,8 +126,16 @@
     <option value="roll">택배라벨 100×150mm</option>
     <option value="a4">일반 A4 (잘라 붙이기)</option>
   </select>
-  <span id="paper-hint" style="margin-left:12px;color:#555">라벨기에서 한 장씩 나옵니다. 인쇄 창에서 프린터를 라벨기로 선택하세요.</span>
+  <label style="margin-left:12px;font-size:16px;font-weight:700">
+    <input type="checkbox" id="formpaper" onchange="setFormPaper(this.checked)"> 틀이 인쇄된 우체국 용지 (바코드·글자만 인쇄)
+  </label>
+  <span style="margin-left:12px;font-size:15px">위치 맞추기:
+    <button class="nud" onclick="nudge(0,-1)">▲</button><button class="nud" onclick="nudge(0,1)">▼</button><button class="nud" onclick="nudge(-1,0)">◀</button><button class="nud" onclick="nudge(1,0)">▶</button>
+    <span id="off">0, 0</span>mm <button class="nud" onclick="setOffset(0,0)">처음으로</button>
+  </span>
+  <br><span id="paper-hint" style="color:#555">라벨기에서 한 장씩 나옵니다. 인쇄 창에서 프린터를 라벨기로 선택하세요.</span>
 </div>
+<style>.nud { font-size: 15px; padding: 4px 10px; border: 1px solid #999; background: #f5f5f5; color: #222; border-radius: 6px; cursor: pointer; }</style>
 <style id="pagestyle"></style>
 <div id="sheet">불러오는 중…</div>
 <script>
@@ -235,6 +255,27 @@ function drawBarcodes() {
   });
 }
 
+// 양식지 모드 (기본 켜짐 — 우체국 전용라벨은 틀이 미리 인쇄돼 있음)
+function setFormPaper(v) {
+  localStorage.setItem('labelFormPaper', v ? '1' : '0');
+  document.body.classList.toggle('formpaper', v);
+  document.getElementById('formpaper').checked = v;
+}
+// 인쇄 위치 미세조정 (mm) — 프린터마다 물리 여백이 달라서 양식지 칸과 어긋날 때 사용
+function applyOffset() {
+  const x = Number(localStorage.getItem('labelOffX') || 0);
+  const y = Number(localStorage.getItem('labelOffY') || 0);
+  document.getElementById('sheet').style.transform = `translate(${x}mm, ${y}mm)`;
+  document.getElementById('off').textContent = x + ', ' + y;
+}
+function setOffset(x, y) {
+  localStorage.setItem('labelOffX', x);
+  localStorage.setItem('labelOffY', y);
+  applyOffset();
+}
+function nudge(dx, dy) {
+  setOffset(Number(localStorage.getItem('labelOffX') || 0) + dx, Number(localStorage.getItem('labelOffY') || 0) + dy);
+}
 function setPaper(mode) {
   MODE = mode;
   localStorage.setItem('labelPaper', mode);
@@ -256,6 +297,8 @@ function setPaper(mode) {
 }
 
 async function main() {
+  setFormPaper(localStorage.getItem('labelFormPaper') !== '0'); // 기본: 양식지 모드 켜짐
+  applyOffset();
   const params = new URLSearchParams(location.search);
   const sel = (params.get('sel') || '').split(',').filter(Boolean);
   DBREF = await (await fetch('/api/db')).json();
