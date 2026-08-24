@@ -89,7 +89,12 @@ function splitColor(name) {
   const m = String(name || '').match(/^(.*?)\s*\(([^()]+)\)\s*$/);
   return m ? { base: m[1], color: m[2] } : { base: String(name || ''), color: '' };
 }
-function normOpt(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9가-힣]/g, ''); }
+// 색상 비교용 정규화 — 한글/영문 같은 색이면 같게 (Navy = 네이비)
+const COLOR_KO = { '네이비': 'navy', '블랙': 'black', '화이트': 'white', '아이보리': 'ivory', '브라운': 'brown', '베이지': 'beige', '그레이': 'gray', '카키': 'khaki', '블루': 'blue', '스카이블루': 'skyblue', '라이트블루': 'lightblue', '인디고블루': 'indigoblue', '인디고': 'indigo', '레드': 'red', '핑크': 'pink', '그린': 'green', '옐로우': 'yellow', '퍼플': 'purple', '오렌지': 'orange', '민트': 'mint', '차콜': 'charcoal', '챠콜': 'charcoal', '크림': 'cream', '연청': 'lightblue', '진청': 'darkblue' };
+function normOpt(s) {
+  const t = String(s || '').toLowerCase().replace(/[^a-z0-9가-힣]/g, '');
+  return COLOR_KO[t] || t;
+}
 // 옵션 표기 통일: 어디서 왔든(구글폼 size, 카페24 "색상=X, 사이즈=Y") → {color, size}
 function parseOption(x) {
   let color = String(x.color || '').trim();
@@ -339,21 +344,36 @@ function renderSend() {
         ? '🔴 카페24에서 가져오기 실패: ' + esc(c24.error || '')
         : '🟢 카페24 자동 연동 중';
 
-  const rows = pending.map(({ kind, icon, x }) => {
-    const pp = productParts(x);
+  // 같은 사람(이름+전화+주소)은 한 줄로 묶기 — 실제로도 택배 1건으로 나감
+  const gmap = new Map();
+  for (const p of pending) {
+    const x = p.x;
+    const key = String(x.name || '').replace(/\s/g, '') + '|' + String(x.phone || '').replace(/\D/g, '') + '|' + String(x.addr || '').replace(/\s/g, '').slice(0, 15);
+    if (!gmap.has(key)) gmap.set(key, []);
+    gmap.get(key).push(p);
+  }
+  const rows = [...gmap.values()].map(g => {
+    const first = g[0].x;
+    const spec = g.map(p => p.kind + ':' + p.x.id).join(',');
+    const allSel = g.every(p => p.x._sel !== false);
+    const kinds = [...new Set(g.map(p => p.x.exchange ? '🔁 교환' : p.kind === 'seeding' ? '🎁 시딩' : '🛒 주문'))].join('<br>');
+    const names = g.map(p => `<div style="margin:0.1rem 0">${productParts(p.x).name}</div>`).join('');
+    const opts = g.map(p => `<div style="margin:0.1rem 0">${productParts(p.x).opt || '<span class="muted">-</span>'}</div>`).join('');
+    const noZip = !/^\d{5}$/.test(String(first.zip || '').trim()) && !matchZipInAddr(first.addr);
+    const stusSet = [...new Set(g.map(p => p.x.status))];
     return `
-    <tr class="${x._sel !== false ? 'checked-row' : ''}">
-      <td><input type="checkbox" ${x._sel !== false ? 'checked' : ''} onchange="toggleSel('${kind}',${x.id},this.checked)"></td>
-      <td style="white-space:nowrap">${icon} ${x.exchange ? '교환' : kind === 'seeding' ? '시딩' : '주문'}</td>
-      <td><b>${esc(x.name)}</b>${x.insta ? `<br><span class="muted" style="font-size:0.85rem">${esc(x.insta)}</span>` : ''}</td>
-      <td>${esc(x.phone)}</td>
-      <td style="max-width:420px">${esc(x.addr)}${!/^\d{5}$/.test(String(x.zip || '').trim()) && !matchZipInAddr(x.addr) ? `
+    <tr class="${allSel ? 'checked-row' : ''}">
+      <td><input type="checkbox" ${allSel ? 'checked' : ''} onchange="toggleSelGroup('${spec}',this.checked)"></td>
+      <td style="white-space:nowrap">${kinds}</td>
+      <td><b>${esc(first.name)}</b>${first.insta ? `<br><span class="muted" style="font-size:0.85rem">${esc(first.insta)}</span>` : ''}${g.length > 1 ? `<br><span class="note-badge">📦 ${g.length}개 → 택배 1건</span>` : ''}</td>
+      <td>${esc(first.phone)}</td>
+      <td style="max-width:420px">${esc(first.addr)}${noZip ? `
         <div style="margin-top:0.3rem;white-space:nowrap"><span class="note-badge">⚠️ 우편번호 없음</span>
-        <input id="zip-${kind}-${x.id}" style="width:5.5rem;font-size:0.95rem;padding:0.25rem 0.4rem;border:2px solid var(--line);border-radius:8px" placeholder="5자리" maxlength="5">
-        <button class="link-btn" style="font-size:0.9rem" onclick="fixZip('${kind}',${x.id})">저장</button></div>` : ''}</td>
-      <td style="min-width:240px;max-width:480px">${pp.name}</td>
-      <td>${pp.opt || '<span class="muted">-</span>'}</td>
-      <td>${chip(x.status)}${x.status === '접수중' ? `<br><button class="link-btn" style="font-size:0.85rem" onclick="cancelExcel('${kind}',${x.id},'${jsq(x.name)}')">↩️ 엑셀 접수 취소</button>` : ''}<br><button class="link-btn" style="font-size:0.85rem" onclick="manualShip('${kind}',${x.id},'${jsq(x.name)}')">따로 보냈어요</button><br><button class="link-btn" style="font-size:0.85rem;color:var(--red)" onclick="cancelSend('${kind}',${x.id},'${jsq(x.name)}')">안 보내요 ✕</button></td>
+        <input id="zip-g-${g[0].kind}-${first.id}" style="width:5.5rem;font-size:0.95rem;padding:0.25rem 0.4rem;border:2px solid var(--line);border-radius:8px" placeholder="5자리" maxlength="5">
+        <button class="link-btn" style="font-size:0.9rem" onclick="fixZipGroup('${spec}','zip-g-${g[0].kind}-${first.id}')">저장</button></div>` : ''}</td>
+      <td style="min-width:240px;max-width:480px">${names}</td>
+      <td>${opts}</td>
+      <td>${stusSet.map(s => chip(s)).join(' ')}${stusSet.includes('접수중') ? `<br><button class="link-btn" style="font-size:0.85rem" onclick="cancelExcelGroup('${spec}','${jsq(first.name)}')">↩️ 엑셀 접수 취소</button>` : ''}<br><button class="link-btn" style="font-size:0.85rem" onclick="manualShipGroup('${spec}','${jsq(first.name)}')">따로 보냈어요</button><br><button class="link-btn" style="font-size:0.85rem;color:var(--red)" onclick="cancelSendGroup('${spec}','${jsq(first.name)}')">안 보내요 ✕</button></td>
     </tr>`;
   }).join('');
 
@@ -431,6 +451,61 @@ async function cancelExcel(kind, id, name) {
   await saveDb();
   render();
   toast('✔️ [보낼 준비]로 되돌렸어요.');
+}
+
+// "kind:id,kind:id" 묶음 스펙 → 실제 항목들
+function specItems(spec) {
+  const out = [];
+  for (const part of String(spec).split(',')) {
+    const [kind, id] = part.split(':');
+    const list = kind === 'seeding' ? DB.seeding : DB.orders;
+    const x = list.find(i => i.id === Number(id));
+    if (x) out.push({ kind, x });
+  }
+  return out;
+}
+function toggleSelGroup(spec, checked) {
+  for (const { x } of specItems(spec)) x._sel = checked;
+  render();
+}
+async function fixZipGroup(spec, inputId) {
+  const inp = document.getElementById(inputId);
+  const z = (inp ? inp.value : '').replace(/\D/g, '');
+  if (z.length !== 5) { toast('우편번호는 숫자 5자리예요. 예: 07997'); if (inp) inp.focus(); return; }
+  for (const { x } of specItems(spec)) x.zip = z;
+  await saveDb();
+  render();
+  toast('✔️ 우편번호를 저장했어요. 이제 접수할 수 있어요.');
+}
+async function cancelSendGroup(spec, name) {
+  const items = specItems(spec);
+  if (!confirm(`${name}님 건(${items.length}개)을 보내지 않기로 할까요?\n\n· 보내기 목록에서 빠져요\n· [🚚 배송 확인]에서 [다시 보내기]로 언제든 되돌릴 수 있어요`)) return;
+  for (const { x } of items) { x.status = '취소됨'; x.manualCanceled = true; }
+  await saveDb();
+  render();
+  toast('✔️ 취소했어요. 마음이 바뀌면 [배송 확인]에서 [다시 보내기]를 누르세요.', 6000);
+}
+async function cancelExcelGroup(spec, name) {
+  if (!confirm(`${name}님 건의 엑셀 접수를 취소하고 [보낼 준비]로 되돌릴까요?\n(우체국 사이트에 이미 파일을 올렸다면 거기서도 지워 주세요)`)) return;
+  for (const { x } of specItems(spec)) if (x.status === '접수중') x.status = '대기';
+  await saveDb();
+  render();
+  toast('✔️ [보낼 준비]로 되돌렸어요.');
+}
+async function manualShipGroup(spec, name) {
+  const items = specItems(spec);
+  if (!confirm(`${name}님 것(${items.length}개)을 우체국 창구 등 앱 밖에서 정말 이미 보내셨나요?\n\n· [보냄 ✓]으로 확정돼요 (재고 차감 · 카페24 배송처리 · 시트 기록까지 자동)\n· 한 번 확정하면 되돌리기 어려워요`)) return;
+  const inv = prompt('송장번호가 있으면 입력해 주세요.\n없으면 빈칸 그대로 [확인]을 누르세요.');
+  if (inv === null) return;
+  busy(true, '발송완료로 정리하는 중…');
+  let err = null;
+  for (const { kind, x } of items) {
+    const r = await api('/api/manual-ship', { method: 'POST', body: JSON.stringify({ type: kind === 'seeding' ? 'seeding' : 'order', id: x.id, invoice: (inv || '').trim() }) });
+    if (r.error) err = r.error; else adoptDb(r.db);
+  }
+  busy(false);
+  render();
+  toast(err ? '⚠️ 일부는 처리 못 했어요: ' + err : `✔️ ${name}님 건을 발송완료로 정리했어요.`, 7000);
 }
 
 function toggleSel(kind, id, checked) {
