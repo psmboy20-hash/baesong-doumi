@@ -13,6 +13,27 @@ const seed = require('./lib/seed128');
 const PORT = 8899;
 // 보기 전용 모드: 화면만 보고 카페24/우체국/시트에 일절 접속 안 함 (노트북에서 매장 PC와 충돌 없이 확인용)
 const VIEW_ONLY = !!process.env.HAM_VIEW;
+const STORE_URL = process.env.HAM_STORE || 'http://100.112.253.21:8899'; // 매장 PC (Tailscale)
+// 매장 서버가 살아있는지 (노트북 보기 모드에서 카페24 담당을 정하는 기준)
+function storeAlive() {
+  if (!VIEW_ONLY) return Promise.resolve(false); // 매장 PC 자신은 항상 담당
+  return new Promise(resolve => {
+    try {
+      const u = new URL(STORE_URL + '/api/status');
+      const r = http.get({ hostname: u.hostname, port: u.port, path: u.pathname, timeout: 2000 }, res => { resolve(res.statusCode === 200); res.resume(); });
+      r.on('timeout', () => { r.destroy(); resolve(false); });
+      r.on('error', () => resolve(false));
+    } catch (e) { resolve(false); }
+  });
+}
+let _storeCache = { t: 0, v: false };
+async function storeAliveCached() {
+  if (!VIEW_ONLY) return false;
+  if (Date.now() - _storeCache.t < 60000) return _storeCache.v;
+  const v = await storeAlive();
+  _storeCache = { t: Date.now(), v };
+  return v;
+}
 const DATA_DIR = path.join(__dirname, 'data');
 const DB_PATH = path.join(DATA_DIR, 'db.json');
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -716,7 +737,9 @@ async function syncAll() {
   }
   syncStatus.cafe24.configured = cafe24Configured(db);
   syncStatus.cafe24.connected = !!db.cafe24Token;
-  if (!VIEW_ONLY && cafe24Configured(db) && db.cafe24Token) {
+  // 카페24 담당: 매장 PC가 켜져 있으면 매장이, 꺼져 있으면 노트북이 이어받음 (동시 접속만 피하면 됨)
+  const c24Skip = VIEW_ONLY && await storeAliveCached();
+  if (!c24Skip && cafe24Configured(db) && db.cafe24Token) {
     try {
       const parsed = await cafe24FetchOrders(db);
       const r = mergeOrders(db, parsed);
@@ -1289,10 +1312,13 @@ const server = http.createServer(async (req, res) => {
       }
     }
     // 보기 모드: 우체국 접수/취소/새로고침은 허용(시딩은 시트로 매장과 자동 합쳐짐),
-    // 카페24가 얽히는 동작(주문 처리·연결)과 회수/업로드는 매장 전용
+    // 회수/업로드/따로보냄은 매장 전용, 카페24 관련은 "매장이 켜져 있을 때만" 양보
     if (VIEW_ONLY && req.method === 'POST' &&
-        /^\/api\/(return|cafe24|manual-ship|export|upload)/.test(url.pathname)) {
+        /^\/api\/(return|manual-ship|export|upload)/.test(url.pathname)) {
       return sendJson(res, 200, { error: '이 작업은 매장 컴퓨터에서 해주세요. (노트북 보기 모드)' });
+    }
+    if (VIEW_ONLY && req.method === 'POST' && /^\/api\/cafe24\//.test(url.pathname) && await storeAliveCached()) {
+      return sendJson(res, 200, { error: '매장 컴퓨터가 켜져 있어요 — 카페24 연결은 매장 화면에서 해주세요.' });
     }
     if (url.pathname === '/api/db' && req.method === 'GET') {
       return sendJson(res, 200, loadDb());
@@ -1321,7 +1347,7 @@ const server = http.createServer(async (req, res) => {
       syncStatus.epost = { configured: epostConfigured(db), connected: !!db.epost };
       let ver = '';
       try { ver = JSON.parse(fs.readFileSync(path.join(__dirname, 'version.json'), 'utf8')).version; } catch (e) { /* 무시 */ }
-      return sendJson(res, 200, { rev: db.rev || 0, version: ver, viewOnly: VIEW_ONLY, status: syncStatus });
+      return sendJson(res, 200, { rev: db.rev || 0, version: ver, viewOnly: VIEW_ONLY, c24Owner: !VIEW_ONLY || !(await storeAliveCached()), status: syncStatus });
     }
     if (url.pathname === '/api/cafe24/authurl' && req.method === 'GET') {
       const db = loadDb();
@@ -1395,15 +1421,11 @@ const server = http.createServer(async (req, res) => {
       const body = JSON.parse((await readBody(req)).toString('utf8'));
       const db = loadDb();
       if (!epostConfigured(db) || !db.epost) return sendJson(res, 200, { error: '먼저 설정에서 [우체국 연결]을 해주세요.' });
-      if (VIEW_ONLY) {
-        // 보기 모드(노트북)에선 시딩만 접수 — 주문은 카페24 배송처리가 얽혀 매장 전용
-        const before = (body.selected || []).length;
+      if (VIEW_ONLY && await storeAliveCached()) {
+        // 매장이 켜져 있을 땐 주문 접수는 매장에 양보 (카페24 동시 접속 방지) — 시딩만 허용
         body.selected = (body.selected || []).filter(s => s.type === 'seeding');
         if (!body.selected.length) {
-          return sendJson(res, 200, { error: '노트북에서는 시딩(🎁)만 접수할 수 있어요. 주문(🛒)은 매장 컴퓨터에서 접수해 주세요.' });
-        }
-        if (body.selected.length < before) {
-          // 주문이 섞여 있으면 시딩만 진행하고 결과에서 알 수 있게 함
+          return sendJson(res, 200, { error: '매장 컴퓨터가 켜져 있어요 — 주문(🛒) 접수는 매장 화면에서 해주세요. (시딩🎁은 여기서도 가능)' });
         }
       }
       const { groups } = buildParcelGroups(db, body.selected || []);

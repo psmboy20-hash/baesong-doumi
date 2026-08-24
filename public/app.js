@@ -364,7 +364,9 @@ function renderSend() {
     : goo.ok ? '🟢 구글시트(시딩) 자동 연동 중'
     : '🔴 구글시트에서 못 가져왔어요 — 인터넷과 시트 공유 설정을 확인하세요. <button class="link-btn" onclick="go(\'settings\')">설정 보기</button>';
   const c24line = window._VIEW
-    ? '🔵 노트북 보기 모드: <b>시딩(🎁)은 여기서도 바로 접수돼요.</b> 카페24 주문(🛒) 수집·접수만 매장 컴퓨터 담당'
+    ? (window._C24OWNER
+      ? '🔵 노트북 모드: 매장 컴퓨터가 꺼져 있어 <b>주문 수집·접수까지 노트북이 대신하는 중</b>이에요 (매장이 켜지면 자동으로 넘겨요)'
+      : '🔵 노트북 모드: 매장 컴퓨터가 켜져 있어요 — <b>시딩(🎁)은 여기서 접수 가능</b>, 주문(🛒)은 매장 화면에서')
     : !c24 || !c24.configured
     ? '⚪ 카페24 자동 연동이 아직 설정되지 않았어요. <button class="link-btn" onclick="go(\'settings\')">설정하러 가기</button>'
     : !c24.connected
@@ -1507,6 +1509,7 @@ async function refreshStatus(force) {
     const r = await api('/api/status');
     SYNC_STATUS = r.status;
     window._VIEW = !!r.viewOnly;
+    window._C24OWNER = r.c24Owner !== false;
     if (r.version) { const v = document.getElementById('ver'); if (v) v.textContent = 'v' + r.version + (r.viewOnly ? ' · 👁 보기 모드' : ''); }
     if (force || (DB && r.rev !== DB.rev)) {
       const before = DB ? pendingOf(DB.seeding).length + pendingOf(DB.orders).length : 0;
