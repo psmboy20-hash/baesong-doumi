@@ -899,11 +899,20 @@ function optKey(o) {
 function orderKey(o) { return (o.orderNo || '') + '|' + normName(o.name) + '|' + phoneDigits(o.phone) + '|' + String(o.product || '').replace(/\s/g, '').slice(0, 40) + '|' + optKey(o); }
 
 function mergeSeeding(db, parsed) {
-  const map = new Map(db.seeding.map(s => [seedKey(s), s]));
+  // 같은 사람(이름+전화)이 여러 번 신청할 수 있음(재배송·2차 시딩 등) — 회차별로 순서대로 짝을 맞춤
+  const buckets = new Map(); // seedKey → 장부의 해당 사람 건들(순서대로)
+  for (const s of db.seeding) {
+    const k = seedKey(s);
+    if (!buckets.has(k)) buckets.set(k, []);
+    buckets.get(k).push(s);
+  }
+  const liveCount = new Map(); // seedKey → 시트에서 지금까지 몇 번째 행인지
   let added = 0, updated = 0;
   for (const p of parsed) {
     const k = seedKey(p);
-    const ex = map.get(k);
+    const idx = liveCount.get(k) || 0;
+    liveCount.set(k, idx + 1);
+    const ex = (buckets.get(k) || [])[idx];
     if (ex) {
       // 시트에 송장이 생겼으면 반영 (앱에서 취소한 무효 송장은 다시 붙이지 않음)
       let ch = false;
@@ -924,22 +933,25 @@ function mergeSeeding(db, parsed) {
         regDate: today()
       });
       db.seeding.push(item);
-      map.set(k, item);
+      if (!buckets.has(k)) buckets.set(k, []);
+      buckets.get(k).push(item);
       added++;
     }
   }
-  // 시트에서 지워진(또는 이름/연락처가 바뀐) 행: 아직 안 보낸 건이면 취소 처리
+  // 시트에서 지워진 행: 아직 안 보낸 건이면 취소 처리 (회차 기준 — 시트에 남은 회차 수를 넘는 건만)
   // (시트를 통째로 못 읽은 경우 오작동 방지를 위해 parsed가 비어있으면 건너뜀)
   let canceled = 0;
   if (parsed.length === 0) return { added, updated, canceled };
-  const liveKeys = new Set(parsed.map(seedKey));
-  for (const s of db.seeding) {
-    if ((s.status === '대기' || s.status === '접수중') && !liveKeys.has(seedKey(s))) {
-      s.status = '취소됨';
-      canceled++;
-    } else if (s.status === '취소됨' && liveKeys.has(seedKey(s)) && !s.invoice && !s.manualCanceled) {
-      s.status = '대기'; // 행이 다시 생기면 복구 (앱에서 손으로 취소한 건은 제외)
-    }
+  for (const [k, items] of buckets) {
+    const live = liveCount.get(k) || 0;
+    items.forEach((s, i) => {
+      if (i >= live && (s.status === '대기' || s.status === '접수중')) {
+        s.status = '취소됨';
+        canceled++;
+      } else if (i < live && s.status === '취소됨' && !s.invoice && !s.manualCanceled) {
+        s.status = '대기'; // 행이 다시 생기면 복구 (앱에서 손으로 취소한 건은 제외)
+      }
+    });
   }
   return { added, updated, canceled };
 }
