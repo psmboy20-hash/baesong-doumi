@@ -139,9 +139,12 @@ function prodImgTag(src) {
 function productParts(x) {
   const { color, size } = parseOption(x);
   const matches = matchProducts(x.product);
+  const qty = Number(x.qty) || 1;
+  const qtyTag = qty > 1 ? ` <span style="color:var(--red);font-weight:900">×${qty}개</span>` : '';
   if (!matches.length) {
     const parts = [color, size].filter(Boolean);
-    return { name: esc(x.product), opt: parts.length ? '<b>' + esc(parts.join(', ')) + '</b>' : '' };
+    const optTxt = (parts.length ? '<b>' + esc(parts.join(', ')) + '</b>' : '') + qtyTag;
+    return { name: esc(x.product), opt: optTxt };
   }
   // 제품 칸에는 이름만, 옵션 칸에는 제품마다 자기 "색상, 사이즈"가 같은 줄 높이로 나란히
   const single = matches.length === 1;
@@ -159,7 +162,7 @@ function productParts(x) {
     if (c) parts.push(c);
     if (single && color && (!c || normOpt(color) !== normOpt(c))) parts.push(color);
     if (size) parts.push(size);
-    return `<div style="display:flex;align-items:center;height:36px;margin:0.1rem 0;white-space:nowrap">${parts.length ? '<b>' + esc(parts.join(', ')) + '</b>' : '<span class="muted">-</span>'}</div>`;
+    return `<div style="display:flex;align-items:center;height:36px;margin:0.1rem 0;white-space:nowrap">${parts.length ? '<b>' + esc(parts.join(', ')) + '</b>' : '<span class="muted">-</span>'}${qtyTag}</div>`;
   }).join('');
   return { name, opt };
 }
