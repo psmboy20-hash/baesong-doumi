@@ -261,6 +261,7 @@ function render() {
   else if (PAGE === 'inventory') renderInventory();
   else if (PAGE === 'settings') renderSettings();
   injectHelp();
+  updateNavBadge();
 }
 
 // ---------- 홈 ----------
@@ -311,6 +312,7 @@ function renderHome() {
         ${flowTile('✅', '배달 끝', delivered, 'shipping', false, 'done')}
         <div class="flow-arrow" style="color:#e3e8f2">|</div>
         ${flowTile('🔁', '교환·반품', retActive, 'returns', true)}
+        ${needPrintList().length ? `<div class="flow-arrow" style="color:#e3e8f2">|</div>${flowTile('🖨', '인쇄할 운송장', needPrintList().length, 'epost', true)}` : ''}
         ${problem ? `<div class="flow-arrow" style="color:#e3e8f2">|</div>${flowTile('⚠️', '기사님이 못 가져감', problem, 'epost', true)}` : ''}
       </div>
       <div class="hint" style="margin:0.9rem 0 0; font-size:1.05rem">
@@ -578,7 +580,12 @@ function renderEpost() {
   const items = [
     ...DB.orders.filter(x => x.epost).map(x => ({ kind: 'order', icon: '🛒', x })),
     ...DB.seeding.filter(x => x.epost).map(x => ({ kind: 'seeding', icon: '🎁', x }))
-  ].sort((a, b) => (b.x.sentDate || '').localeCompare(a.x.sentDate || ''));
+  ].sort((a, b) => {
+    // 인쇄 안 한 것 먼저, 그 다음 최신순
+    const ap = a.x.epost.label && !a.x.printed ? 0 : 1;
+    const bp = b.x.epost.label && !b.x.printed ? 0 : 1;
+    return ap - bp || (b.x.sentDate || '').localeCompare(a.x.sentDate || '');
+  });
   const rows = items.map(({ kind, icon, x }) => {
     const [cls, nm] = x.delivered ? ['done', '배달완료 ✓✓'] : (EPOST_STUS[x.epost.stus] || ['processing', '확인 필요']);
     const cancelable = !x.delivered && ['00', '01', '02'].includes(x.epost.stus || '01');
@@ -593,18 +600,24 @@ function renderEpost() {
       <td><span class="chip ${cls}">${nm}</span></td>
       <td style="white-space:nowrap">${esc(x.sentDate || '')}</td>
       <td style="white-space:nowrap">
-        ${x.epost.label ? `<button class="link-btn" onclick="printLabels('${kind}:${x.id}')">🖨 운송장 인쇄</button>` : `<button class="link-btn" onclick="window.open('https://biz.epost.go.kr','_blank')" title="이 건은 우체국 사이트에서 출력">🖨 사이트에서</button>`}
+        ${x.epost.label
+          ? (x.printed
+            ? `<span class="chip done" style="font-size:0.85rem">🖨 인쇄함 ✓</span> <button class="link-btn" style="font-size:0.9rem" onclick="printLabels('${kind}:${x.id}')">다시 인쇄</button>`
+            : `<button class="link-btn" style="font-weight:800" onclick="printLabels('${kind}:${x.id}')">🖨 운송장 인쇄</button>`)
+          : `<button class="link-btn" onclick="window.open('https://biz.epost.go.kr','_blank')" title="이 건은 우체국 사이트에서 출력">🖨 사이트에서</button>`}
         ${cancelable ? `<button class="link-btn" style="color:var(--red)" onclick="epostCancel('${kind}',${x.id},'${jsq(x.name)}')">취소</button>` : ''}
       </td>
     </tr>`;
   }).join('');
+  const needP = items.filter(({ x }) => x.epost.label && !x.printed).map(({ kind, x }) => kind + ':' + x.id);
   const printable = items.filter(({ x }) => x.epost.label).map(({ kind, x }) => kind + ':' + x.id);
   main().innerHTML = `
     <h1>📦 우체국 접수</h1>
     <div class="sub">앱에서 우체국에 접수한 택배들이에요. 순서: <b>① 접수</b> → <b>② [🖨 인쇄]로 운송장 출력</b> → <b>③ 상자에 붙이면 기사님이 수거</b></div>
     <div style="display:flex; gap:0.8rem; flex-wrap:wrap; margin-bottom:1.2rem">
       <button class="big-btn" onclick="epostRefresh()">🔄 진행상태 새로고침</button>
-      ${printable.length ? `<button class="big-btn green" onclick="printLabels('${printable.join(',')}')">🖨 운송장 인쇄 (${printable.length}장)</button>` : ''}
+      ${needP.length ? `<button class="big-btn green" onclick="printLabels('${needP.join(',')}')">🖨 안 뽑은 운송장 ${needP.length}장 인쇄</button>` : ''}
+      ${printable.length && printable.length !== needP.length ? `<button class="big-btn gray" onclick="printLabels('${printable.join(',')}')">전체 다시 인쇄 (${printable.length}장)</button>` : ''}
       <button class="big-btn gray" onclick="window.open('https://biz.epost.go.kr','_blank')">우체국 사이트 열기</button>
     </div>
     <div class="card">
@@ -622,6 +635,31 @@ function renderEpost() {
 }
 function printLabels(sel) {
   window.open('/label.html?print=1&sel=' + encodeURIComponent(sel), '_blank');
+  // 인쇄 창을 연 순간 "인쇄함 ✓" 표시 (필요하면 언제든 [다시 인쇄] 가능)
+  for (const part of String(sel).split(',')) {
+    const [kind, id] = part.split(':');
+    const list = kind === 'seeding' ? DB.seeding : DB.orders;
+    const x = list.find(i => i.id === Number(id));
+    if (x) x.printed = true;
+  }
+  saveDb().then(() => render());
+}
+// 인쇄가 필요한(접수됐는데 아직 안 뽑은) 건 수
+function needPrintList() {
+  return [
+    ...DB.orders.filter(x => x.status === '발송완료' && x.epost && x.epost.label && !x.printed && !['03', '05'].includes(x.epost.stus)).map(x => ({ kind: 'order', x })),
+    ...DB.seeding.filter(x => x.status === '발송완료' && x.epost && x.epost.label && !x.printed && !['03', '05'].includes(x.epost.stus)).map(x => ({ kind: 'seeding', x }))
+  ];
+}
+function updateNavBadge() {
+  const n = DB ? needPrintList().length : 0;
+  const btn = document.querySelector('nav button[data-page="epost"]');
+  if (!btn) return;
+  let b = btn.querySelector('.nav-badge');
+  if (n > 0) {
+    if (!b) { b = document.createElement('span'); b.className = 'nav-badge'; btn.appendChild(b); }
+    b.textContent = n;
+  } else if (b) b.remove();
 }
 async function epostRefresh() {
   busy(true, '우체국에서 진행상태를 확인하는 중…');
