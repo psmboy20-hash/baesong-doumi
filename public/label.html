@@ -135,7 +135,7 @@ function splitAddr(addr) {
   let a1 = addr, a2 = '';
   const cut = addr.length > 18 ? addr.lastIndexOf(' ', Math.floor(addr.length * 0.55)) : -1;
   if (cut > 5) { a1 = addr.slice(0, cut); a2 = addr.slice(cut + 1); }
-  return [a1, a2 || a1];
+  return [a1, a2]; // 짧은 주소는 둘째 줄 비움 (같은 주소 두 번 인쇄 방지)
 }
 
 let LABELS = [], DBREF = null, MODE = 'roll';

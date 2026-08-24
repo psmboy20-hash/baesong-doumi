@@ -28,17 +28,30 @@ async function api(path, opts) {
 }
 async function saveDb() {
   const r = await api('/api/db', { method: 'POST', body: JSON.stringify(DB) });
+  if (r && r.conflict) {
+    // 그 사이 자동 동기화가 저장함 — 서버 최신본을 받고 사용자에게 다시 하라고 안내
+    adoptDb(r.db);
+    render();
+    toast('⚠️ 새 데이터가 들어와서 겹쳤어요. 방금 한 일을 한 번만 다시 해주세요.', 6000);
+    return false;
+  }
   if (r && r.rev != null) DB.rev = r.rev;
+  return true;
 }
 // 서버에서 새 DB를 받아올 때 체크박스 선택 상태(_sel)를 유지
 function adoptDb(newDb) {
-  if (DB && newDb && !newDb.error) {
+  if (!newDb || newDb.error) return; // 서버 응답 실패 시 기존 화면 유지 (에러 객체로 갈아끼우지 않음)
+  if (DB) {
     for (const key of ['orders', 'seeding']) {
       const oldSel = new Map((DB[key] || []).filter(x => x._sel === false).map(x => [x.id, false]));
       for (const it of (newDb[key] || [])) if (oldSel.has(it.id)) it._sel = false;
     }
   }
   DB = newDb;
+}
+// 이름 등을 onclick의 '...' 문자열 안에 넣을 때 (따옴표·역슬래시가 있어도 안 깨지게)
+function jsq(s) {
+  return esc(String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
 }
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -327,7 +340,7 @@ function renderSend() {
       <td style="max-width:420px">${esc(x.addr)}</td>
       <td style="min-width:240px;max-width:480px">${pp.name}</td>
       <td>${pp.opt || '<span class="muted">-</span>'}</td>
-      <td>${chip(x.status)}<br><button class="link-btn" style="font-size:0.85rem" onclick="manualShip('${kind}',${x.id},'${esc(x.name)}')">따로 보냈어요</button><br><button class="link-btn" style="font-size:0.85rem;color:var(--red)" onclick="cancelSend('${kind}',${x.id},'${esc(x.name)}')">안 보내요 ✕</button></td>
+      <td>${chip(x.status)}<br><button class="link-btn" style="font-size:0.85rem" onclick="manualShip('${kind}',${x.id},'${jsq(x.name)}')">따로 보냈어요</button><br><button class="link-btn" style="font-size:0.85rem;color:var(--red)" onclick="cancelSend('${kind}',${x.id},'${jsq(x.name)}')">안 보내요 ✕</button></td>
     </tr>`;
   }).join('');
 
@@ -405,7 +418,7 @@ function renderEpost() {
       <td style="white-space:nowrap">${esc(x.sentDate || '')}</td>
       <td style="white-space:nowrap">
         ${x.epost.label ? `<button class="link-btn" onclick="printLabels('${kind}:${x.id}')">🖨 인쇄</button>` : `<button class="link-btn" onclick="window.open('https://biz.epost.go.kr','_blank')" title="이 건은 우체국 사이트에서 출력">🖨 사이트에서</button>`}
-        ${cancelable ? `<button class="link-btn" style="color:var(--red)" onclick="epostCancel('${kind}',${x.id},'${esc(x.name)}')">취소</button>` : ''}
+        ${cancelable ? `<button class="link-btn" style="color:var(--red)" onclick="epostCancel('${kind}',${x.id},'${jsq(x.name)}')">취소</button>` : ''}
       </td>
     </tr>`;
   }).join('');
@@ -465,13 +478,13 @@ function renderReturns() {
     const stusNm = x.epost && x.epost.stus ? (EPOST_STUS[x.epost.stus] || [])[1] || '' : '';
     let btns = '';
     if (x.status === '대기') {
-      btns = (epostOn ? `<button class="link-btn" onclick="returnPickup(${x.id},'${esc(x.name)}')">🚚 우체국 회수 신청</button>` : '<span class="muted" style="font-size:0.85rem">우체국 연결 필요</span>') +
-        ` <button class="link-btn" style="color:var(--red)" onclick="returnCancel(${x.id},'delete','${esc(x.name)}')">🗑 지우기</button>`;
+      btns = (epostOn ? `<button class="link-btn" onclick="returnPickup(${x.id},'${jsq(x.name)}')">🚚 우체국 회수 신청</button>` : '<span class="muted" style="font-size:0.85rem">우체국 연결 필요</span>') +
+        ` <button class="link-btn" style="color:var(--red)" onclick="returnCancel(${x.id},'delete','${jsq(x.name)}')">🗑 지우기</button>`;
     } else if (x.status === '회수중') {
-      btns = `<button class="link-btn" onclick="returnComplete(${x.id},'${esc(x.name)}','${esc(x.kind)}')">📦 물건 도착 확인</button>
-        <button class="link-btn" style="color:var(--red)" onclick="returnCancel(${x.id},'pickup','${esc(x.name)}')">회수 취소</button>`;
+      btns = `<button class="link-btn" onclick="returnComplete(${x.id},'${esc(x.name)}','${jsq(x.kind)}')">📦 물건 도착 확인</button>
+        <button class="link-btn" style="color:var(--red)" onclick="returnCancel(${x.id},'pickup','${jsq(x.name)}')">회수 취소</button>`;
     } else {
-      btns = `<button class="link-btn" onclick="returnCancel(${x.id},'delete','${esc(x.name)}')">🗑 지우기</button>`;
+      btns = `<button class="link-btn" onclick="returnCancel(${x.id},'delete','${jsq(x.name)}')">🗑 지우기</button>`;
     }
     return `
     <tr>
@@ -671,7 +684,7 @@ function renderShipping() {
       <td>${pp.opt || '<span class="muted">-</span>'}</td>
       <td>${chip(x.delivered ? '배달완료' : x.status)}</td>
       <td style="max-width:150px">${invoiceCell(x.invoice)}</td>
-      <td>${x.status === '발송완료' ? `<button class="link-btn" onclick="returnFormFrom('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id})">🔁 교환/반품</button>` : x.status === '취소됨' ? `<button class="link-btn" onclick="restoreSend('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id},'${esc(x.name)}')">↩️ 다시 보내기</button>` : ''}</td>
+      <td>${x.status === '발송완료' ? `<button class="link-btn" onclick="returnFormFrom('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id})">🔁 교환/반품</button>` : x.status === '취소됨' ? `<button class="link-btn" onclick="restoreSend('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id},'${jsq(x.name)}')">↩️ 다시 보내기</button>` : ''}</td>
     </tr>`;
   }).join('');
   main().innerHTML = `
@@ -781,8 +794,9 @@ async function invAdj(id, d) {
 async function invDel(id) {
   const item = DB.inventory.find(i => i.id === id);
   if (!item) return;
-  if (!confirm(`"${item.name}"을(를) 재고 목록에서 지울까요?`)) return;
+  if (!confirm(`"${item.name}"을(를) 재고 목록에서 지울까요?\n(지운 제품은 자동 등록에서도 빠져요)`)) return;
   DB.inventory = DB.inventory.filter(i => i.id !== id);
+  if (item.productNo) (DB.inventoryHidden = DB.inventoryHidden || []).push(item.productNo); // 자동 재등록 방지
   await saveDb();
   renderInventory();
 }

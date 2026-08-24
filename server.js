@@ -65,7 +65,7 @@ function loadDb() {
     // 기본값 보강
     const def = defaultDb();
     db.settings = Object.assign(def.settings, db.settings || {});
-    for (const k of ['seeding', 'orders', 'inventory', 'returns']) if (!Array.isArray(db[k])) db[k] = [];
+    for (const k of ['seeding', 'orders', 'inventory', 'returns', 'inventoryHidden']) if (!Array.isArray(db[k])) db[k] = [];
     if (!db.nextId) db.nextId = 1;
     return db;
   } catch (e) {
@@ -107,7 +107,10 @@ function excelDate(v) {
   if (m) return `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
   return String(v);
 }
-function today() { return new Date().toISOString().slice(0, 10); }
+function today() { // 한국 로컬 날짜 (UTC를 쓰면 오전 9시 전 접수가 전날로 찍힘)
+  const d = new Date(), p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
 function nowStamp() {
   const d = new Date();
   const p = n => String(n).padStart(2, '0');
@@ -386,7 +389,7 @@ function epostConfigured(db) {
 function epostPlain(params) {
   return Object.entries(params)
     .filter(([, v]) => v != null && String(v) !== '')
-    .map(([k, v]) => k + '=' + String(v).replace(/[&=]/g, ' ').trim())
+    .map(([k, v]) => k + '=' + String(v).replace(/[&=\r\n]+/g, ' ').trim())
     .join('&');
 }
 async function epostCall(db, msgName, params) {
@@ -450,7 +453,7 @@ async function epostInsertOrder(db, g, orderNo, testYn) {
     printYn: 'Y',      // 운송장을 앱에서 직접 인쇄 (자체 출력)
     printAreaCdYn: 'Y' // 인쇄용 집배코드 받기
   };
-  if (isMobile) params.recMob = phone; else params.recTel = phone;
+  if (isMobile) params.recMob = phone; else if (phone) params.recTel = phone;
   if (testYn === 'Y') params.testYn = 'Y';
   const xml = await epostCall(db, 'api.InsertOrder.jparcel', params);
   return {
@@ -543,6 +546,7 @@ function syncInventoryFromProducts(db) {
   let added = 0;
   for (const p of (db.products || [])) {
     if (!p.name) continue;
+    if ((db.inventoryHidden || []).includes(p.no)) continue; // 사용자가 지운 제품은 다시 안 넣음
     if (existing.has(lo(p.name))) {
       // 이미 있는 재고엔 제품번호만 붙여줌 (판매페이지 링크/사진용)
       const inv = db.inventory.find(i => lo(i.name) === lo(p.name));
@@ -766,7 +770,12 @@ function parseOrderRows(rows) {
 
 // ---------- 병합(중복 방지) ----------
 function seedKey(s) { return normName(s.name) + '|' + phoneDigits(s.phone); }
-function orderKey(o) { return (o.orderNo || '') + '|' + normName(o.name) + '|' + phoneDigits(o.phone) + '|' + String(o.product || '').replace(/\s/g, '').slice(0, 40); }
+// 옵션(색상/사이즈)까지 키에 포함 — 같은 주문에서 같은 제품을 옵션만 다르게 산 경우를 별개 건으로 취급
+function optKey(o) {
+  return (String(o.color || '') + '|' + String(o.size || '') + '|' + String(o.option || ''))
+    .toLowerCase().replace(/\s/g, '').slice(0, 40);
+}
+function orderKey(o) { return (o.orderNo || '') + '|' + normName(o.name) + '|' + phoneDigits(o.phone) + '|' + String(o.product || '').replace(/\s/g, '').slice(0, 40) + '|' + optKey(o); }
 
 function mergeSeeding(db, parsed) {
   const map = new Map(db.seeding.map(s => [seedKey(s), s]));
@@ -775,11 +784,16 @@ function mergeSeeding(db, parsed) {
     const k = seedKey(p);
     const ex = map.get(k);
     if (ex) {
-      // 시트에 송장이 생겼으면 반영
+      // 시트에 송장이 생겼으면 반영 (앱에서 취소한 무효 송장은 다시 붙이지 않음)
       let ch = false;
-      if (p.invoice && !ex.invoice) { ex.invoice = p.invoice; ex.status = '발송완료'; ex.sentDate = p.sentDate || ex.sentDate || today(); ch = true; }
-      for (const f of ['insta', 'addr', 'product', 'size', 'request', 'note']) {
-        if (p[f] && p[f] !== ex[f]) { ex[f] = p[f]; ch = true; }
+      if (p.invoice && !ex.invoice && p.invoice !== ex.canceledInvoice) {
+        ex.invoice = p.invoice; ex.status = '발송완료'; ex.sentDate = p.sentDate || ex.sentDate || today(); ch = true;
+      }
+      // 내용 갱신은 아직 안 보낸 건만 — 발송완료 기록을 재신청이 덮어쓰지 않게
+      if (ex.status === '대기' || ex.status === '접수중') {
+        for (const f of ['insta', 'addr', 'product', 'size', 'request', 'note']) {
+          if (p[f] && p[f] !== ex[f]) { ex[f] = p[f]; ch = true; }
+        }
       }
       if (ch) updated++;
     } else {
@@ -812,12 +826,15 @@ function mergeSeeding(db, parsed) {
 // 출처가 달라도 같은 주문을 알아보기 위한 느슨한 키 (이름+전화 뒷8자리+제품명 앞부분)
 function fuzzyOrderKey(o) {
   return normName(o.name) + '|' + phoneDigits(o.phone).slice(-8) + '|' +
-    String(o.product || '').replace(/\s/g, '').replace(/\(P[0-9A-Z]+\)/g, '').slice(0, 14);
+    String(o.product || '').replace(/\s/g, '').replace(/\(P[0-9A-Z]+\)/g, '').slice(0, 14) + '|' + optKey(o);
 }
 function mergeOrders(db, parsed) {
   const map = new Map(db.orders.map(o => [orderKey(o), o]));
+  // 느슨한 키는 아직 안 보낸 건에만 — 과거 발송완료 건이 재주문을 흡수해 누락시키는 것 방지
   const fuzzy = new Map();
-  for (const o of db.orders) if (!fuzzy.has(fuzzyOrderKey(o))) fuzzy.set(fuzzyOrderKey(o), o);
+  for (const o of db.orders) {
+    if ((o.status === '대기' || o.status === '접수중') && !fuzzy.has(fuzzyOrderKey(o))) fuzzy.set(fuzzyOrderKey(o), o);
+  }
   let added = 0, updated = 0, canceled = 0;
   for (const p of parsed) {
     // 카페24에서 취소/반품/교환된 주문: 아직 안 보낸 건이면 취소 처리
@@ -856,8 +873,10 @@ function mergeOrders(db, parsed) {
     const ex = map.get(orderKey(p)) || fuzzy.get(fuzzyOrderKey(p));
     if (ex) {
       let ch = false;
-      if (p.invoice && !ex.invoice) { ex.invoice = p.invoice; ex.courier = p.courier || ex.courier; ch = true; }
-      if (shipped && ex.status !== '발송완료') { ex.status = '발송완료'; ch = true; }
+      if (p.invoice && !ex.invoice && p.invoice !== ex.canceledInvoice) { ex.invoice = p.invoice; ex.courier = p.courier || ex.courier; ch = true; }
+      // 앱에서 접수 취소한 건은 진짜 새 송장이 생기기 전까지 발송완료로 되돌리지 않음
+      if (shipped && ex.status !== '발송완료' &&
+          (!ex.canceledInvoice || (p.invoice && p.invoice !== ex.canceledInvoice))) { ex.status = '발송완료'; ch = true; }
       if (shipped && !ex.sentDate && p.sentDate) { ex.sentDate = p.sentDate; ch = true; }
       if (p.orderNo && !ex.orderNo) { ex.orderNo = p.orderNo; ch = true; }
       // 아직 안 보낸 건은 주소/연락처/옵션 변경을 최신으로 반영
@@ -893,7 +912,8 @@ function buildParcelGroups(db, selected) {
   for (const sel of selected) {
     const list = sel.type === 'seeding' ? db.seeding : db.orders;
     const item = list.find(x => x.id === sel.id);
-    if (item && item.status !== '취소됨') pick.push({ type: sel.type, item });
+    // 이미 보낸 건은 서버에서도 걸러냄 (화면이 30초 묵은 상태에서 눌러도 이중 접수 방지)
+    if (item && item.status !== '취소됨' && item.status !== '발송완료' && !item.epost) pick.push({ type: sel.type, item });
   }
   for (const { type, item } of pick) {
     const gk = normName(item.name) + '|' + phoneDigits(item.phone) + '|' + cleanAddr(item.addr).slice(0, 15);
@@ -901,7 +921,7 @@ function buildParcelGroups(db, selected) {
     const g = groups.get(gk);
     g.items.push({ type, item });
     if (item.msg) g.msgs.push(item.msg);
-    if (type === 'seeding' && item.request) g.msgs.push('');
+    if (type === 'seeding' && item.request) g.msgs.push(String(item.request).trim());
   }
   return { groups, pick };
 }
@@ -1064,6 +1084,15 @@ function stockMatches(inv, item) {
   return true;
 }
 
+// 여러 재고 행이 걸리면 옵션이 구체적으로 맞는 1건만 (이중 차감/유령 복구 방지)
+function findStockMatches(db, item) {
+  const hits = db.inventory.filter(inv => stockMatches(inv, item));
+  if (hits.length <= 1) return hits;
+  const scored = hits.map(inv => ({ inv, s: (inv.size ? 2 : 0) + (inv.color ? 1 : 0) }));
+  scored.sort((a, b) => b.s - a.s);
+  return [scored[0].inv];
+}
+
 // 발송 확정된 건들의 공통 후처리 (송장매칭·API접수 양쪽에서 사용)
 async function postProcessShipped(db, matchedItems) {
   const results = {};
@@ -1074,8 +1103,7 @@ async function postProcessShipped(db, matchedItems) {
     if (item.stockDeducted) continue;
     if (!item.product) continue;
     let any = false;
-    for (const inv of db.inventory) {
-      if (!stockMatches(inv, item)) continue;
+    for (const inv of findStockMatches(db, item)) {
       const n = Number(item.qty) || 1;
       inv.qty = Math.max(0, inv.qty - n);
       results.stock.push({ name: [inv.name, inv.color, inv.size].filter(Boolean).join(' '), minus: n, left: inv.qty });
@@ -1142,11 +1170,23 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   try {
+    // 다른 사이트가 로컬 API를 몰래 호출하는 것 차단 (앱 화면은 Origin이 localhost이거나 없음)
+    if (req.method === 'POST') {
+      const org = String(req.headers.origin || '');
+      if (org && !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(org)) {
+        return sendJson(res, 403, { error: '허용되지 않은 요청이에요.' });
+      }
+    }
     if (url.pathname === '/api/db' && req.method === 'GET') {
       return sendJson(res, 200, loadDb());
     }
     if (url.pathname === '/api/db' && req.method === 'POST') {
       const body = JSON.parse((await readBody(req)).toString('utf8'));
+      // 화면이 들고 있던 DB가 낡았으면(그 사이 자동 동기화가 저장) 덮어쓰지 않고 알림
+      const cur = loadDb();
+      if (body.rev != null && cur.rev != null && body.rev !== cur.rev) {
+        return sendJson(res, 200, { conflict: true, db: cur });
+      }
       saveDb(body);
       return sendJson(res, 200, { ok: true, rev: body.rev });
     }
@@ -1251,8 +1291,17 @@ const server = http.createServer(async (req, res) => {
           out.push({ name: g.name, ok: false, error: '주소에서 우편번호(5자리)를 찾지 못했어요. 주소를 고친 뒤 다시 접수해 주세요.' });
           continue;
         }
+        if (String(g.phone || '').replace(/\D/g, '').length < 9) {
+          out.push({ name: g.name, ok: false, error: '전화번호가 없거나 이상해요. 연락처를 고친 뒤 다시 접수해 주세요.' });
+          continue;
+        }
         try {
           const r = await epostInsertOrder(db, g, orderNo, body.testYn === 'Y' ? 'Y' : 'N');
+          if (body.testYn !== 'Y' && !r.regiNo) {
+            // 오류코드는 없는데 송장번호도 없는 이상 응답 — 접수 성공으로 치면 안 됨
+            out.push({ name: g.name, ok: false, error: '우체국이 송장번호를 주지 않았어요. 잠시 뒤 다시 시도해 주세요.' });
+            continue;
+          }
           if (body.testYn !== 'Y' && r.regiNo) {
             for (const { type, item } of g.items) {
               item.invoice = r.regiNo;
@@ -1294,7 +1343,8 @@ const server = http.createServer(async (req, res) => {
       // 우체국에 접수된 건들의 처리상태(예약/운송장출력/집하 등) 새로고침
       const db = loadDb();
       if (!epostConfigured(db) || !db.epost) return sendJson(res, 200, { error: '우체국 연결이 필요해요.' });
-      const targets = [...db.orders, ...db.seeding].filter(x => x.epost && x.epost.orderNo);
+      // 끝난 건(집하완료/취소)은 건너뛰어 호출 수를 줄임
+      const targets = [...db.orders, ...db.seeding].filter(x => x.epost && x.epost.orderNo && !['03', '05'].includes(x.epost.stus));
       const done = new Set();
       let refreshed = 0;
       const errors = [];
@@ -1359,12 +1409,14 @@ const server = http.createServer(async (req, res) => {
           if (it.epost && it.epost.orderNo === item.epost.orderNo) {
             // 재고 되돌리기
             if (it.stockDeducted) {
-              for (const inv of db.inventory) {
-                if (stockMatches(inv, it)) inv.qty += Number(it.qty) || 1;
-              }
+              for (const inv of findStockMatches(db, it)) inv.qty += Number(it.qty) || 1;
               it.stockDeducted = false;
             }
             if (it.cafe24Shipped) warn.push(it.orderNo || it.name);
+            // 재접수 시 새 송장이 카페24/시트에 다시 등록되도록 플래그 초기화 + 무효 송장 기억
+            it.cafe24Shipped = false;
+            it.sheetWritten = false;
+            it.canceledInvoice = String(it.invoice || '');
             it.status = '대기';
             it.invoice = '';
             it.sentDate = '';
@@ -1466,9 +1518,11 @@ const server = http.createServer(async (req, res) => {
       if (ret.status === '완료') return sendJson(res, 200, { error: '이미 완료된 건이에요.' });
       const out = { stock: [], resend: null };
       if (b.restock !== false && ret.product) {
-        const fake = { product: ret.product, color: '', size: '', qty: ret.qty };
-        for (const inv of db.inventory) {
-          if (!stockMatches(inv, fake)) continue;
+        // 옵션 텍스트("Indigoblue M" 등)에서 사이즈를 뽑아 사이즈별 재고 행에도 복귀되게
+        const optTxt = String(ret.option || '').trim();
+        const sm = optTxt.match(/(XXS|XS|S|M|L|XL|XXL|2XL|FREE|F)\s*$/i);
+        const fake = { product: ret.product + ' ' + optTxt, color: '', size: sm ? sm[1] : '', qty: ret.qty };
+        for (const inv of findStockMatches(db, fake)) {
           const n = Number(ret.qty) || 1;
           inv.qty += n;
           out.stock.push({ name: [inv.name, inv.color, inv.size].filter(Boolean).join(' '), plus: n, left: inv.qty });
