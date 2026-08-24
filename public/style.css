@@ -31,6 +31,7 @@ header {
   z-index: 10;
 }
 .logo { font-size: 1.4rem; font-weight: 800; cursor: pointer; }
+.ver { font-size: 0.75rem; font-weight: 400; color: #8a93a5; vertical-align: middle; }
 nav { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 nav button {
   font-size: 1rem;

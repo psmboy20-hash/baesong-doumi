@@ -1117,7 +1117,9 @@ const server = http.createServer(async (req, res) => {
       syncStatus.cafe24.configured = cafe24Configured(db);
       syncStatus.cafe24.connected = !!db.cafe24Token;
       syncStatus.epost = { configured: epostConfigured(db), connected: !!db.epost };
-      return sendJson(res, 200, { rev: db.rev || 0, status: syncStatus });
+      let ver = '';
+      try { ver = JSON.parse(fs.readFileSync(path.join(__dirname, 'version.json'), 'utf8')).version; } catch (e) { /* 무시 */ }
+      return sendJson(res, 200, { rev: db.rev || 0, version: ver, status: syncStatus });
     }
     if (url.pathname === '/api/cafe24/authurl' && req.method === 'GET') {
       const db = loadDb();

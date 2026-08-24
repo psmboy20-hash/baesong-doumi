@@ -388,11 +388,13 @@ function renderEpost() {
   const rows = items.map(({ kind, icon, x }) => {
     const [cls, nm] = x.delivered ? ['done', '배달완료 ✓✓'] : (EPOST_STUS[x.epost.stus] || ['processing', '확인 필요']);
     const cancelable = !x.delivered && ['00', '01', '02'].includes(x.epost.stus || '01');
+    const pp = productParts(x);
     return `
     <tr>
       <td style="white-space:nowrap">${icon} ${kind === 'seeding' ? '시딩' : '주문'}</td>
       <td><b>${esc(x.name)}</b></td>
-      <td style="max-width:420px">${esc(String(x.product || '').slice(0, 90))}</td>
+      <td style="min-width:220px;max-width:440px">${pp.name}</td>
+      <td>${pp.opt || '<span class="muted">-</span>'}</td>
       <td style="max-width:150px">${x.invoice ? invoiceCell(x.invoice) : '<span class="muted">-</span>'}</td>
       <td><span class="chip ${cls}">${nm}</span></td>
       <td style="white-space:nowrap">${esc(x.sentDate || '')}</td>
@@ -415,7 +417,7 @@ function renderEpost() {
       ${items.length ? `
       <div class="table-wrap" style="max-height:65vh">
         <table>
-          <thead><tr><th>구분</th><th>이름</th><th>제품</th><th>송장번호</th><th>진행상태</th><th>접수일</th><th>인쇄·취소</th></tr></thead>
+          <thead><tr><th>구분</th><th>이름</th><th>제품</th><th>옵션</th><th>송장번호</th><th>진행상태</th><th>접수일</th><th>인쇄·취소</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
@@ -470,7 +472,8 @@ function renderReturns() {
     <tr>
       <td style="font-size:1.2rem">${x.kind === '교환' ? '🔄' : '↩️'}</td>
       <td><b>${esc(x.name)}</b><br><span class="muted" style="font-size:0.85rem">${esc(x.phone)}</span></td>
-      <td style="max-width:420px">${esc(x.product)}${x.option ? ` <b>(${esc(x.option)})</b>` : ''}${x.kind === '교환' && x.exchangeProduct ? `<br><span style="font-size:0.85rem">→ 교환: ${esc(x.exchangeProduct)}</span>` : ''}</td>
+      <td style="min-width:200px;max-width:420px">${productParts(x).name}${x.kind === '교환' && x.exchangeProduct ? `<div class="muted" style="font-size:0.85rem">→ 교환으로 보낼 것: ${esc(x.exchangeProduct)}</div>` : ''}</td>
+      <td>${productParts(x).opt || '<span class="muted">-</span>'}</td>
       <td style="max-width:280px">${esc(x.reason || '')}</td>
       <td style="max-width:150px">${x.invoice ? invoiceCell(x.invoice) : '<span class="muted">-</span>'}${stusNm ? `<span class="muted" style="font-size:0.85rem">${stusNm}</span>` : ''}</td>
       <td><span class="chip ${cls}">${nm}</span></td>
@@ -489,7 +492,7 @@ function renderReturns() {
       ${items.length ? `
       <div class="table-wrap" style="max-height:65vh">
         <table>
-          <thead><tr><th>구분</th><th>고객</th><th>제품</th><th>사유</th><th>회수 송장</th><th>상태</th><th>처리</th></tr></thead>
+          <thead><tr><th>구분</th><th>고객</th><th>제품</th><th>옵션</th><th>사유</th><th>회수 송장</th><th>상태</th><th>처리</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
@@ -1053,6 +1056,7 @@ async function refreshStatus(force) {
   try {
     const r = await api('/api/status');
     SYNC_STATUS = r.status;
+    if (r.version) { const v = document.getElementById('ver'); if (v) v.textContent = 'v' + r.version; }
     if (force || (DB && r.rev !== DB.rev)) {
       const before = DB ? pendingOf(DB.seeding).length + pendingOf(DB.orders).length : 0;
       adoptDb(await api('/api/db'));
