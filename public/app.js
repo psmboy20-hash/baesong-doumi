@@ -500,12 +500,12 @@ function renderShipping() {
   const filtered = q ? all.filter(x => (x.name + x.phone + (x.invoice || '') + (x.product || '')).includes(q)) : all;
   const rows = filtered.slice(0, 200).map(x => `
     <tr>
-      <td>${x._kind === '주문' ? '🛒' : '🎁'} ${x._kind}</td>
+      <td style="white-space:nowrap">${x._kind === '주문' ? '🛒' : '🎁'} ${x._kind}</td>
+      <td style="white-space:nowrap">${esc(x.sentDate || '')}</td>
       <td><b>${esc(x.name)}</b></td>
       <td style="min-width:260px;max-width:360px">${productCell(x)}</td>
       <td>${chip(x.status)}</td>
       <td>${x.invoice ? trackLink(x.invoice) : '<span class="muted">아직 없음</span>'}</td>
-      <td>${esc(x.sentDate || '')}</td>
       <td>${x.status === '발송완료' ? `<button class="link-btn" onclick="returnFormFrom('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id})">🔁 교환/반품</button>` : ''}</td>
     </tr>`).join('');
   main().innerHTML = `
@@ -516,7 +516,7 @@ function renderShipping() {
     <div class="card">
       <div class="table-wrap" style="max-height:70vh">
         <table>
-          <thead><tr><th>구분</th><th>이름</th><th>제품</th><th>상태</th><th>송장번호</th><th>보낸 날</th><th></th></tr></thead>
+          <thead><tr><th>구분</th><th>보낸 날</th><th>이름</th><th>제품</th><th>상태</th><th>송장번호</th><th></th></tr></thead>
           <tbody>${rows || '<tr><td colspan="7" class="muted">아직 내역이 없어요.</td></tr>'}</tbody>
         </table>
       </div>
