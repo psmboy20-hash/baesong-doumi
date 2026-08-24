@@ -1268,11 +1268,15 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   try {
-    // 다른 사이트가 로컬 API를 몰래 호출하는 것 차단 (앱 화면은 Origin이 localhost이거나 없음)
+    // 다른 사이트가 API를 몰래 호출하는 것 차단 — 같은 주소(same-origin)에서 온 요청만 허용
+    // (localhost뿐 아니라 Tailscale 주소로 열어도 자기 자신이면 통과)
     if (req.method === 'POST') {
       const org = String(req.headers.origin || '');
-      if (org && !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(org)) {
-        return sendJson(res, 403, { error: '허용되지 않은 요청이에요.' });
+      if (org) {
+        const host = String(req.headers.host || '');
+        const sameOrigin = org === 'http://' + host || org === 'https://' + host;
+        const localhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(org);
+        if (!sameOrigin && !localhost) return sendJson(res, 403, { error: '허용되지 않은 요청이에요.' });
       }
     }
     // 보기 모드에선 실제 접수/회수 같은 동작 차단 (새로고침·동기화 같은 읽기는 허용)
