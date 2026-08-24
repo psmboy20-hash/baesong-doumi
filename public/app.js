@@ -91,6 +91,32 @@ function parseOption(x) {
   }
   return { color, size };
 }
+// 카페24 판매 페이지 주소
+function saleUrl(no) {
+  const mall = (DB && DB.settings && DB.settings.cafe24MallId) || 'solvere';
+  return `https://${mall}.cafe24.com/product/detail.html?product_no=${no}`;
+}
+// 제품 사진 마우스오버 확대 미리보기
+function imgPrev(e, src) {
+  const d = $('#img-preview');
+  if (!d) return;
+  d.innerHTML = `<img src="${src}">`;
+  d.classList.remove('hidden');
+  imgPrevMove(e);
+}
+function imgPrevMove(e) {
+  const d = $('#img-preview');
+  if (!d || d.classList.contains('hidden')) return;
+  d.style.left = Math.min(e.clientX + 24, innerWidth - 300) + 'px';
+  d.style.top = Math.min(e.clientY + 24, innerHeight - 320) + 'px';
+}
+function imgPrevHide() {
+  const d = $('#img-preview');
+  if (d) d.classList.add('hidden');
+}
+function prodImgTag(src) {
+  return `<img src="${esc(src)}" class="pimg" onmouseenter="imgPrev(event,'${esc(src)}')" onmousemove="imgPrevMove(event)" onmouseleave="imgPrevHide()" onerror="this.style.display='none'">`;
+}
 // 제품 표시를 {name: 제품명(사진 포함), opt: "색상 / 사이즈"} 로 분리
 function productParts(x) {
   const { color, size } = parseOption(x);
@@ -104,9 +130,9 @@ function productParts(x) {
   const name = matches.map(p => {
     const { base } = splitColor(p.name);
     return `
-    <div style="display:flex;align-items:center;gap:0.4rem;height:30px;margin:0.1rem 0;line-height:1.2;overflow:hidden">
-      ${p.img ? `<img src="${esc(p.img)}" style="width:30px;height:30px;object-fit:cover;border-radius:6px;flex-shrink:0" onerror="this.style.display='none'">` : ''}
-      <span style="white-space:nowrap"><b>${esc(base)}</b></span>
+    <div style="display:flex;align-items:center;gap:0.4rem;height:36px;margin:0.1rem 0;line-height:1.2;overflow:hidden">
+      ${p.img ? prodImgTag(p.img) : ''}
+      <span class="pname-link" style="white-space:nowrap" onclick="window.open('${saleUrl(p.no)}','_blank')" title="판매 페이지 열기"><b>${esc(base)}</b></span>
     </div>`;
   }).join('');
   const opt = matches.map(p => {
@@ -115,7 +141,7 @@ function productParts(x) {
     if (c) parts.push(c);
     if (single && color && (!c || normOpt(color) !== normOpt(c))) parts.push(color);
     if (size) parts.push(size);
-    return `<div style="display:flex;align-items:center;height:30px;margin:0.1rem 0;white-space:nowrap">${parts.length ? '<b>' + esc(parts.join(', ')) + '</b>' : '<span class="muted">-</span>'}</div>`;
+    return `<div style="display:flex;align-items:center;height:36px;margin:0.1rem 0;white-space:nowrap">${parts.length ? '<b>' + esc(parts.join(', ')) + '</b>' : '<span class="muted">-</span>'}</div>`;
   }).join('');
   return { name, opt };
 }
@@ -675,17 +701,23 @@ function renderShipping() {
 function renderInventory() {
   const q = (window._invQ || '').trim();
   const items = q ? DB.inventory.filter(i => (i.name + ' ' + (i.color || '') + ' ' + (i.size || '')).includes(q)) : DB.inventory;
-  const cards = items.map(i => `
+  const findP = i => (DB.products || []).find(p => p.no === i.productNo) ||
+    (DB.products || []).find(p => lettersOnly(p.name) === lettersOnly(i.name));
+  const cards = items.map(i => {
+    const p = findP(i);
+    return `
     <div class="inv-card">
+      ${p && p.img ? prodImgTag(p.img).replace('class="pimg"', 'class="pimg inv-img"') : ''}
       <div class="info">
-        <div class="pname">${esc(i.name)}</div>
+        <div class="pname">${p ? `<span class="pname-link" onclick="window.open('${saleUrl(p.no)}','_blank')" title="판매 페이지 열기">${esc(i.name)}</span>` : esc(i.name)}</div>
         <div class="popt">${esc([i.color, i.size].filter(Boolean).join(' / ') || ' ')}</div>
       </div>
       <button class="qty-btn" onclick="invAdj(${i.id},-1)">−</button>
       <div class="qty ${i.qty <= 2 ? 'low' : ''}">${i.qty}</div>
       <button class="qty-btn" onclick="invAdj(${i.id},1)">＋</button>
       <button class="del-btn" title="지우기" onclick="invDel(${i.id})">🗑️</button>
-    </div>`).join('');
+    </div>`;
+  }).join('');
   main().innerHTML = `
     <h1>📋 재고</h1>
     <div class="sub">남은 옷 개수예요. 옷을 보내면 <b>−</b>, 새로 들어오면 <b>＋</b>를 눌러요. <span style="color:var(--red)">빨간 숫자</span>는 2개 이하!</div>

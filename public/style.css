@@ -241,5 +241,18 @@ input[type="checkbox"] { width: 1.6rem; height: 1.6rem; accent-color: var(--gree
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .link-btn { background: none; border: none; color: var(--blue); font-size: 1rem; cursor: pointer; text-decoration: underline; font-family: inherit; white-space: nowrap; }
+
+/* 제품 사진: 마우스 올리면 크게 미리보기, 이름 누르면 판매 페이지 */
+.pimg { width: 36px; height: 36px; object-fit: cover; border-radius: 6px; flex-shrink: 0; cursor: zoom-in; }
+.pimg.inv-img { width: 52px; height: 52px; border-radius: 10px; }
+.pname-link { cursor: pointer; }
+.pname-link:hover { color: var(--blue); text-decoration: underline; }
+#img-preview {
+  position: fixed; z-index: 300; pointer-events: none;
+  background: #fff; border: 3px solid var(--line); border-radius: 14px; padding: 5px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.25);
+}
+#img-preview.hidden { display: none; }
+#img-preview img { width: 260px; height: 260px; object-fit: cover; border-radius: 10px; display: block; }
 .track-link { color: var(--blue); font-weight: 700; text-decoration: underline; }
 .muted { color: #8a93a5; }

@@ -536,6 +536,26 @@ async function cafe24FetchProducts(db) {
   return list.length;
 }
 
+// 카페24 제품 → 재고 자동 등록 (이름 글자 비교로 중복 방지, 새 제품은 qty 0)
+function syncInventoryFromProducts(db) {
+  const lo = s => String(s || '').toLowerCase().replace(/[^a-z0-9가-힣]/g, '');
+  const existing = new Set(db.inventory.map(i => lo(i.name)));
+  let added = 0;
+  for (const p of (db.products || [])) {
+    if (!p.name) continue;
+    if (existing.has(lo(p.name))) {
+      // 이미 있는 재고엔 제품번호만 붙여줌 (판매페이지 링크/사진용)
+      const inv = db.inventory.find(i => lo(i.name) === lo(p.name));
+      if (inv && !inv.productNo) inv.productNo = p.no;
+      continue;
+    }
+    existing.add(lo(p.name));
+    db.inventory.push({ id: db.nextId++, name: p.name, color: '', size: '', qty: 0, productNo: p.no });
+    added++;
+  }
+  return added;
+}
+
 // ---------- 자동 동기화 ----------
 const syncStatus = {
   lastRun: null, lastOk: null,
@@ -635,6 +655,8 @@ async function syncAll() {
       try { await cafe24FetchProducts(db); changed = true; } catch (e) { /* 다음 동기화 때 재시도 */ }
     }
   }
+  // 카페24 제품이 재고 목록에 전부 있도록 자동 등록 (새 제품은 수량 0으로)
+  if (syncInventoryFromProducts(db) > 0) changed = true;
   try { if (await checkDelivered(db)) changed = true; } catch (e) { /* 무시 */ }
   if (changed) saveDb(db);
   syncStatus.lastOk = syncStatus.google.ok || syncStatus.cafe24.ok ? new Date().toISOString() : syncStatus.lastOk;
