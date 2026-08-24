@@ -79,6 +79,10 @@ function loadDb() {
 
 function saveDb(db) {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  // _sel(체크박스 선택)은 화면 전용 — 장부에 저장하지 않음 (저장되면 다음에 열 때 0건 선택으로 시작함)
+  for (const k of ['seeding', 'orders']) {
+    if (Array.isArray(db[k])) for (const x of db[k]) delete x._sel;
+  }
   // 백업 1개 유지
   if (fs.existsSync(DB_PATH)) fs.copyFileSync(DB_PATH, DB_PATH + '.bak');
   db.rev = (db.rev || 0) + 1;

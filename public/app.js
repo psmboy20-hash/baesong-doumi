@@ -346,7 +346,16 @@ function renderSend() {
   ];
   // 엑셀로 접수 중인 건은 기본 체크 해제 (바로 접수와 겹쳐 두 번 보내는 것 방지)
   for (const p of pending) if (p.x.status === '접수중' && p.x._sel === undefined) p.x._sel = false;
-  const selCount = pending.filter(p => p.x._sel !== false).length;
+  // 같은 사람(이름+전화+주소) 묶음 — 화면 표시도, 선택 건수도 "택배 몇 건" 기준
+  const gmap = new Map();
+  for (const p of pending) {
+    const x = p.x;
+    const key = String(x.name || '').replace(/\s/g, '') + '|' + String(x.phone || '').replace(/\D/g, '') + '|' + String(x.addr || '').replace(/\s/g, '').slice(0, 15);
+    if (!gmap.has(key)) gmap.set(key, []);
+    gmap.get(key).push(p);
+  }
+  const groupsArr = [...gmap.values()];
+  const selCount = groupsArr.filter(g => g.every(p => p.x._sel !== false)).length;
   const c24 = SYNC_STATUS && SYNC_STATUS.cafe24;
   const goo = SYNC_STATUS && SYNC_STATUS.google;
   const gline = !goo || goo.ok == null ? ''
@@ -362,15 +371,7 @@ function renderSend() {
         ? '🔴 카페24에서 가져오기 실패: ' + esc(c24.error || '')
         : '🟢 카페24 자동 연동 중';
 
-  // 같은 사람(이름+전화+주소)은 한 줄로 묶기 — 실제로도 택배 1건으로 나감
-  const gmap = new Map();
-  for (const p of pending) {
-    const x = p.x;
-    const key = String(x.name || '').replace(/\s/g, '') + '|' + String(x.phone || '').replace(/\D/g, '') + '|' + String(x.addr || '').replace(/\s/g, '').slice(0, 15);
-    if (!gmap.has(key)) gmap.set(key, []);
-    gmap.get(key).push(p);
-  }
-  const rows = [...gmap.values()].map(g => {
+  const rows = groupsArr.map(g => {
     const first = g[0].x;
     const spec = g.map(p => p.kind + ':' + p.x.id).join(',');
     const allSel = g.every(p => p.x._sel !== false);
@@ -412,7 +413,11 @@ function renderSend() {
     <div class="card">
       <div class="step-title"><span class="step-num">2</span> 우체국 접수하기</div>
       ${pending.length ? `
-      <div class="hint">보낼 목록이에요. 빼고 싶은 사람은 체크를 풀면 돼요.</div>
+      <div class="hint">보낼 목록이에요. 빼고 싶은 사람은 체크를 풀면 돼요. (기본은 전체 선택)</div>
+      <div style="margin-bottom:0.5rem">
+        <button class="link-btn" onclick="selAll(true)">✅ 전체 선택</button> ·
+        <button class="link-btn" onclick="selAll(false)">⬜ 전체 해제</button>
+      </div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>보내기</th><th>구분</th><th>이름</th><th>연락처</th><th>주소</th><th>제품</th><th>옵션</th><th>상태</th></tr></thead>
@@ -421,9 +426,9 @@ function renderSend() {
       </div>
       <div style="margin-top:1rem; display:flex; gap:0.8rem; flex-wrap:wrap">
         ${SYNC_STATUS && SYNC_STATUS.epost && SYNC_STATUS.epost.connected
-          ? `<button class="big-btn green" onclick="doEpostRegister()">🚀 선택한 ${selCount}건 우체국 바로 접수</button>
+          ? `<button class="big-btn green" onclick="doEpostRegister()">🚀 택배 ${selCount}건 우체국 바로 접수</button>
              <button class="big-btn gray" onclick="doExportAll()">📄 엑셀 파일로 만들기 (바로 접수가 안 될 때)</button>`
-          : `<button class="big-btn green" onclick="doExportAll()">📄 선택한 ${selCount}건 우체국 엑셀 만들기</button>`}
+          : `<button class="big-btn green" onclick="doExportAll()">📄 택배 ${selCount}건 우체국 엑셀 만들기</button>`}
         <button class="big-btn orange" onclick="window.open('/pick.html','_blank')">📋 오늘 쌀 목록 인쇄</button>
       </div>
       <div id="export-result"></div>` : `
@@ -472,6 +477,14 @@ async function cancelExcel(kind, id, name) {
 }
 
 // "kind:id,kind:id" 묶음 스펙 → 실제 항목들
+// 전체 선택/해제 (보내기 목록)
+function selAll(v) {
+  const notDone = x => x.status !== '발송완료' && x.status !== '취소됨';
+  for (const list of [DB.orders, DB.seeding]) {
+    for (const x of list) if (notDone(x)) x._sel = v;
+  }
+  render();
+}
 function specItems(spec) {
   const out = [];
   for (const part of String(spec).split(',')) {
