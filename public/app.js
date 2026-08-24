@@ -96,31 +96,32 @@ function productParts(x) {
   const { color, size } = parseOption(x);
   const matches = matchProducts(x.product);
   if (!matches.length) {
-    return { name: esc(x.product), opt: [color, size].filter(Boolean).join(', ') };
+    const parts = [color, size].filter(Boolean);
+    return { name: esc(x.product), opt: parts.length ? '<b>' + esc(parts.join(', ')) + '</b>' : '' };
   }
-  // 제품 칸에는 이름만 (색상은 전부 옵션 칸으로)
+  // 제품 칸에는 이름만, 옵션 칸에는 제품마다 자기 "색상, 사이즈"가 같은 줄 높이로 나란히
+  const single = matches.length === 1;
   const name = matches.map(p => {
     const { base } = splitColor(p.name);
     return `
-    <div style="display:flex;align-items:center;gap:0.4rem;margin:0.1rem 0;line-height:1.25">
+    <div style="display:flex;align-items:center;gap:0.4rem;height:30px;margin:0.1rem 0;line-height:1.2;overflow:hidden">
       ${p.img ? `<img src="${esc(p.img)}" style="width:30px;height:30px;object-fit:cover;border-radius:6px;flex-shrink:0" onerror="this.style.display='none'">` : ''}
-      <span><b>${esc(base)}</b></span>
+      <span style="white-space:nowrap"><b>${esc(base)}</b></span>
     </div>`;
   }).join('');
-  // 옵션 = "색상(제품 순서대로), 사이즈" — 중복 색은 한 번만
-  const parts = [];
-  const seenC = new Set();
-  for (const p of matches) {
+  const opt = matches.map(p => {
     const c = splitColor(p.name).color;
-    if (c && !seenC.has(normOpt(c))) { seenC.add(normOpt(c)); parts.push(c); }
-  }
-  if (color && !seenC.has(normOpt(color))) parts.push(color);
-  if (size) parts.push(size);
-  return { name, opt: parts.join(', ') };
+    const parts = [];
+    if (c) parts.push(c);
+    if (single && color && (!c || normOpt(color) !== normOpt(c))) parts.push(color);
+    if (size) parts.push(size);
+    return `<div style="display:flex;align-items:center;height:30px;margin:0.1rem 0;white-space:nowrap">${parts.length ? '<b>' + esc(parts.join(', ')) + '</b>' : '<span class="muted">-</span>'}</div>`;
+  }).join('');
+  return { name, opt };
 }
 function productCell(x) {
   const { name, opt } = productParts(x);
-  return name + (opt ? `<div class="muted" style="font-size:0.85rem;line-height:1.3">옵션: ${esc(opt)}</div>` : '');
+  return name + (opt || '');
 }
 // 송장번호 압축 표시: 조회 링크 + 작은 번호
 function invoiceCell(inv) {
@@ -320,7 +321,7 @@ function renderSend() {
       <td>${esc(x.phone)}</td>
       <td style="max-width:420px">${esc(x.addr)}</td>
       <td style="min-width:240px;max-width:480px">${pp.name}</td>
-      <td style="white-space:nowrap"><b>${esc(pp.opt) || '<span class="muted">-</span>'}</b></td>
+      <td>${pp.opt || '<span class="muted">-</span>'}</td>
       <td>${chip(x.status)}<br><button class="link-btn" style="font-size:0.85rem" onclick="manualShip('${kind}',${x.id},'${esc(x.name)}')">따로 보냈어요</button></td>
     </tr>`;
   }).join('');
@@ -609,7 +610,7 @@ function renderShipping() {
       <td style="white-space:nowrap">${esc(x.sentDate || '')}</td>
       <td><b>${esc(x.name)}</b></td>
       <td style="min-width:240px;max-width:480px">${pp.name}</td>
-      <td style="white-space:nowrap"><b>${esc(pp.opt) || '<span class="muted">-</span>'}</b></td>
+      <td>${pp.opt || '<span class="muted">-</span>'}</td>
       <td>${chip(x.delivered ? '배달완료' : x.status)}</td>
       <td style="max-width:150px">${invoiceCell(x.invoice)}</td>
       <td>${x.status === '발송완료' ? `<button class="link-btn" onclick="returnFormFrom('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id})">🔁 교환/반품</button>` : ''}</td>
