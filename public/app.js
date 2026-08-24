@@ -353,7 +353,7 @@ function renderSend() {
     : goo.ok ? '🟢 구글시트(시딩) 자동 연동 중'
     : '🔴 구글시트에서 못 가져왔어요 — 인터넷과 시트 공유 설정을 확인하세요. <button class="link-btn" onclick="go(\'settings\')">설정 보기</button>';
   const c24line = window._VIEW
-    ? '🔵 카페24 자동 수집은 매장 컴퓨터가 담당해요 (노트북은 보기 모드 — 시딩·우체국은 실시간)'
+    ? '🔵 노트북 보기 모드: <b>시딩(🎁)은 여기서도 바로 접수돼요.</b> 카페24 주문(🛒) 수집·접수만 매장 컴퓨터 담당'
     : !c24 || !c24.configured
     ? '⚪ 카페24 자동 연동이 아직 설정되지 않았어요. <button class="link-btn" onclick="go(\'settings\')">설정하러 가기</button>'
     : !c24.connected

@@ -1279,11 +1279,11 @@ const server = http.createServer(async (req, res) => {
         if (!sameOrigin && !localhost) return sendJson(res, 403, { error: '허용되지 않은 요청이에요.' });
       }
     }
-    // 보기 모드에선 실제 접수/회수 같은 동작 차단 (새로고침·동기화 같은 읽기는 허용)
+    // 보기 모드: 우체국 접수/취소/새로고침은 허용(시딩은 시트로 매장과 자동 합쳐짐),
+    // 카페24가 얽히는 동작(주문 처리·연결)과 회수/업로드는 매장 전용
     if (VIEW_ONLY && req.method === 'POST' &&
-        /^\/api\/(epost|return|cafe24|manual-ship|export|upload)/.test(url.pathname) &&
-        url.pathname !== '/api/epost/status') {
-      return sendJson(res, 200, { error: '지금은 보기 모드예요. 실제 접수·처리는 매장 컴퓨터에서 해주세요.' });
+        /^\/api\/(return|cafe24|manual-ship|export|upload)/.test(url.pathname)) {
+      return sendJson(res, 200, { error: '이 작업은 매장 컴퓨터에서 해주세요. (노트북 보기 모드)' });
     }
     if (url.pathname === '/api/db' && req.method === 'GET') {
       return sendJson(res, 200, loadDb());
@@ -1386,6 +1386,17 @@ const server = http.createServer(async (req, res) => {
       const body = JSON.parse((await readBody(req)).toString('utf8'));
       const db = loadDb();
       if (!epostConfigured(db) || !db.epost) return sendJson(res, 200, { error: '먼저 설정에서 [우체국 연결]을 해주세요.' });
+      if (VIEW_ONLY) {
+        // 보기 모드(노트북)에선 시딩만 접수 — 주문은 카페24 배송처리가 얽혀 매장 전용
+        const before = (body.selected || []).length;
+        body.selected = (body.selected || []).filter(s => s.type === 'seeding');
+        if (!body.selected.length) {
+          return sendJson(res, 200, { error: '노트북에서는 시딩(🎁)만 접수할 수 있어요. 주문(🛒)은 매장 컴퓨터에서 접수해 주세요.' });
+        }
+        if (body.selected.length < before) {
+          // 주문이 섞여 있으면 시딩만 진행하고 결과에서 알 수 있게 함
+        }
+      }
       const { groups } = buildParcelGroups(db, body.selected || []);
       const out = [];
       const shippedItems = [];
