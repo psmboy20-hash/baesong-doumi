@@ -444,6 +444,15 @@ function renderSend() {
       <div id="invoice-result"></div>
     </div>`;
   setupDropzones();
+  // ⚠️ 우편번호 없는 건은 즉시 자동 조회 시작
+  setTimeout(() => {
+    for (const g of groupsArr) {
+      for (const p of g) {
+        const x = p.x;
+        if (!/^\d{5}$/.test(String(x.zip || '').trim()) && !matchZipInAddr(x.addr)) autoZip(p.kind, x.id);
+      }
+    }
+  }, 100);
 }
 
 // 주소 안에 5자리 우편번호가 이미 들어있는지
@@ -477,6 +486,20 @@ async function cancelExcel(kind, id, name) {
 }
 
 // "kind:id,kind:id" 묶음 스펙 → 실제 항목들
+// 우편번호 없는 건: 화면에 뜨는 즉시 자동 조회 (건당 1회)
+async function autoZip(kind, id) {
+  window._zipAsked = window._zipAsked || new Set();
+  const key = kind + ':' + id;
+  if (window._zipAsked.has(key)) return;
+  window._zipAsked.add(key);
+  const r = await api('/api/zip/lookup', { method: 'POST', body: JSON.stringify({ type: kind, id }) });
+  if (r && r.ok && r.zip) {
+    if (r.db) adoptDb(r.db);
+    if (PAGE === 'send') render();
+    toast('✔️ 우편번호를 자동으로 찾아 넣었어요: ' + r.zip, 5000);
+  }
+  // 실패(주소 불명확/키 없음)면 조용히 둠 — ⚠️ 배지에서 직접 입력
+}
 // 전체 선택/해제 (보내기 목록)
 function selAll(v) {
   const notDone = x => x.status !== '발송완료' && x.status !== '취소됨';

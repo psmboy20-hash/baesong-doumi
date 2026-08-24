@@ -1409,9 +1409,16 @@ const server = http.createServer(async (req, res) => {
         idx++;
         const orderNo = 'HAM' + Date.now() + '-' + idx;
         // 접수 전 검증: 우편번호 5자리 필수
-        const zipChk = String(g.zip || '').trim() || extractZip(g.addr);
+        let zipChk = String(g.zip || '').trim() || extractZip(g.addr);
         if (!/^\d{5}$/.test(zipChk)) {
-          out.push({ name: g.name, ok: false, error: '주소에서 우편번호(5자리)를 찾지 못했어요. 주소를 고친 뒤 다시 접수해 주세요.' });
+          // 접수 직전 마지막 시도: 주소로 우편번호 자동 조회
+          try {
+            const z = await kakaoZip(db, g.addr);
+            if (/^\d{5}$/.test(z)) { zipChk = z; g.zip = z; for (const { item } of g.items) item.zip = z; }
+          } catch (e) { /* 아래에서 친절하게 거절 */ }
+        }
+        if (!/^\d{5}$/.test(zipChk)) {
+          out.push({ name: g.name, ok: false, error: '주소에서 우편번호(5자리)를 찾지 못했어요. 목록의 우편번호 칸에 직접 넣어 주세요.' });
           continue;
         }
         if (String(g.phone || '').replace(/\D/g, '').length < 9) {
@@ -1552,6 +1559,27 @@ const server = http.createServer(async (req, res) => {
         ok: true, db,
         warning: warn.length ? `카페24에는 이미 배송처리로 등록돼 있어요 (${warn.join(', ')}). 카페24 관리자에서 배송상태를 되돌려 주세요.` : null
       });
+    }
+    // 우편번호 즉시 조회 (화면에서 ⚠️ 뜨는 순간 자동 호출)
+    if (url.pathname === '/api/zip/lookup' && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req)).toString('utf8'));
+      const db = loadDb();
+      const list = b.type === 'seeding' ? db.seeding : db.orders;
+      const x = list.find(i => i.id === b.id);
+      if (!x) return sendJson(res, 200, { error: '건을 찾지 못했어요.' });
+      if (/^\d{5}$/.test(String(x.zip || '').trim())) return sendJson(res, 200, { ok: true, zip: x.zip });
+      if (!(db.settings.kakaoRestKey || '').trim()) return sendJson(res, 200, { error: 'nokey' });
+      try {
+        const z = await kakaoZip(db, x.addr);
+        if (/^\d{5}$/.test(z)) {
+          x.zip = z;
+          saveDb(db);
+          return sendJson(res, 200, { ok: true, zip: z, db });
+        }
+        return sendJson(res, 200, { error: '주소로 우편번호를 못 찾았어요. 직접 5자리를 입력해 주세요.' });
+      } catch (e) {
+        return sendJson(res, 200, { error: '우편번호 조회 실패 — 잠시 뒤 다시 시도돼요.' });
+      }
     }
     // ---------- 백업 ----------
     if (url.pathname === '/api/backup/list' && req.method === 'GET') {
