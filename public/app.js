@@ -1031,6 +1031,7 @@ function renderInventory() {
       <button class="qty-btn" onclick="invAdj(${i.id},-1)">−</button>
       <div class="qty ${i.qty <= 2 ? 'low' : ''}">${i.qty}</div>
       <button class="qty-btn" onclick="invAdj(${i.id},1)">＋</button>
+      ${!i.size ? `<button class="del-btn" title="사이즈별 줄로 나누기 (예: S/M/L)" onclick="invSplit(${i.id})">📐</button>` : ''}
       <button class="del-btn" title="지우기" onclick="invDel(${i.id})">🗑️</button>
     </div>`;
   }).join('');
@@ -1088,6 +1089,18 @@ async function invImportProducts() {
   await saveDb();
   renderInventory();
   toast(`✔️ ${news.length}개 제품을 넣었어요. 이제 실제 개수를 ＋로 채워 주세요.`, 6000);
+}
+// 재고 한 줄을 사이즈별 줄로 나눔 (서버가 첫 사이즈에 기존 수량을 남기고 나머지는 0개로 만듦)
+async function invSplit(id) {
+  const item = DB.inventory.find(i => i.id === id);
+  if (!item) return;
+  const ans = prompt(`'${item.name}'을(를) 사이즈별 줄로 나눠요.\n사이즈를 쉼표로 적어 주세요:`, 'S,M,L');
+  if (ans === null) return;
+  const r = await api('/api/inventory/split', { method: 'POST', body: JSON.stringify({ id, sizes: ans }) });
+  if (r.error) { toast('⚠️ ' + r.error, 5000); return; }
+  DB = r.db;
+  renderInventory();
+  toast(`✔️ ${r.made.join('/')} 사이즈 줄로 나눴어요. 각 사이즈의 실제 개수를 ＋로 채워 주세요.`, 6000);
 }
 async function invAdj(id, d) {
   const item = DB.inventory.find(i => i.id === id);

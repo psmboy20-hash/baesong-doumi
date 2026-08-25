@@ -53,6 +53,7 @@ async function gateCheck(req, res, url) {
   const ip = clientIp(req);
   if (isPrivateIp(ip)) return false;             // 같은 집/매장/Tailscale → 그냥 통과
   if (reqCookies(req).hamKey === gateHash(code)) return false; // 이미 코드 입력한 컴퓨터
+  if (String(req.headers['x-ham-code'] || '').trim() === code) return false; // 외부 시스템(allin_v4 등)의 마스터 API 호출
   if (url.pathname === '/api/login' && req.method === 'POST') {
     const f = gateFails.get(ip);
     if (f && f.until > Date.now()) { sendJson(res, 429, { error: '시도가 너무 많아요. 10분 뒤 다시 해주세요.' }); return true; }
@@ -1453,6 +1454,57 @@ const server = http.createServer(async (req, res) => {
       let ver = '';
       try { ver = JSON.parse(fs.readFileSync(path.join(__dirname, 'version.json'), 'utf8')).version; } catch (e) { /* 무시 */ }
       return sendJson(res, 200, { rev: db.rev || 0, version: ver, viewOnly: VIEW_ONLY, c24Owner: !VIEW_ONLY || !(await storeAliveCached()), status: syncStatus });
+    }
+    // ── 재고/출고 마스터 API (allin_v4 등 다른 시스템이 참조하는 읽기 전용 단일 기준) ──
+    // 외부 시스템은 X-Ham-Code 헤더에 접속 코드를 넣어 호출한다.
+    if (url.pathname === '/api/master/inventory' && req.method === 'GET') {
+      const db = loadDb();
+      const items = (db.inventory || []).map(i => ({
+        id: i.id, productNo: i.productNo || null, name: i.name,
+        color: i.color || '', size: i.size || '', qty: Number(i.qty) || 0
+      }));
+      return sendJson(res, 200, { ok: true, source: 'baesong-doumi', rev: db.rev || 0, count: items.length, items });
+    }
+    if (url.pathname === '/api/master/shipments' && req.method === 'GET') {
+      const db = loadDb();
+      const since = String(url.searchParams.get('since') || '').trim(); // YYYY-MM-DD (없으면 전체)
+      const rows = [];
+      for (const [arr, kind] of [[db.orders || [], 'order'], [db.seeding || [], 'seeding']]) {
+        for (const x of arr) {
+          if (x.status !== '발송완료') continue;
+          const date = x.sentDate || x.regDate || '';
+          if (since && date && date < since) continue;
+          rows.push({
+            kind, id: x.id, date, name: x.name, product: x.product || '',
+            color: x.color || '', size: x.size || '', qty: Number(x.qty) || 1,
+            invoice: x.invoice || '', courier: x.courier || '',
+            delivered: !!x.delivered, deliveredDate: x.deliveredDate || '',
+            exchange: !!x.exchange
+          });
+        }
+      }
+      rows.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+      return sendJson(res, 200, { ok: true, source: 'baesong-doumi', rev: db.rev || 0, count: rows.length, since: since || null, shipments: rows });
+    }
+    if (url.pathname === '/api/inventory/split' && req.method === 'POST') {
+      // 재고 한 줄을 사이즈별 줄로 나눔 (예: S/M/L) — 출고 차감이 사이즈까지 정확히 맞도록
+      const b = JSON.parse((await readBody(req)).toString('utf8'));
+      const db = loadDb();
+      const inv = (db.inventory || []).find(i => i.id === b.id);
+      if (!inv) return sendJson(res, 200, { error: '해당 재고를 찾지 못했어요.' });
+      const sizes = [...new Set((Array.isArray(b.sizes) ? b.sizes : String(b.sizes || '').split(','))
+        .map(s => String(s).trim().toUpperCase()).filter(Boolean))];
+      if (!sizes.length) return sendJson(res, 200, { error: '사이즈를 하나 이상 적어 주세요. (예: S,M,L)' });
+      if (inv.size) return sendJson(res, 200, { error: '이미 사이즈가 있는 줄이에요. 사이즈 없는 줄만 나눌 수 있어요.' });
+      // 기존 줄은 첫 사이즈가 되고(수량 유지), 나머지 사이즈는 새 줄(0개)로
+      inv.size = sizes[0];
+      const idx = db.inventory.indexOf(inv);
+      const extra = sizes.slice(1).map(sz => ({
+        id: db.nextId++, name: inv.name, color: inv.color || '', size: sz, qty: 0, productNo: inv.productNo
+      }));
+      db.inventory.splice(idx + 1, 0, ...extra);
+      saveDb(db);
+      return sendJson(res, 200, { ok: true, db, made: sizes });
     }
     if (url.pathname === '/api/cafe24/authurl' && req.method === 'GET') {
       const db = loadDb();
