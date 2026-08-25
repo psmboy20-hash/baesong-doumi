@@ -1894,7 +1894,8 @@ server.on('error', e => {
   throw e;
 });
 
-server.listen(PORT, '127.0.0.1', () => {
+server.listen(PORT, '0.0.0.0', () => {
+  // 모든 인터페이스에서 수신 (클라우드 서버·Tailscale 접속용; 공개 인터넷은 접속 코드 게이트가 지킴)
   console.log('배송 도우미 실행됨 → http://localhost:' + PORT);
   // 켜질 때 한 번 + 5분마다 자동으로 새 주문/시딩 확인
   syncAll().then(({ out }) => {
