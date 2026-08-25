@@ -276,7 +276,13 @@ function flowTile(icon, label, n, page, hot, sub) {
 function renderHome() {
   // 진행 흐름 보드: 물건이 지금 어느 단계에 몇 건 있는지
   const all = [...DB.orders, ...DB.seeding];
-  const toSend = all.filter(x => x.status === '대기' || x.status === '접수중').length;
+  // 보낼 준비는 "택배 몇 건" 기준(같은 사람 묶음) — 물건 수가 다르면 (M개) 병기
+  const toSendItems = all.filter(x => x.status === '대기' || x.status === '접수중');
+  const toSendKeys = new Set(toSendItems.map(x =>
+    String(x.name || '').replace(/\s/g, '') + '|' + String(x.phone || '').replace(/\D/g, '') + '|' + String(x.addr || '').replace(/\s/g, '').slice(0, 15)));
+  const toSend = toSendKeys.size === 0 ? 0
+    : toSendKeys.size === toSendItems.length ? toSendKeys.size
+    : `${toSendKeys.size}<span style="font-size:0.42em;font-weight:400;color:#8a93a5"> 건(${toSendItems.length}개)</span>`;
   const waitPickup = all.filter(x => x.status === '발송완료' && !x.delivered && x.epost && ['00', '01', '02'].includes(x.epost.stus || '01')).length;
   const problem = all.filter(x => x.status === '발송완료' && !x.delivered && x.epost && x.epost.stus === '04').length;
   const delivered = all.filter(x => x.status === '발송완료' && x.delivered).length;
