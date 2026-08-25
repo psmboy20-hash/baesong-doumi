@@ -1137,7 +1137,7 @@ async function renderStockLog() {
         <td style="text-align:center;font-weight:800;color:${e.delta < 0 ? '#c0392b' : '#1e7e46'}">${e.delta > 0 ? '+' : ''}${e.delta}</td>
         <td style="text-align:center">${e.left}</td>
         <td>${e.ref ? esc(e.ref) + '님' : '<span class="muted">-</span>'}</td>
-        <td class="muted" style="white-space:nowrap">${String(e.ts).slice(11, 16)}</td>
+        <td class="muted" style="white-space:nowrap">${new Date(e.ts).toTimeString().slice(0, 5)}</td>
       </tr>`;
     }).join('');
     return `
