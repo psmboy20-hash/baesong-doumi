@@ -772,11 +772,35 @@ async function checkDelivered(db) {
       }
     } catch (e) { /* 다음 동기화 때 재시도 */ }
   }
-  // 우체국 외 택배사(롯데·CJ 등)나 조회 안 되는 건: 발송 7일 지나면 배달 끝으로 자동 처리
+  // 롯데 송장(숫자 12자리)은 롯데글로벌로지스 조회 페이지로 실제 배달완료 확인
+  const lotte = [...db.orders, ...db.seeding].filter(x =>
+    x.status === '발송완료' && !x.delivered &&
+    String(x.invoice || '').replace(/\D/g, '').length === 12 &&
+    (!x.courier || x.courier === '롯데' || /롯데/.test(String(x.invoice)))
+  ).slice(0, 10);
+  for (const it of lotte) {
+    const no = String(it.invoice).replace(/\D/g, '');
+    try {
+      const html = (await fetchUrl('https://www.lotteglogis.com/home/reservation/tracking/linkView?InvNo=' + no, 0)).toString('utf8');
+      if (/배달완료/.test(html)) {
+        for (const arr of [db.orders, db.seeding]) {
+          for (const o of arr) {
+            if (String(o.invoice || '').replace(/\D/g, '') === no) { o.delivered = true; o.deliveredDate = today(); }
+          }
+        }
+        found++;
+      }
+    } catch (e) { /* 다음 동기화 때 재시도 */ }
+  }
+  // 그 외(CJ 등)나 조회 안 되는 건: 발송 7일 지나면 배달 끝으로 자동 처리
+  // 보낸날짜가 없으면 등록일 기준, 그것도 없으면 오늘을 시작점으로 심어 7일 카운트를 시작한다
   const cutoff = new Date(Date.now() - 7 * 86400 * 1000).toISOString().slice(0, 10);
   for (const arr of [db.orders, db.seeding]) {
     for (const o of arr) {
-      if (o.status === '발송완료' && !o.delivered && o.sentDate && o.sentDate <= cutoff) {
+      if (o.status !== '발송완료' || o.delivered) continue;
+      const base = o.sentDate || o.regDate;
+      if (!base) { o.sentDate = today(); continue; }
+      if (base <= cutoff) {
         o.delivered = true;
         o.deliveredDate = o.deliveredDate || today();
         o.deliveredAuto = true; // 실조회가 아니라 날짜 기준 자동 처리 표시
