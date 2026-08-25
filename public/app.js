@@ -411,7 +411,7 @@ function renderSend() {
         <button class="link-btn" style="font-size:0.9rem" onclick="fixZipGroup('${spec}','zip-g-${g[0].kind}-${first.id}')">저장</button></div>` : ''}</td>
       <td style="min-width:240px;max-width:480px">${names}</td>
       <td>${opts}</td>
-      <td>${staleBadge}${stusSet.map(s => chip(s)).join(' ')}${stusSet.includes('접수중') ? `<br><button class="link-btn" style="font-size:0.85rem" onclick="cancelExcelGroup('${spec}','${jsq(first.name)}')">↩️ 엑셀 접수 취소</button>` : ''}<br><button class="link-btn" style="font-size:0.85rem" onclick="manualShipGroup('${spec}','${jsq(first.name)}')">따로 보냈어요</button><br><button class="link-btn" style="font-size:0.85rem;color:var(--red)" onclick="cancelSendGroup('${spec}','${jsq(first.name)}')">안 보내요 ✕</button></td>
+      <td style="white-space:nowrap">${staleBadge}${stusSet.map(s => chip(s)).join(' ')}<div class="btn-col" style="margin-top:0.3rem">${stusSet.includes('접수중') ? `<button class="link-btn" style="font-size:0.85rem" onclick="cancelExcelGroup('${spec}','${jsq(first.name)}')">↩️ 엑셀 접수 취소</button>` : ''}<button class="link-btn" style="font-size:0.85rem" onclick="manualShipGroup('${spec}','${jsq(first.name)}')">따로 보냈어요</button><button class="link-btn" style="font-size:0.85rem;color:var(--red)" onclick="cancelSendGroup('${spec}','${jsq(first.name)}')">안 보내요 ✕</button></div></td>
     </tr>`;
   }).join('');
 
@@ -747,7 +747,7 @@ function renderReturns() {
       <td style="max-width:280px">${esc(x.reason || '')}</td>
       <td style="max-width:150px">${x.invoice ? invoiceCell(x.invoice) : '<span class="muted">-</span>'}${stusNm ? `<span class="muted" style="font-size:0.85rem">${stusNm}</span>` : ''}</td>
       <td><span class="chip ${cls}">${nm}</span></td>
-      <td style="white-space:nowrap">${btns}</td>
+      <td style="white-space:nowrap"><div class="btn-col">${btns}</div></td>
     </tr>`;
   }).join('');
   main().innerHTML = `
@@ -990,9 +990,9 @@ function renderShipping() {
       <td>${pp.opt || '<span class="muted">-</span>'}</td>
       <td>${chip(x.delivered ? '배달완료' : x.status)}</td>
       <td style="max-width:150px">${invoiceCell(x.invoice, x.courier)}</td>
-      <td>${x.status === '발송완료'
-        ? `<button class="link-btn" onclick="returnFormFrom('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id})">🔁 교환/반품</button>${!x.delivered ? `<br><button class="link-btn" style="font-size:0.9rem" onclick="markDelivered('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id},'${jsq(x.name)}')">✔ 배달 끝 처리</button>` : ''}`
-        : x.status === '취소됨' ? `<button class="link-btn" onclick="restoreSend('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id},'${jsq(x.name)}')">↩️ 다시 보내기</button>` : ''}</td>
+      <td style="white-space:nowrap"><div class="btn-col">${x.status === '발송완료'
+        ? `<button class="link-btn" onclick="returnFormFrom('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id})">🔁 교환/반품</button>${!x.delivered ? `<button class="link-btn" style="font-size:0.9rem" onclick="markDelivered('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id},'${jsq(x.name)}')">✔ 배달 끝 처리</button>` : ''}`
+        : x.status === '취소됨' ? `<button class="link-btn" onclick="restoreSend('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id},'${jsq(x.name)}')">↩️ 다시 보내기</button>` : ''}</div></td>
     </tr>`;
   }).join('');
   main().innerHTML = `
@@ -1019,22 +1019,41 @@ function renderInventory() {
   const items = q ? DB.inventory.filter(i => (i.name + ' ' + (i.color || '') + ' ' + (i.size || '')).includes(q)) : DB.inventory;
   const findP = i => (DB.products || []).find(p => p.no === i.productNo) ||
     (DB.products || []).find(p => lettersOnly(p.name) === lettersOnly(i.name));
-  const cards = items.map(i => {
+  // 같은 제품(이름+컬러)의 사이즈 행을 한 묶음으로 — 제품 칸은 세로 병합
+  const gmap = new Map();
+  const groups = [];
+  for (const i of items) {
+    const k = i.name + '|' + (i.color || '');
+    if (!gmap.has(k)) { gmap.set(k, []); groups.push(gmap.get(k)); }
+    gmap.get(k).push(i);
+  }
+  const rows = groups.map(g => g.map((i, idx) => {
     const p = findP(i);
+    const prodCell = idx === 0 ? `
+      <td rowspan="${g.length}" ${g.length > 1 ? 'style="border-top:3px solid #dfe4ee"' : ''}>
+        <div class="inv-prod">
+          ${p && p.img ? prodImgTag(p.img).replace('class="pimg"', 'class="pimg inv-img"') : ''}
+          <div>
+            <div class="pname">${p ? `<span class="pname-link" onclick="window.open('${saleUrl(p.no)}','_blank')" title="판매 페이지 열기">${esc(i.name)}</span>` : esc(i.name)}</div>
+            ${i.color ? `<div class="popt">${esc(i.color)}</div>` : ''}
+          </div>
+        </div>
+      </td>` : '';
     return `
-    <div class="inv-card">
-      ${p && p.img ? prodImgTag(p.img).replace('class="pimg"', 'class="pimg inv-img"') : ''}
-      <div class="info">
-        <div class="pname">${p ? `<span class="pname-link" onclick="window.open('${saleUrl(p.no)}','_blank')" title="판매 페이지 열기">${esc(i.name)}</span>` : esc(i.name)}</div>
-        <div class="popt">${esc([i.color, i.size].filter(Boolean).join(' / ') || ' ')}</div>
-      </div>
-      <button class="qty-btn" onclick="invAdj(${i.id},-1)">−</button>
-      <div class="qty ${i.qty <= 2 ? 'low' : ''}">${i.qty}</div>
-      <button class="qty-btn" onclick="invAdj(${i.id},1)">＋</button>
-      ${!i.size ? `<button class="del-btn" title="사이즈별 줄로 나누기 (예: S/M/L)" onclick="invSplit(${i.id})">📐</button>` : ''}
-      <button class="del-btn" title="지우기" onclick="invDel(${i.id})">🗑️</button>
-    </div>`;
-  }).join('');
+    <tr class="${idx === 0 ? 'g-start' : ''}">
+      ${prodCell}
+      <td class="sz">${esc(i.size) || '<span class="muted" style="font-weight:400">-</span>'}</td>
+      <td class="qcell">
+        <button class="qty-btn sm" onclick="invAdj(${i.id},-1)">−</button>
+        <span class="qty ${i.qty <= 2 ? 'low' : ''}">${i.qty}</span>
+        <button class="qty-btn sm" onclick="invAdj(${i.id},1)">＋</button>
+      </td>
+      <td class="acts">
+        ${!i.size ? `<button class="del-btn" title="사이즈별 줄로 나누기 (예: S/M/L)" onclick="invSplit(${i.id})">📐</button>` : ''}
+        <button class="del-btn" title="지우기" onclick="invDel(${i.id})">🗑️</button>
+      </td>
+    </tr>`;
+  }).join('')).join('');
   main().innerHTML = `
     <h1>📋 재고</h1>
     <div class="sub">남은 옷 개수예요. 옷을 보내면 <b>−</b>, 새로 들어오면 <b>＋</b>를 눌러요. <span style="color:var(--red)">빨간 숫자</span>는 2개 이하!</div>
@@ -1046,9 +1065,15 @@ function renderInventory() {
       ${DB.products && DB.products.length ? `<button class="big-btn orange" onclick="invImportProducts()">📥 카페24 제품 전부 불러오기</button>` : ''}
     </div>
     <div id="inv-form"></div>
-    <div class="inv-grid">${cards || (q
+    ${rows ? `
+    <div class="table-wrap" style="max-height:72vh">
+      <table class="inv-table">
+        <thead><tr><th>제품</th><th style="text-align:center">사이즈</th><th style="text-align:center">개수</th><th style="text-align:center">동작</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>` : (q
       ? `<div class="muted" style="font-size:1.1rem">'${esc(q)}'(으)로 찾은 제품이 없어요. <button class="link-btn" onclick="window._invQ='';renderInventory()">🔄 전체 보기</button></div>`
-      : '<div class="muted" style="font-size:1.1rem">아직 등록된 제품이 없어요. 카페24와 연결돼 있으면 자동으로 들어와요. 직접 넣으려면 위의 [새 제품 넣기]를 눌러 주세요.</div>')}</div>`;
+      : '<div class="muted" style="font-size:1.1rem">아직 등록된 제품이 없어요. 카페24와 연결돼 있으면 자동으로 들어와요. 직접 넣으려면 위의 [새 제품 넣기]를 눌러 주세요.</div>')}`;
   injectHelp();
 }
 
