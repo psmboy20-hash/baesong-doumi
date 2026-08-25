@@ -283,6 +283,8 @@ function renderHome() {
   const toSend = toSendKeys.size === 0 ? 0
     : toSendKeys.size === toSendItems.length ? toSendKeys.size
     : `${toSendKeys.size}<span style="font-size:0.42em;font-weight:400;color:#8a93a5"> 건(${toSendItems.length}개)</span>`;
+  // 3일 넘게 안 움직인 건 — 앱 밖에서 이미 보냈을 가능성을 먼저 물어본다
+  const staleCount = toSendItems.filter(x => x.regDate && (Date.now() - new Date(x.regDate)) / 86400000 >= 3).length;
   const waitPickup = all.filter(x => x.status === '발송완료' && !x.delivered && x.epost && ['00', '01', '02'].includes(x.epost.stus || '01')).length;
   const problem = all.filter(x => x.status === '발송완료' && !x.delivered && x.epost && x.epost.stus === '04').length;
   const delivered = all.filter(x => x.status === '발송완료' && x.delivered).length;
@@ -326,6 +328,10 @@ function renderHome() {
         · 택배비 <b>${cost.toLocaleString()}원</b> <span class="muted" style="font-size:0.85rem">(우체국 앱 접수 기준)</span>
         · 배달완료 <b>${dlvThis}건</b>${retThis ? ` · 교환/반품 <b>${retThis}건</b>` : ''}
       </div>
+      ${staleCount ? `<div class="hint" style="margin:0.6rem 0 0;font-size:1.02rem;color:#b0640f">
+        ⏰ <b>${staleCount}개</b>가 3일 넘게 [보낼 준비]에 그대로 있어요 — 우체국 사이트나 창구에서 <b>직접 보내셨다면</b> 앱은 몰라요.
+        <button class="link-btn" onclick="go('send')">보내기에서 [따로 보냈어요] 누르기 →</button>
+      </div>` : ''}
     </div>
     <div class="card" style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;cursor:pointer" onclick="go('inventory')">
       <div style="font-size:2rem">📋</div>
@@ -390,6 +396,9 @@ function renderSend() {
     const opts = g.map(p => `<div style="margin:0.1rem 0">${productParts(p.x).opt || '<span class="muted">-</span>'}</div>`).join('');
     const noZip = !/^\d{5}$/.test(String(first.zip || '').trim()) && !matchZipInAddr(first.addr);
     const stusSet = [...new Set(g.map(p => p.x.status))];
+    // 3일 넘게 그대로면: 앱 밖(우체국 창구·사이트)에서 이미 보냈는데 앱만 모르는 경우가 많다
+    const staleDays = Math.max(...g.map(p => p.x.regDate ? Math.floor((Date.now() - new Date(p.x.regDate)) / 86400000) : 0));
+    const staleBadge = staleDays >= 3 ? `<span class="note-badge" title="우체국 사이트·창구에서 직접 보내셨다면 [따로 보냈어요]를 눌러 정리해 주세요">⏰ ${staleDays}일째 그대로</span><br>` : '';
     return `
     <tr class="${allSel ? 'checked-row' : ''}">
       <td><input type="checkbox" ${allSel ? 'checked' : ''} onchange="toggleSelGroup('${spec}',this.checked)"></td>
@@ -402,7 +411,7 @@ function renderSend() {
         <button class="link-btn" style="font-size:0.9rem" onclick="fixZipGroup('${spec}','zip-g-${g[0].kind}-${first.id}')">저장</button></div>` : ''}</td>
       <td style="min-width:240px;max-width:480px">${names}</td>
       <td>${opts}</td>
-      <td>${stusSet.map(s => chip(s)).join(' ')}${stusSet.includes('접수중') ? `<br><button class="link-btn" style="font-size:0.85rem" onclick="cancelExcelGroup('${spec}','${jsq(first.name)}')">↩️ 엑셀 접수 취소</button>` : ''}<br><button class="link-btn" style="font-size:0.85rem" onclick="manualShipGroup('${spec}','${jsq(first.name)}')">따로 보냈어요</button><br><button class="link-btn" style="font-size:0.85rem;color:var(--red)" onclick="cancelSendGroup('${spec}','${jsq(first.name)}')">안 보내요 ✕</button></td>
+      <td>${staleBadge}${stusSet.map(s => chip(s)).join(' ')}${stusSet.includes('접수중') ? `<br><button class="link-btn" style="font-size:0.85rem" onclick="cancelExcelGroup('${spec}','${jsq(first.name)}')">↩️ 엑셀 접수 취소</button>` : ''}<br><button class="link-btn" style="font-size:0.85rem" onclick="manualShipGroup('${spec}','${jsq(first.name)}')">따로 보냈어요</button><br><button class="link-btn" style="font-size:0.85rem;color:var(--red)" onclick="cancelSendGroup('${spec}','${jsq(first.name)}')">안 보내요 ✕</button></td>
     </tr>`;
   }).join('');
 
