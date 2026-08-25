@@ -1465,6 +1465,12 @@ const server = http.createServer(async (req, res) => {
       }));
       return sendJson(res, 200, { ok: true, source: 'baesong-doumi', rev: db.rev || 0, count: items.length, items });
     }
+    if (url.pathname === '/api/master/products' && req.method === 'GET') {
+      // 상품 정의 마스터 (SKU·컬러·사이즈 전개·단가) — allin_v4의 cafe24 상품마스터에서 가져와 저장한 것
+      const db = loadDb();
+      const pm = db.productMaster || { products: [], updated: null };
+      return sendJson(res, 200, { ok: true, source: 'baesong-doumi', updated: pm.updated, count: (pm.products || []).length, products: pm.products || [] });
+    }
     if (url.pathname === '/api/master/shipments' && req.method === 'GET') {
       const db = loadDb();
       const since = String(url.searchParams.get('since') || '').trim(); // YYYY-MM-DD (없으면 전체)
