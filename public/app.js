@@ -1042,6 +1042,7 @@ function renderInventory() {
       oninput="window._invQ=this.value; renderInventory(); this.focus(); this.setSelectionRange(this.value.length,this.value.length)">
     <div style="margin-bottom:1rem; display:flex; gap:0.8rem; flex-wrap:wrap">
       <button class="big-btn" onclick="invAddForm()">➕ 새 제품 넣기</button>
+      <button class="big-btn" style="background:#5a6478" onclick="renderStockLog()">📜 입출고 내역</button>
       ${DB.products && DB.products.length ? `<button class="big-btn orange" onclick="invImportProducts()">📥 카페24 제품 전부 불러오기</button>` : ''}
     </div>
     <div id="inv-form"></div>
@@ -1105,9 +1106,55 @@ async function invSplit(id) {
 async function invAdj(id, d) {
   const item = DB.inventory.find(i => i.id === id);
   if (!item) return;
-  item.qty = Math.max(0, item.qty + d);
-  await saveDb();
+  // 서버가 처리해야 입출고 내역에 남는다
+  const r = await api('/api/inventory/adjust', { method: 'POST', body: JSON.stringify({ id, delta: d }) });
+  if (r.error) { toast('⚠️ ' + r.error, 4000); return; }
+  DB = r.db;
   renderInventory();
+}
+// ── 입출고 내역 ──
+const STOCK_REASON = {
+  '출고': ['📤', '#c0392b'], '입고 (직접)': ['📥', '#1e7e46'], '차감 (직접)': ['✏️', '#8a6d1a'],
+  '접수 취소 복구': ['↩️', '#1e7e46'], '반품 입고': ['📥', '#1e7e46'], '교환 회수 입고': ['🔄', '#1e7e46']
+};
+async function renderStockLog() {
+  const r = await api('/api/master/stocklog');
+  const log = (r && r.log) || [];
+  const byDate = new Map();
+  for (const e of log) {
+    if (!byDate.has(e.date)) byDate.set(e.date, []);
+    byDate.get(e.date).push(e);
+  }
+  const groups = [...byDate.entries()].map(([date, rows]) => {
+    const outN = rows.filter(x => x.delta < 0).reduce((s, x) => s - x.delta, 0);
+    const inN = rows.filter(x => x.delta > 0).reduce((s, x) => s + x.delta, 0);
+    const lines = rows.map(e => {
+      const [icon, color] = STOCK_REASON[e.reason] || ['•', '#555'];
+      const prod = esc(e.name) + (e.size ? ` <b>${esc(e.size)}</b>` : '') + (e.color ? ` <span class="muted">${esc(e.color)}</span>` : '');
+      return `<tr>
+        <td style="white-space:nowrap">${icon} ${esc(e.reason)}</td>
+        <td>${prod}</td>
+        <td style="text-align:center;font-weight:800;color:${e.delta < 0 ? '#c0392b' : '#1e7e46'}">${e.delta > 0 ? '+' : ''}${e.delta}</td>
+        <td style="text-align:center">${e.left}</td>
+        <td>${e.ref ? esc(e.ref) + '님' : '<span class="muted">-</span>'}</td>
+        <td class="muted" style="white-space:nowrap">${String(e.ts).slice(11, 16)}</td>
+      </tr>`;
+    }).join('');
+    return `
+    <div class="card">
+      <div class="step-title">📅 ${date} <span class="muted" style="font-weight:400;font-size:0.95rem">— 출고 ${outN}개 · 입고 ${inN}개</span></div>
+      <div style="overflow-x:auto"><table>
+        <tr><th>구분</th><th>제품</th><th>변동</th><th>남음</th><th>누구</th><th>시각</th></tr>
+        ${lines}
+      </table></div>
+    </div>`;
+  }).join('');
+  main().innerHTML = `
+    <h1>📜 입출고 내역</h1>
+    <div class="sub">재고가 바뀔 때마다 자동으로 적히는 장부예요. 옷을 보내면 <b style="color:#c0392b">출고 −</b>, ＋버튼·반품 도착은 <b style="color:#1e7e46">입고 +</b>.</div>
+    <div style="margin-bottom:1rem"><button class="big-btn gray" onclick="go('inventory')">← 재고로 돌아가기</button></div>
+    ${groups || '<div class="card"><div class="muted" style="font-size:1.1rem">아직 기록이 없어요. 이제부터 재고가 바뀔 때마다 여기에 쌓여요.</div></div>'}`;
+  injectHelp();
 }
 async function invDel(id) {
   const item = DB.inventory.find(i => i.id === id);

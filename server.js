@@ -1327,6 +1327,17 @@ function findStockMatches(db, item) {
   return [scored[0].inv];
 }
 
+// 재고 변동 장부: 입고/출고/복구가 일어날 때마다 한 줄씩 남긴다 (입출고 내역 화면·마스터 API용)
+function logStock(db, inv, delta, reason, ref) {
+  if (!db.stockLog) db.stockLog = [];
+  db.stockLog.push({
+    ts: new Date().toISOString(), date: today(),
+    name: inv.name, color: inv.color || '', size: inv.size || '',
+    delta, left: inv.qty, reason, ref: ref || ''
+  });
+  if (db.stockLog.length > 3000) db.stockLog = db.stockLog.slice(-3000); // 오래된 것부터 정리
+}
+
 // 발송 확정된 건들의 공통 후처리 (송장매칭·API접수 양쪽에서 사용)
 async function postProcessShipped(db, matchedItems) {
   const results = {};
@@ -1341,6 +1352,7 @@ async function postProcessShipped(db, matchedItems) {
       const n = Number(item.qty) || 1;
       inv.qty = Math.max(0, inv.qty - n);
       results.stock.push({ name: [inv.name, inv.color, inv.size].filter(Boolean).join(' '), minus: n, left: inv.qty });
+      logStock(db, inv, -n, '출고', item.name);
       any = true;
     }
     if (any) item.stockDeducted = true;
@@ -1491,6 +1503,29 @@ const server = http.createServer(async (req, res) => {
       }
       rows.sort((a, b) => String(b.date).localeCompare(String(a.date)));
       return sendJson(res, 200, { ok: true, source: 'baesong-doumi', rev: db.rev || 0, count: rows.length, since: since || null, shipments: rows });
+    }
+    if (url.pathname === '/api/inventory/adjust' && req.method === 'POST') {
+      // 재고 수동 입고/차감 (＋/− 버튼) — 입출고 내역에 남도록 서버가 처리
+      const b = JSON.parse((await readBody(req)).toString('utf8'));
+      const db = loadDb();
+      const inv = (db.inventory || []).find(i => i.id === b.id);
+      if (!inv) return sendJson(res, 200, { error: '해당 재고를 찾지 못했어요.' });
+      const d = Number(b.delta) || 0;
+      if (!d) return sendJson(res, 200, { error: '변경할 개수가 없어요.' });
+      const before = inv.qty;
+      inv.qty = Math.max(0, inv.qty + d);
+      const applied = inv.qty - before;
+      if (applied) logStock(db, inv, applied, applied > 0 ? '입고 (직접)' : '차감 (직접)', '');
+      saveDb(db);
+      return sendJson(res, 200, { ok: true, db });
+    }
+    if (url.pathname === '/api/master/stocklog' && req.method === 'GET') {
+      // 입출고 변동 장부 (allin_v4 등 외부 시스템·앱 내역 화면 공용)
+      const db = loadDb();
+      const since = String(url.searchParams.get('since') || '').trim();
+      let rows = db.stockLog || [];
+      if (since) rows = rows.filter(r => r.date >= since);
+      return sendJson(res, 200, { ok: true, source: 'baesong-doumi', count: rows.length, since: since || null, log: rows.slice(-1000).reverse() });
     }
     if (url.pathname === '/api/inventory/split' && req.method === 'POST') {
       // 재고 한 줄을 사이즈별 줄로 나눔 (예: S/M/L) — 출고 차감이 사이즈까지 정확히 맞도록
@@ -1729,7 +1764,11 @@ const server = http.createServer(async (req, res) => {
           if (it.epost && it.epost.orderNo === item.epost.orderNo) {
             // 재고 되돌리기
             if (it.stockDeducted) {
-              for (const inv of findStockMatches(db, it)) inv.qty += Number(it.qty) || 1;
+              for (const inv of findStockMatches(db, it)) {
+                const n = Number(it.qty) || 1;
+                inv.qty += n;
+                logStock(db, inv, n, '접수 취소 복구', it.name);
+              }
               it.stockDeducted = false;
             }
             if (it.cafe24Shipped) warn.push(it.orderNo || it.name);
@@ -1894,6 +1933,7 @@ const server = http.createServer(async (req, res) => {
           const n = Number(ret.qty) || 1;
           inv.qty += n;
           out.stock.push({ name: [inv.name, inv.color, inv.size].filter(Boolean).join(' '), plus: n, left: inv.qty });
+          logStock(db, inv, n, ret.kind === '교환' ? '교환 회수 입고' : '반품 입고', ret.name);
         }
       }
       if (ret.kind === '교환') {
