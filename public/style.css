@@ -140,6 +140,28 @@ tr.checked-row { background: #f0f8f0; }
 .table-wrap { overflow-x: auto; max-height: 60vh; overflow-y: auto; border: 2px solid var(--line); border-radius: 12px; }
 input[type="checkbox"] { width: 1.6rem; height: 1.6rem; accent-color: var(--green); cursor: pointer; }
 
+/* 대시보드 */
+.dash-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1rem; margin-top: 1rem; }
+.dash-grid .card { margin-bottom: 0; }
+.dash-title { font-size: 1.05rem; font-weight: 800; margin-bottom: 0.6rem; display: flex; align-items: center; gap: 0.4rem; }
+.dash-title .more { margin-left: auto; font-size: 0.85rem; font-weight: 400; }
+.dot { display: inline-block; width: 0.65rem; height: 0.65rem; border-radius: 50%; vertical-align: middle; }
+.dot.on { background: #27a05d; } .dot.off { background: #d64545; } .dot.na { background: #b8c0cf; }
+.chan-row { display: flex; align-items: center; gap: 0.6rem; padding: 0.45rem 0; border-bottom: 1px solid #eef1f7; }
+.chan-row:last-child { border-bottom: none; }
+.chan-row .cname { font-weight: 800; min-width: 7rem; }
+.chan-row .cstat { margin-left: auto; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.chan-row.soon { opacity: 0.5; }
+.vbar-wrap { display: flex; align-items: flex-end; gap: 0.4rem; height: 90px; margin-top: 0.4rem; }
+.vbar { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 0.2rem; }
+.vbar .bar { width: 100%; max-width: 2.2rem; background: #cfe0f5; border-radius: 5px 5px 0 0; min-height: 2px; }
+.vbar.today .bar { background: var(--blue); }
+.vbar .v { font-size: 0.8rem; font-weight: 800; }
+.vbar .d { font-size: 0.72rem; color: #8a93a5; white-space: nowrap; }
+.mini-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.32rem 0; border-bottom: 1px solid #eef1f7; font-size: 0.92rem; }
+.mini-row:last-child { border-bottom: none; }
+.mini-row .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* 홈 진행 흐름 보드 */
 .flow-row { display: flex; align-items: stretch; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.6rem; }
 .flow-tile {
