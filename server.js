@@ -11,6 +11,73 @@ const XLSX = require('xlsx');
 const seed = require('./lib/seed128');
 
 const PORT = 8899;
+// ── 접속 코드 게이트 (클라우드 서버용) ───────────────────────────────
+// db.json에 accessCode가 있으면, 집/매장 밖(공개 인터넷)에서 온 접속에만 코드를 요구한다.
+// 로컬(127.0.0.1)·사설망(192.168/10/172.16~31)·Tailscale(100.64~127)은 지금처럼 그냥 열린다.
+const gateCrypto = require('crypto');
+let _accessCode = null;
+function accessCode() {
+  if (_accessCode === null) {
+    try { _accessCode = String(loadDb().accessCode || '').trim(); } catch (e) { _accessCode = ''; }
+  }
+  return _accessCode;
+}
+function gateHash(code) { return gateCrypto.createHash('sha256').update('ham-gate:' + code).digest('hex'); }
+function clientIp(req) { return String(req.socket.remoteAddress || '').replace(/^::ffff:/, ''); }
+function isPrivateIp(ip) {
+  return ip === '' || ip === '127.0.0.1' || ip === '::1' || /^10\./.test(ip) || /^192\.168\./.test(ip) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(ip) || /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ip);
+}
+function reqCookies(req) {
+  const out = {};
+  String(req.headers.cookie || '').split(';').forEach(p => {
+    const i = p.indexOf('='); if (i > 0) out[p.slice(0, i).trim()] = p.slice(i + 1).trim();
+  });
+  return out;
+}
+const gateFails = new Map(); // ip → { n, until }
+const GATE_HTML = `<!DOCTYPE html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>배송 도우미</title><body style="font-family:'Malgun Gothic',sans-serif;text-align:center;padding-top:14vh;background:#f7f5f0">
+<div style="font-size:42px">📦</div><h2>누솔베르 배송 도우미</h2>
+<p style="color:#666">접속 코드를 입력해 주세요. (한 번 입력하면 이 컴퓨터에서는 다시 묻지 않아요)</p>
+<input id="c" type="tel" autocomplete="off" style="font-size:32px;text-align:center;letter-spacing:8px;width:240px;padding:10px;border:2px solid #ccc;border-radius:10px" maxlength="10" autofocus>
+<br><br><button onclick="go()" style="font-size:22px;padding:10px 40px;border:0;border-radius:10px;background:#2f6f4f;color:#fff;cursor:pointer">들어가기</button>
+<p id="m" style="color:#c00;height:22px"></p>
+<script>
+function go(){fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:document.getElementById('c').value})}).then(r=>r.json()).then(j=>{if(j.ok)location.reload();else document.getElementById('m').textContent=j.error||'다시 시도해 주세요.';});}
+document.getElementById('c').addEventListener('keydown',e=>{if(e.key==='Enter')go();});
+</script></body></html>`;
+async function gateCheck(req, res, url) {
+  const code = accessCode();
+  if (!code) return false;                       // 코드 미설정 → 게이트 없음 (매장/노트북 로컬 실행)
+  const ip = clientIp(req);
+  if (isPrivateIp(ip)) return false;             // 같은 집/매장/Tailscale → 그냥 통과
+  if (reqCookies(req).hamKey === gateHash(code)) return false; // 이미 코드 입력한 컴퓨터
+  if (url.pathname === '/api/login' && req.method === 'POST') {
+    const f = gateFails.get(ip);
+    if (f && f.until > Date.now()) { sendJson(res, 429, { error: '시도가 너무 많아요. 10분 뒤 다시 해주세요.' }); return true; }
+    let body = {};
+    try { body = JSON.parse((await readBody(req)).toString('utf8') || '{}'); } catch (e) { /* 무시 */ }
+    if (String(body.code || '').trim() === code) {
+      gateFails.delete(ip);
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Set-Cookie': 'hamKey=' + gateHash(code) + '; Max-Age=31536000; Path=/; HttpOnly; SameSite=Lax'
+      });
+      res.end(JSON.stringify({ ok: true }));
+      return true;
+    }
+    const n = (f ? f.n : 0) + 1;
+    gateFails.set(ip, { n, until: n >= 5 ? Date.now() + 10 * 60 * 1000 : 0 });
+    sendJson(res, 200, { error: '접속 코드가 맞지 않아요.' + (n >= 5 ? ' 10분 뒤 다시 해주세요.' : '') });
+    return true;
+  }
+  if (url.pathname.startsWith('/api/')) { sendJson(res, 401, { error: '접속 코드가 필요해요. 화면을 새로고침해 주세요.' }); return true; }
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  res.end(GATE_HTML);
+  return true;
+}
+// ─────────────────────────────────────────────────────────────────
 // 보기 전용 모드: 화면만 보고 카페24/우체국/시트에 일절 접속 안 함 (노트북에서 매장 PC와 충돌 없이 확인용)
 const VIEW_ONLY = !!process.env.HAM_VIEW;
 const STORE_URL = process.env.HAM_STORE || 'http://100.112.253.21:8899'; // 매장 PC (Tailscale)
@@ -1323,6 +1390,8 @@ const server = http.createServer(async (req, res) => {
         if (!sameOrigin && !localhost) return sendJson(res, 403, { error: '허용되지 않은 요청이에요.' });
       }
     }
+    // 접속 코드 게이트 (공개 인터넷에서 온 접속만; 처리했으면 여기서 끝)
+    if (await gateCheck(req, res, url)) return;
     // 보기 모드: 우체국 접수/취소/새로고침은 허용(시딩은 시트로 매장과 자동 합쳐짐),
     // 회수/업로드/따로보냄은 매장 전용, 카페24 관련은 "매장이 켜져 있을 때만" 양보
     if (VIEW_ONLY && req.method === 'POST' &&
