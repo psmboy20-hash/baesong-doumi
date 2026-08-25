@@ -11,7 +11,7 @@
   --text: #1c2333;
 }
 /* 큰 화면(1270px~)에선 20px, 창이 좁아지면 15px까지 자동 축소 — 줄꺾임 방지 */
-html { font-size: clamp(15px, 1.1vw + 6px, 20px); }
+html { font-size: clamp(14px, 0.9vw + 6px, 17px); }
 body {
   font-family: "Malgun Gothic", "맑은 고딕", sans-serif;
   background: var(--bg);
