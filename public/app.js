@@ -1096,10 +1096,18 @@ function renderShipping() {
 // ---------- 재고 ----------
 function renderInventory() {
   const q = (window._invQ || '').trim();
-  const items = q ? DB.inventory.filter(i => (i.name + ' ' + (i.color || '') + ' ' + (i.size || '')).includes(q)) : DB.inventory;
+  const filter = window._invFilter || 'all'; // all | low | zero
+  // 현재 재고 요약 (전체 기준 — 검색/필터와 무관하게 항상 실제 현황)
+  const totalQty = DB.inventory.reduce((s, i) => s + (Number(i.qty) || 0), 0);
+  const zeroN = DB.inventory.filter(i => i.qty === 0).length;
+  const lowN = DB.inventory.filter(i => i.qty > 0 && i.qty <= 2).length;
+  const prodN = new Set(DB.inventory.map(i => i.name + '|' + (i.color || ''))).size;
+  let items = q ? DB.inventory.filter(i => (i.name + ' ' + (i.color || '') + ' ' + (i.size || '')).includes(q)) : DB.inventory;
+  if (filter === 'zero') items = items.filter(i => i.qty === 0);
+  if (filter === 'low') items = items.filter(i => i.qty > 0 && i.qty <= 2);
   const findP = i => (DB.products || []).find(p => p.no === i.productNo) ||
     (DB.products || []).find(p => lettersOnly(p.name) === lettersOnly(i.name));
-  // 같은 제품(이름+컬러)의 사이즈 행을 한 묶음으로 — 제품 칸은 세로 병합
+  // 같은 제품(이름+컬러)의 사이즈 행을 한 묶음으로 — 제품 칸은 세로 병합 + 소계
   const gmap = new Map();
   const groups = [];
   for (const i of items) {
@@ -1107,19 +1115,24 @@ function renderInventory() {
     if (!gmap.has(k)) { gmap.set(k, []); groups.push(gmap.get(k)); }
     gmap.get(k).push(i);
   }
-  const rows = groups.map(g => g.map((i, idx) => {
-    const p = findP(i);
-    const prodCell = idx === 0 ? `
+  const stChip = i => i.qty === 0 ? '<span class="chip wait">품절</span>'
+    : i.qty <= 2 ? '<span class="chip processing">부족</span>'
+    : '<span class="chip done">정상</span>';
+  const rows = groups.map(g => {
+    const sum = g.reduce((s, i) => s + (Number(i.qty) || 0), 0);
+    return g.map((i, idx) => {
+      const p = findP(i);
+      const prodCell = idx === 0 ? `
       <td rowspan="${g.length}" ${g.length > 1 ? 'style="border-top:3px solid #dfe4ee"' : ''}>
         <div class="inv-prod">
           ${p && p.img ? prodImgTag(p.img).replace('class="pimg"', 'class="pimg inv-img"') : ''}
           <div>
             <div class="pname">${p ? `<span class="pname-link" onclick="window.open('${saleUrl(p.no)}','_blank')" title="판매 페이지 열기">${esc(i.name)}</span>` : esc(i.name)}</div>
-            ${i.color ? `<div class="popt">${esc(i.color)}</div>` : ''}
+            <div class="popt">${i.color ? esc(i.color) + ' · ' : ''}총 <b class="${sum === 0 ? 'inv-zero' : ''}">${sum}개</b></div>
           </div>
         </div>
       </td>` : '';
-    return `
+      return `
     <tr class="${idx === 0 ? 'g-start' : ''}">
       ${prodCell}
       <td class="sz">${esc(i.size) || '<span class="muted" style="font-weight:400">-</span>'}</td>
@@ -1128,17 +1141,29 @@ function renderInventory() {
         <span class="qty ${i.qty <= 2 ? 'low' : ''}">${i.qty}</span>
         <button class="qty-btn sm" onclick="invAdj(${i.id},1)">＋</button>
       </td>
+      <td style="text-align:center;width:5rem">${stChip(i)}</td>
       <td class="acts">
         ${!i.size ? `<button class="del-btn" title="사이즈별 줄로 나누기 (예: S/M/L)" onclick="invSplit(${i.id})">📐</button>` : ''}
         <button class="del-btn" title="지우기" onclick="invDel(${i.id})">🗑️</button>
       </td>
     </tr>`;
-  }).join('')).join('');
+    }).join('');
+  }).join('');
+  const ftab = (key, label) => `<button class="big-btn ${filter === key ? '' : 'gray'}" style="padding:0.45rem 1rem;font-size:0.95rem" onclick="window._invFilter='${key}';renderInventory()">${label}</button>`;
   main().innerHTML = `
     <h1>📋 재고</h1>
-    <div class="sub">남은 옷 개수예요. 옷을 보내면 <b>−</b>, 새로 들어오면 <b>＋</b>를 눌러요. <span style="color:var(--red)">빨간 숫자</span>는 2개 이하!</div>
-    <input class="search-input" placeholder="🔍 제품 이름으로 찾기" value="${esc(q)}"
-      oninput="window._invQ=this.value; renderInventory(); this.focus(); this.setSelectionRange(this.value.length,this.value.length)">
+    <div class="sub">남은 옷 개수예요. 옷을 보내면 <b>−</b>, 새로 들어오면 <b>＋</b>를 눌러요.</div>
+    <div class="inv-stats">
+      <div class="stat"><div class="n">${prodN}</div><div class="l">제품 종류</div></div>
+      <div class="stat"><div class="n" style="color:var(--blue)">${totalQty}</div><div class="l">현재 재고 (개)</div></div>
+      <div class="stat ${lowN ? 'warn' : ''}"><div class="n" style="color:var(--orange)">${lowN}</div><div class="l">부족 (1~2개)</div></div>
+      <div class="stat ${zeroN ? 'bad' : ''}"><div class="n" style="color:var(--red)">${zeroN}</div><div class="l">품절 (0개)</div></div>
+    </div>
+    <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center; margin-bottom:0.8rem">
+      ${ftab('all', '전체')} ${ftab('low', '⚠️ 부족만')} ${ftab('zero', '🚫 품절만')}
+      <input class="search-input" style="flex:1;min-width:200px;margin:0" placeholder="🔍 제품 이름으로 찾기" value="${esc(q)}"
+        oninput="window._invQ=this.value; renderInventory(); this.focus(); this.setSelectionRange(this.value.length,this.value.length)">
+    </div>
     <div style="margin-bottom:1rem; display:flex; gap:0.8rem; flex-wrap:wrap">
       <button class="big-btn" onclick="invAddForm()">➕ 새 제품 넣기</button>
       <button class="big-btn" style="background:#5a6478" onclick="renderStockLog()">📜 입출고 내역</button>
@@ -1146,14 +1171,12 @@ function renderInventory() {
     </div>
     <div id="inv-form"></div>
     ${rows ? `
-    <div class="table-wrap" style="max-height:72vh">
+    <div class="table-wrap" style="max-height:68vh">
       <table class="inv-table">
-        <thead><tr><th>제품</th><th style="text-align:center">사이즈</th><th style="text-align:center">개수</th><th style="text-align:center">동작</th></tr></thead>
+        <thead><tr><th>제품</th><th style="text-align:center">사이즈</th><th style="text-align:center">개수</th><th style="text-align:center">상태</th><th style="text-align:center">동작</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
-    </div>` : (q
-      ? `<div class="muted" style="font-size:1.1rem">'${esc(q)}'(으)로 찾은 제품이 없어요. <button class="link-btn" onclick="window._invQ='';renderInventory()">🔄 전체 보기</button></div>`
-      : '<div class="muted" style="font-size:1.1rem">아직 등록된 제품이 없어요. 카페24와 연결돼 있으면 자동으로 들어와요. 직접 넣으려면 위의 [새 제품 넣기]를 눌러 주세요.</div>')}`;
+    </div>` : `<div class="muted" style="font-size:1.1rem">${filter !== 'all' ? '이 조건에 맞는 제품이 없어요. ' : q ? `'${esc(q)}'(으)로 찾은 제품이 없어요. ` : '아직 등록된 제품이 없어요. '}<button class="link-btn" onclick="window._invQ='';window._invFilter='all';renderInventory()">🔄 전체 보기</button></div>`}`;
   injectHelp();
 }
 

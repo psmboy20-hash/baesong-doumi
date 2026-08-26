@@ -219,6 +219,14 @@ input[type="checkbox"] { width: 1.6rem; height: 1.6rem; accent-color: var(--gree
 .result-box .big { font-size: 1.3rem; }
 
 .inv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
+/* 재고 요약 카드 */
+.inv-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.7rem; margin-bottom: 1rem; }
+.inv-stats .stat { background: #fff; border: 2px solid var(--line); border-radius: 14px; padding: 0.7rem 1rem; text-align: center; }
+.inv-stats .stat .n { font-size: 1.7rem; font-weight: 900; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.inv-stats .stat .l { font-size: 0.88rem; color: #5a6478; font-weight: 700; }
+.inv-stats .stat.warn { border-color: #f2c48d; background: #fffaf2; }
+.inv-stats .stat.bad { border-color: #eeb1b1; background: #fff6f6; }
+.inv-zero { color: var(--red); }
 /* 재고 표: 제품별로 사이즈 행을 묶어 정렬 */
 .inv-table td { padding: 0.4rem 0.5rem; }
 .inv-table tr.g-start td { border-top: 3px solid #dfe4ee; }
