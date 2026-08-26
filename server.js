@@ -1143,11 +1143,31 @@ function mergeOrders(db, parsed) {
 function buildParcelGroups(db, selected) {
   const groups = new Map();
   const pick = [];
+  const dups = [];
+  const normP = s => String(s || '').toLowerCase().replace(/[^a-z0-9가-힣]/g, '');
   for (const sel of selected) {
     const list = sel.type === 'seeding' ? db.seeding : db.orders;
     const item = list.find(x => x.id === sel.id);
     // 이미 보낸 건은 서버에서도 걸러냄 (화면이 30초 묵은 상태에서 눌러도 이중 접수 방지)
-    if (item && item.status !== '취소됨' && item.status !== '발송완료' && !item.epost) pick.push({ type: sel.type, item });
+    if (!(item && item.status !== '취소됨' && item.status !== '발송완료' && !item.epost)) continue;
+    // 과거에 이미 보낸 것과 같은 내용이면 차단 — [한 번 더 보내기]로 확인한 건(resendOk)만 통과
+    if (!item.resendOk) {
+      let prev = null;
+      if (sel.type !== 'seeding' && item.orderNo) {
+        // 주문: 같은 주문번호에서 같은 제품·옵션이 이미 발송됨
+        prev = db.orders.find(o => o.id !== item.id && o.orderNo === item.orderNo && o.status === '발송완료' &&
+          normP(o.product) === normP(item.product) && optKey(o) === optKey(item));
+      } else if (sel.type === 'seeding') {
+        // 시딩: 같은 사람에게 100% 동일한 제품이 이미 발송됨
+        prev = db.seeding.find(o => o.id !== item.id && seedKey(o) === seedKey(item) && o.status === '발송완료' &&
+          String(o.product || '').trim() === String(item.product || '').trim());
+      }
+      if (prev) {
+        dups.push({ type: sel.type, id: item.id, name: item.name, product: String(item.product || '').split('\n')[0], prevInvoice: prev.invoice || '' });
+        continue;
+      }
+    }
+    pick.push({ type: sel.type, item });
   }
   for (const { type, item } of pick) {
     const gk = normName(item.name) + '|' + phoneDigits(item.phone) + '|' + cleanAddr(item.addr).slice(0, 15);
@@ -1157,7 +1177,7 @@ function buildParcelGroups(db, selected) {
     if (item.msg) g.msgs.push(item.msg);
     if (type === 'seeding' && item.request) g.msgs.push(String(item.request).trim());
   }
-  return { groups, pick };
+  return { groups, pick, dups };
 }
 
 function buildEpostRows(db, selected) {
@@ -1626,8 +1646,11 @@ const server = http.createServer(async (req, res) => {
           return sendJson(res, 200, { error: '매장 컴퓨터가 켜져 있어요 — 주문(🛒) 접수는 매장 화면에서 해주세요. (시딩🎁은 여기서도 가능)' });
         }
       }
-      const { groups } = buildParcelGroups(db, body.selected || []);
+      const { groups, dups } = buildParcelGroups(db, body.selected || []);
       const out = [];
+      for (const d of dups) {
+        out.push({ name: d.name, ok: false, dup: true, error: `이미 같은 내용을 보냈어요 (${d.product}${d.prevInvoice ? ' · 송장 ' + d.prevInvoice : ''}). 정말 한 번 더 보내려면 목록의 [한 번 더 보내기]를 눌러 주세요.` });
+      }
       const shippedItems = [];
       let idx = 0;
       for (const g of groups.values()) {
@@ -1664,6 +1687,7 @@ const server = http.createServer(async (req, res) => {
               item.status = '발송완료';
               item.sentDate = today();
               item.epost = { orderNo, reqNo: r.reqNo, resNo: r.resNo, reqYmd: today().replace(/-/g, ''), stus: '02', price: r.price, label: r.label };
+              delete item.resendOk; // 한 번 더 보내기 허용은 1회용
               shippedItems.push({ type, item });
             }
           }
@@ -1675,7 +1699,18 @@ const server = http.createServer(async (req, res) => {
       let post = { stock: [], cafe24: [], sheet: null };
       if (shippedItems.length) post = await postProcessShipped(db, shippedItems);
       saveDb(db);
-      return sendJson(res, 200, { ok: true, results: out, stock: post.stock, cafe24: post.cafe24, sheet: post.sheet, db });
+      return sendJson(res, 200, { ok: true, results: out, dups, stock: post.stock, cafe24: post.cafe24, sheet: post.sheet, db });
+    }
+    if (url.pathname === '/api/resend-ok' && req.method === 'POST') {
+      // "이미 보낸 것과 같은 내용" 차단을 이 건에 한해 1회 풀어줌 (한 번 더 보내기)
+      const b = JSON.parse((await readBody(req)).toString('utf8'));
+      const db = loadDb();
+      const list = b.type === 'seeding' ? db.seeding : db.orders;
+      const item = list.find(x => x.id === b.id);
+      if (!item) return sendJson(res, 200, { error: '해당 건을 찾지 못했어요.' });
+      item.resendOk = true;
+      saveDb(db);
+      return sendJson(res, 200, { ok: true, db });
     }
     if (url.pathname === '/api/manual-ship' && req.method === 'POST') {
       // 앱 밖에서(우체국 창구, 다른 택배 등) 따로 보낸 건을 발송완료로 정리

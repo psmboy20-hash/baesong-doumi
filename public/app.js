@@ -476,6 +476,9 @@ function renderSend() {
     // 3일 넘게 그대로면: 앱 밖(우체국 창구·사이트)에서 이미 보냈는데 앱만 모르는 경우가 많다
     const staleDays = Math.max(...g.map(p => p.x.regDate ? Math.floor((Date.now() - new Date(p.x.regDate)) / 86400000) : 0));
     const staleBadge = staleDays >= 3 ? `<span class="note-badge" title="우체국 사이트·창구에서 직접 보내셨다면 [따로 보냈어요]를 눌러 정리해 주세요">⏰ ${staleDays}일째 그대로</span><br>` : '';
+    // 접수 시도에서 "이미 보낸 것과 같은 내용"으로 막힌 건: 확인 후 한 번 더 보내기 허용
+    const dupHere = g.filter(p => (window._dupIds || new Set()).has(p.kind + ':' + p.x.id) && !p.x.resendOk);
+    const dupBadge = dupHere.length ? `<span class="note-badge" style="background:#fdecea;color:#c0392b">🚫 이미 보낸 것과 같음</span><br><button class="link-btn" style="font-size:0.85rem" onclick="resendOkGroup('${dupHere.map(p => p.kind + ':' + p.x.id).join(',')}','${jsq(first.name)}')">🔁 한 번 더 보내기</button><br>` : '';
     return `
     <tr class="${allSel ? 'checked-row' : ''}">
       <td><input type="checkbox" ${allSel ? 'checked' : ''} onchange="toggleSelGroup('${spec}',this.checked)"></td>
@@ -488,7 +491,7 @@ function renderSend() {
         <button class="link-btn" style="font-size:0.9rem" onclick="fixZipGroup('${spec}','zip-g-${g[0].kind}-${first.id}')">저장</button></div>` : ''}</td>
       <td style="min-width:240px;max-width:480px">${names}</td>
       <td>${opts}</td>
-      <td style="white-space:nowrap">${staleBadge}${stusSet.map(s => chip(s)).join(' ')}<div class="btn-col" style="margin-top:0.3rem">${stusSet.includes('접수중') ? `<button class="link-btn" style="font-size:0.85rem" onclick="cancelExcelGroup('${spec}','${jsq(first.name)}')">↩️ 엑셀 접수 취소</button>` : ''}<button class="link-btn" style="font-size:0.85rem" onclick="manualShipGroup('${spec}','${jsq(first.name)}')">따로 보냈어요</button><button class="link-btn" style="font-size:0.85rem;color:var(--red)" onclick="cancelSendGroup('${spec}','${jsq(first.name)}')">안 보내요 ✕</button></div></td>
+      <td style="white-space:nowrap">${dupBadge}${staleBadge}${stusSet.map(s => chip(s)).join(' ')}<div class="btn-col" style="margin-top:0.3rem">${stusSet.includes('접수중') ? `<button class="link-btn" style="font-size:0.85rem" onclick="cancelExcelGroup('${spec}','${jsq(first.name)}')">↩️ 엑셀 접수 취소</button>` : ''}<button class="link-btn" style="font-size:0.85rem" onclick="manualShipGroup('${spec}','${jsq(first.name)}')">따로 보냈어요</button><button class="link-btn" style="font-size:0.85rem;color:var(--red)" onclick="cancelSendGroup('${spec}','${jsq(first.name)}')">안 보내요 ✕</button></div></td>
     </tr>`;
   }).join('');
 
@@ -1214,6 +1217,20 @@ async function invAdj(id, d) {
   DB = r.db;
   renderInventory();
 }
+// "이미 보낸 것과 같은 내용" 차단을 확인받고 풀어줌 → 다시 접수하면 한 번 더 보내진다
+async function resendOkGroup(spec, name) {
+  if (!confirm(`${name}님에게 같은 내용을 이미 보낸 적이 있어요.\n\n정말 한 번 더 보낼까요?\n(확인을 누르면 다음 접수 때 이 건이 정상 접수돼요)`)) return;
+  for (const s of spec.split(',')) {
+    const [kind, id] = s.split(':');
+    const r = await api('/api/resend-ok', { method: 'POST', body: JSON.stringify({ type: kind === 'seeding' ? 'seeding' : 'order', id: Number(id) }) });
+    if (r.error) { toast('⚠️ ' + r.error, 5000); return; }
+    if (r.db) DB = r.db;
+    if (window._dupIds) window._dupIds.delete(s);
+  }
+  renderSend();
+  toast('✔️ 확인했어요. 이제 [우체국 바로 접수]를 누르면 한 번 더 보내져요.', 6000);
+}
+
 // ── 입출고 내역 ──
 const STOCK_REASON = {
   '출고': ['📤', '#c0392b'], '입고 (직접)': ['📥', '#1e7e46'], '차감 (직접)': ['✏️', '#8a6d1a'],
@@ -1518,6 +1535,8 @@ async function doEpostRegister() {
   busy(false);
   if (r.error) { toast('⚠️ ' + r.error, 7000); return; }
   adoptDb(r.db);
+  // 중복이라 막힌 건들: 목록에 [한 번 더 보내기] 버튼을 띄우기 위해 기억
+  window._dupIds = new Set((r.dups || []).map(d => (d.type === 'seeding' ? 'seeding' : 'orders') + ':' + d.id));
   render();
   const ok = r.results.filter(x => x.ok);
   const fail = r.results.filter(x => !x.ok);
