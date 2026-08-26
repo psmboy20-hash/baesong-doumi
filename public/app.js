@@ -1097,21 +1097,24 @@ function renderShipping() {
 function renderInventory() {
   const q = (window._invQ || '').trim();
   const filter = window._invFilter || 'all'; // all | low | zero
+  const invParts = i => {
+    const parsed = splitColor(i.name);
+    return { name: parsed.base, color: i.color || parsed.color };
+  };
   // 현재 재고 요약 (전체 기준 — 검색/필터와 무관하게 항상 실제 현황)
   const totalQty = DB.inventory.reduce((s, i) => s + (Number(i.qty) || 0), 0);
   const zeroN = DB.inventory.filter(i => i.qty === 0).length;
   const lowN = DB.inventory.filter(i => i.qty > 0 && i.qty <= 2).length;
-  const prodN = new Set(DB.inventory.map(i => i.name + '|' + (i.color || ''))).size;
+  const prodN = new Set(DB.inventory.map(i => invParts(i).name)).size;
   let items = q ? DB.inventory.filter(i => (i.name + ' ' + (i.color || '') + ' ' + (i.size || '')).includes(q)) : DB.inventory;
   if (filter === 'zero') items = items.filter(i => i.qty === 0);
   if (filter === 'low') items = items.filter(i => i.qty > 0 && i.qty <= 2);
   const findP = i => (DB.products || []).find(p => p.no === i.productNo) ||
     (DB.products || []).find(p => lettersOnly(p.name) === lettersOnly(i.name));
-  // 같은 제품(이름+컬러)의 사이즈 행을 한 묶음으로 — 제품 칸은 세로 병합 + 소계
   const gmap = new Map();
   const groups = [];
   for (const i of items) {
-    const k = i.name + '|' + (i.color || '');
+    const k = invParts(i).name;
     if (!gmap.has(k)) { gmap.set(k, []); groups.push(gmap.get(k)); }
     gmap.get(k).push(i);
   }
@@ -1122,19 +1125,21 @@ function renderInventory() {
     const sum = g.reduce((s, i) => s + (Number(i.qty) || 0), 0);
     return g.map((i, idx) => {
       const p = findP(i);
+      const display = invParts(i);
       const prodCell = idx === 0 ? `
       <td rowspan="${g.length}" ${g.length > 1 ? 'style="border-top:3px solid #dfe4ee"' : ''}>
         <div class="inv-prod">
           ${p && p.img ? prodImgTag(p.img).replace('class="pimg"', 'class="pimg inv-img"') : ''}
           <div>
-            <div class="pname">${p ? `<span class="pname-link" onclick="window.open('${saleUrl(p.no)}','_blank')" title="판매 페이지 열기">${esc(i.name)}</span>` : esc(i.name)}</div>
-            <div class="popt">${i.color ? esc(i.color) + ' · ' : ''}총 <b class="${sum === 0 ? 'inv-zero' : ''}">${sum}개</b></div>
+            <div class="pname">${p ? `<span class="pname-link" onclick="window.open('${saleUrl(p.no)}','_blank')" title="판매 페이지 열기">${esc(display.name)}</span>` : esc(display.name)}</div>
+            <div class="popt">전체 아소트 · 총 <b class="${sum === 0 ? 'inv-zero' : ''}">${sum}개</b></div>
           </div>
         </div>
       </td>` : '';
       return `
     <tr class="${idx === 0 ? 'g-start' : ''}">
       ${prodCell}
+      <td class="color">${esc(display.color) || '<span class="muted">-</span>'}</td>
       <td class="sz">${esc(i.size) || '<span class="muted" style="font-weight:400">-</span>'}</td>
       <td class="qcell">
         <button class="qty-btn sm" onclick="invAdj(${i.id},-1)">−</button>
@@ -1171,9 +1176,10 @@ function renderInventory() {
     </div>
     <div id="inv-form"></div>
     ${rows ? `
-    <div class="table-wrap" style="max-height:68vh">
+    <div class="table-wrap inv-table-wrap" style="max-height:68vh">
       <table class="inv-table">
-        <thead><tr><th>제품</th><th style="text-align:center">사이즈</th><th style="text-align:center">개수</th><th style="text-align:center">상태</th><th style="text-align:center">동작</th></tr></thead>
+        <colgroup><col class="col-product"><col class="col-color"><col class="col-size"><col class="col-qty"><col class="col-status"><col class="col-action"></colgroup>
+        <thead><tr><th>상품명</th><th>컬러</th><th style="text-align:center">사이즈</th><th style="text-align:center">현재 재고</th><th style="text-align:center">상태</th><th style="text-align:center">관리</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>` : `<div class="muted" style="font-size:1.1rem">${filter !== 'all' ? '이 조건에 맞는 제품이 없어요. ' : q ? `'${esc(q)}'(으)로 찾은 제품이 없어요. ` : '아직 등록된 제품이 없어요. '}<button class="link-btn" onclick="window._invQ='';window._invFilter='all';renderInventory()">🔄 전체 보기</button></div>`}`;
@@ -1766,4 +1772,3 @@ async function refreshStatus(force) {
   deadlineCheck();
   setInterval(deadlineCheck, 60 * 1000);
 })();
-
