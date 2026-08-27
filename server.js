@@ -1815,7 +1815,7 @@ const server = http.createServer(async (req, res) => {
       let post = { stock: [], cafe24: [], sheet: null };
       if (shippedItems.length) post = await postProcessShipped(db, shippedItems);
       saveDb(db);
-      if (shippedItems.length) audit('shipment.epost', { count: groups.size, rev: db.rev });
+      if (shippedItems.length) audit('shipment.epost', { count: out.filter(x => x.ok && x.regiNo).length, rev: db.rev });
       return sendJson(res, 200, { ok: true, results: out, dups, stock: post.stock, stockMissing: post.stockMissing, cafe24: post.cafe24, sheet: post.sheet, db });
     }
     if (url.pathname === '/api/resend-ok' && req.method === 'POST') {

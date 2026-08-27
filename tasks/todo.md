@@ -1,21 +1,21 @@
 # 표준 출고·재고 작업
 
-- [ ] Task 1: 주문 단위 포장과 명시적 합포장
+- [x] Task 1: 주문 단위 포장과 명시적 합포장
   - Acceptance: 같은 주문 품목만 자동 묶고 다른 출고는 사용자가 확인해야 합쳐진다.
   - Verify: 계약 테스트 + 보내기 화면
-- [ ] Task 2: 택배사 기준 배송완료
+- [x] Task 2: 택배사 기준 배송완료
   - Acceptance: 7일 경과만으로 완료되지 않고 조회 실패는 확인필요로 남는다.
   - Verify: 계약 테스트 + 배송 확인 화면
-- [ ] Task 3: 채널 출처 보존
+- [x] Task 3: 채널 출처 보존
   - Acceptance: 주문·시딩·교환·직접등록에 sourceChannel이 있다.
   - Verify: 마이그레이션 fixture
-- [ ] Task 4: SKU 재고 마스터
+- [x] Task 4: SKU 재고 마스터
   - Acceptance: 재고·입출고에 SKU가 있고 정확한 SKU를 우선 차감한다.
   - Verify: SKU 차감·미매칭 테스트
-- [ ] Task 5: RMA 연결
+- [x] Task 5: RMA 연결
   - Acceptance: 교환반품에 RMA 번호, 원주문·원송장, 검수 결과가 남는다.
   - Verify: 회수 완료 fixture
-- [ ] Task 6: 장부 안전성
+- [x] Task 6: 장부 안전성
   - Acceptance: 원자 저장과 감사 로그가 동작한다.
   - Verify: 임시 장부 저장 테스트
 - [ ] Task 7: 실화면 검수와 배포

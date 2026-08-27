@@ -111,6 +111,12 @@ function productQuantity(items, itemOf) {
     const products = new Map();
     for (const entry of group) {
       const item = pick(entry);
+      const lines = String(item.product || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+      if (lines.length > 1) {
+        const key = 'multi|' + (item.id != null ? item.id : shipmentProductKey(item));
+        products.set(key, Math.max(products.get(key) || 0, lines.length));
+        continue;
+      }
       const key = shipmentProductKey(item);
       products.set(key, Math.max(products.get(key) || 0, Number(item.qty) || 1));
     }
@@ -174,7 +180,15 @@ function parseOption(x) {
     const ms = raw.match(/사이즈\s*=\s*([^,/]+)/);
     if (mc && !color) color = mc[1].trim();
     if (ms && !size) size = ms[1].trim();
-    if (!mc && !ms && !color && !size) size = raw; // 자유 텍스트 옵션은 그대로
+    if (!mc && !ms && !color && !size) {
+      const sm = raw.match(/^(.*?)(?:[\s,/]+)?(XXXS|XXS|XS|S|M|L|XL|XXL|XXXL|FREE|F)$/i);
+      if (sm) {
+        color = sm[1].trim();
+        size = sm[2].toUpperCase();
+      } else {
+        color = raw;
+      }
+    }
   }
   return { color, size };
 }
@@ -260,6 +274,12 @@ function invoiceCell(inv, courier) {
     return `<a class="track-link" target="_blank" href="${url}">배송조회 🔍</a><div class="muted" style="font-size:0.8rem">${esc(label)}</div>`;
   }
   return `<span class="muted" style="font-size:0.9rem">${esc(inv)}</span>`;
+}
+function shipmentSourceLabel(x) {
+  if (x.exchange || x.sourceChannel === 'exchange') return '🔁 교환 재발송';
+  if (x.sourceChannel === 'seeding' || x._kind === '시딩') return '🎁 시딩';
+  if (x.sourceChannel === 'direct') return '✍ 직접 등록';
+  return '🛒 주문';
 }
 
 function trackLink(inv) {
@@ -1173,7 +1193,7 @@ function renderShipping() {
     const pp = productParts(x);
     return `
     <tr>
-      <td style="white-space:nowrap">${x._kind === '주문' ? '🛒' : '🎁'} ${x._kind}</td>
+      <td style="white-space:nowrap">${shipmentSourceLabel(x)}</td>
       <td style="white-space:nowrap">${esc(x.sentDate || '')}</td>
       <td><b>${esc(x.name)}</b></td>
       <td style="min-width:240px;max-width:480px">${pp.name}</td>
