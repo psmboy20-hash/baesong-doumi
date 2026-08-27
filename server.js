@@ -13,8 +13,10 @@ const {
   fulfillmentKey,
   inventorySku,
   ensureOperationalFields,
-  applyCarrierDeliveryResult
+  applyCarrierDeliveryResult,
+  splitShipmentItems
 } = require('./lib/operations');
+const { writeJsonAtomic, appendAudit } = require('./lib/storage');
 
 const PORT = 8899;
 // ── 접속 코드 게이트 (클라우드 서버용) ───────────────────────────────
@@ -110,6 +112,7 @@ async function storeAliveCached() {
 }
 const DATA_DIR = path.join(__dirname, 'data');
 const DB_PATH = path.join(DATA_DIR, 'db.json');
+const AUDIT_PATH = path.join(DATA_DIR, 'audit.ndjson');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
 // 구글시트 주소는 설정(data/db.json)에 저장 - 코드에는 두지 않는다
@@ -175,14 +178,22 @@ function loadDb() {
 
 function saveDb(db) {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  ensureOperationalFields(db);
   // _sel(체크박스 선택)은 화면 전용 — 장부에 저장하지 않음 (저장되면 다음에 열 때 0건 선택으로 시작함)
   for (const k of ['seeding', 'orders']) {
     if (Array.isArray(db[k])) for (const x of db[k]) delete x._sel;
   }
-  // 백업 1개 유지
-  if (fs.existsSync(DB_PATH)) fs.copyFileSync(DB_PATH, DB_PATH + '.bak');
+  if (fs.existsSync(DB_PATH)) {
+    const current = JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
+    if (Number(current.rev || 0) > Number(db.rev || 0)) throw new Error('다른 컴퓨터에서 장부가 먼저 바뀌었어요. 화면을 새로고침하고 다시 해주세요.');
+    fs.copyFileSync(DB_PATH, DB_PATH + '.bak');
+  }
   db.rev = (db.rev || 0) + 1;
-  fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), 'utf8');
+  writeJsonAtomic(DB_PATH, db);
+}
+
+function audit(action, values) {
+  try { appendAudit(AUDIT_PATH, Object.assign({ action }, values || {})); } catch (e) { console.error('감사 로그 실패:', e.message); }
 }
 
 // ---------- 유틸 ----------
@@ -428,6 +439,7 @@ async function cafe24FetchOrders(db) {
             orderNo: o.order_id || '', name, phone,
             zip: String(zip), addr, color, size,
             option: it.option_value || '', qty: Number(it.quantity) || 1,
+            productNo: it.product_no || null, variantCode: it.variant_code || '', orderItemCode: it.order_item_code || '',
             product: it.product_name || '', _canceled: true, _src: 'c24',
             _retKind: st[0] === 'R' ? '반품' : st[0] === 'E' ? '교환' : ''
           });
@@ -445,6 +457,9 @@ async function cafe24FetchOrders(db) {
           color, size,
           option: it.option_value || '',
           qty: Number(it.quantity) || 1,
+          productNo: it.product_no || null,
+          variantCode: it.variant_code || '',
+          orderItemCode: it.order_item_code || '',
           msg,
           courier: '',
           invoice: '',
@@ -625,21 +640,36 @@ async function cafe24FetchProducts(db) {
   const token = await cafe24EnsureToken(db);
   const list = [];
   for (let offset = 0; offset < 1000; offset += 100) {
-    const r = await cafe24Fetch(db, token, `/api/v2/admin/products?limit=100&offset=${offset}`);
+    const r = await cafe24Fetch(db, token, `/api/v2/admin/products?limit=100&offset=${offset}&embed=variants`);
     if (r.status !== 200 || !r.json) throw new Error('제품 조회 실패(' + r.status + ')');
     const products = r.json.products || [];
     for (const p of products) {
+      const variants = (p.variants || []).map(v => {
+        let color = '', size = '';
+        for (const option of (v.options || [])) {
+          const name = String(option.name || option.option_name || '').toLowerCase();
+          const value = String(option.value || option.option_value || '').trim();
+          if (name.includes('색상') || name.includes('color')) color = value;
+          else if (name.includes('사이즈') || name.includes('size')) size = value;
+        }
+        return {
+          variantCode: v.variant_code || '', customVariantCode: v.custom_variant_code || '',
+          color, size, display: v.display, selling: v.selling
+        };
+      });
       list.push({
         no: p.product_no,
         name: p.product_name || '',
         code: p.product_code || '',
-        img: p.list_image || p.small_image || p.tiny_image || p.detail_image || ''
+        img: p.list_image || p.small_image || p.tiny_image || p.detail_image || '',
+        variants
       });
     }
     if (products.length < 100) break;
   }
   db.products = list;
   db.productsAt = today();
+  db.productsSchema = 2;
   return list.length;
 }
 
@@ -651,6 +681,33 @@ function syncInventoryFromProducts(db) {
   for (const p of (db.products || [])) {
     if (!p.name) continue;
     if ((db.inventoryHidden || []).includes(p.no)) continue; // 사용자가 지운 제품은 다시 안 넣음
+    if (Array.isArray(p.variants) && p.variants.length) {
+      for (const v of p.variants) {
+        let inv = db.inventory.find(i => v.variantCode && i.variantCode === v.variantCode);
+        if (!inv) inv = db.inventory.find(i => String(i.productNo || '') === String(p.no) &&
+          lo(i.color) === lo(v.color) && String(i.size || '').trim().toUpperCase() === String(v.size || '').trim().toUpperCase());
+        if (!inv) inv = db.inventory.find(i => lo(i.name) === lo(p.name) &&
+          String(i.size || '').trim().toUpperCase() === String(v.size || '').trim().toUpperCase() &&
+          (!i.color || lo(i.color) === lo(v.color)));
+        if (inv) {
+          inv.productNo = p.no;
+          inv.variantCode = v.variantCode;
+          if (!inv.color && v.color) inv.color = v.color;
+          if (!inv.size && v.size) inv.size = v.size;
+          inv.sku = inventorySku(inv);
+          continue;
+        }
+        const item = {
+          id: db.nextId++, name: p.name, color: v.color, size: v.size, qty: 0,
+          productNo: p.no, variantCode: v.variantCode
+        };
+        item.sku = inventorySku(item);
+        db.inventory.push(item);
+        added++;
+      }
+      existing.add(lo(p.name));
+      continue;
+    }
     if (existing.has(lo(p.name))) {
       // 이미 있는 재고엔 제품번호만 붙여줌 (판매페이지 링크/사진용)
       const inv = db.inventory.find(i => lo(i.name) === lo(p.name));
@@ -658,7 +715,9 @@ function syncInventoryFromProducts(db) {
       continue;
     }
     existing.add(lo(p.name));
-    db.inventory.push({ id: db.nextId++, name: p.name, color: '', size: '', qty: 0, productNo: p.no });
+    const item = { id: db.nextId++, name: p.name, color: '', size: '', qty: 0, productNo: p.no };
+    item.sku = inventorySku(item);
+    db.inventory.push(item);
     added++;
   }
   return added;
@@ -876,7 +935,7 @@ async function syncAll() {
       syncStatus.cafe24 = { configured: true, connected: !!db.cafe24Token, ok: false, error: e.message, added: 0 };
     }
     // 제품 목록(품번/사진)은 하루 한 번 갱신
-    if (!db.products || db.productsAt !== today()) {
+    if (!db.products || db.productsAt !== today() || db.productsSchema !== 2) {
       try { await cafe24FetchProducts(db); changed = true; } catch (e) { /* 다음 동기화 때 재시도 */ }
     }
   }
@@ -1037,6 +1096,7 @@ function mergeSeeding(db, parsed) {
       const item = Object.assign({}, p, {
         id: db.nextId++,
         status: p.invoice ? '발송완료' : '대기',
+        sourceChannel: 'seeding',
         regDate: today()
       });
       db.seeding.push(item);
@@ -1093,10 +1153,12 @@ function mergeOrders(db, parsed) {
         if (!Array.isArray(db.c24RetSeen)) db.c24RetSeen = [];
         if (!db.c24RetSeen.includes(key)) {
           db.c24RetSeen.push(key);
+          const retId = db.nextId++;
           db.returns.push({
-            id: db.nextId++,
+            id: retId, rmaNo: 'RMA-' + retId,
             kind: p._retKind,
-            sourceType: 'orders', _src: 'c24',
+            sourceType: 'orders', sourceChannel: 'cafe24', _src: 'c24',
+            sourceId: ex.id, originalOrderNo: p.orderNo, sku: ex.sku || p.sku || '',
             name: p.name, phone: p.phone,
             zip: String(p.zip || ex.zip || ''), addr: p.addr || ex.addr || '',
             product: p.product, option: [p.color, p.size].filter(Boolean).join(' ') || p.option || '',
@@ -1111,6 +1173,8 @@ function mergeOrders(db, parsed) {
     }
     const shipped = !!(p.invoice || p._shipped);
     const src = p._src;
+    p.sourceChannel = src === 'c24' ? 'cafe24' : (p.sourceChannel || 'direct');
+    if (!p.sku && (p.variantCode || p.productNo)) p.sku = inventorySku(p);
     delete p._shipped;
     delete p._src;
     const ex = map.get(orderKey(p)) || fuzzy.get(fuzzyOrderKey(p));
@@ -1122,6 +1186,9 @@ function mergeOrders(db, parsed) {
           (!ex.canceledInvoice || (p.invoice && p.invoice !== ex.canceledInvoice))) { ex.status = '발송완료'; ch = true; }
       if (shipped && !ex.sentDate && p.sentDate) { ex.sentDate = p.sentDate; ch = true; }
       if (p.orderNo && !ex.orderNo) { ex.orderNo = p.orderNo; ch = true; }
+      for (const f of ['productNo', 'variantCode', 'orderItemCode', 'sku', 'sourceChannel']) {
+        if (p[f] != null && String(p[f]) !== '' && String(p[f]) !== String(ex[f] ?? '')) { ex[f] = p[f]; ch = true; }
+      }
       // 아직 안 보낸 건은 주소/연락처/옵션 변경을 최신으로 반영
       if (!shipped && ex.status !== '발송완료' && ex.status !== '취소됨') {
         for (const f of ['addr', 'zip', 'phone', 'msg', 'option', 'color', 'size', 'qty']) {
@@ -1329,6 +1396,7 @@ async function matchInvoices(db, rows) {
   })).filter(x => x.item);
   const post = await postProcessShipped(db, matchedItems);
   results.stock = post.stock;
+  results.stockMissing = post.stockMissing;
   results.cafe24 = post.cafe24;
   results.sheet = post.sheet;
   return results;
@@ -1355,6 +1423,19 @@ function stockMatches(inv, item) {
 
 // 여러 재고 행이 걸리면 옵션이 구체적으로 맞는 1건만 (이중 차감/유령 복구 방지)
 function findStockMatches(db, item) {
+  if (item.variantCode) {
+    const exactVariant = db.inventory.find(inv => inv.variantCode === item.variantCode);
+    if (exactVariant) return [exactVariant];
+  }
+  if (item.sku) {
+    const exactSku = db.inventory.find(inv => inv.sku === item.sku);
+    if (exactSku) return [exactSku];
+  }
+  if (item.productNo) {
+    const sku = inventorySku(item);
+    const exactProductOption = db.inventory.find(inv => inv.sku === sku);
+    if (exactProductOption) return [exactProductOption];
+  }
   const hits = db.inventory.filter(inv => stockMatches(inv, item));
   if (hits.length <= 1) return hits;
   const scored = hits.map(inv => ({ inv, s: (inv.size ? 2 : 0) + (inv.color ? 1 : 0) }));
@@ -1367,6 +1448,7 @@ function logStock(db, inv, delta, reason, ref) {
   if (!db.stockLog) db.stockLog = [];
   db.stockLog.push({
     ts: new Date().toISOString(), date: today(),
+    sku: inv.sku || inventorySku(inv),
     name: inv.name, color: inv.color || '', size: inv.size || '',
     delta, left: inv.qty, reason, ref: ref || ''
   });
@@ -1379,18 +1461,30 @@ async function postProcessShipped(db, matchedItems) {
 
   // 1) 재고 자동 차감 (제품 이름이 재고 목록과 맞으면)
   results.stock = [];
+  results.stockMissing = [];
   for (const { item } of matchedItems) {
     if (item.stockDeducted) continue;
     if (!item.product) continue;
-    let any = false;
-    for (const inv of findStockMatches(db, item)) {
-      const n = Number(item.qty) || 1;
-      inv.qty = Math.max(0, inv.qty - n);
-      results.stock.push({ name: [inv.name, inv.color, inv.size].filter(Boolean).join(' '), minus: n, left: inv.qty });
+    const deducted = new Set(item.stockDeductions || []);
+    let missing = false;
+    for (const stockItem of splitShipmentItems(item)) {
+      const matches = findStockMatches(db, stockItem);
+      if (!matches.length) {
+        results.stockMissing.push({ name: item.name, product: stockItem.product, option: [stockItem.color, stockItem.size].filter(Boolean).join(' ') });
+        missing = true;
+        continue;
+      }
+      const inv = matches[0];
+      const deductionKey = inv.sku || inventorySku(inv);
+      if (deducted.has(deductionKey)) continue;
+      const n = Number(stockItem.qty) || 1;
+      inv.qty = (Number(inv.qty) || 0) - n;
+      results.stock.push({ sku: deductionKey, name: [inv.name, inv.color, inv.size].filter(Boolean).join(' '), minus: n, left: inv.qty });
       logStock(db, inv, -n, '출고', item.name);
-      any = true;
+      deducted.add(deductionKey);
     }
-    if (any) item.stockDeducted = true;
+    item.stockDeductions = [...deducted];
+    item.stockDeducted = !missing;
   }
 
   // 2) 카페24에 송장번호 자동 등록 + 배송중 처리 (주문건만)
@@ -1484,6 +1578,7 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { conflict: true, db: cur });
       }
       saveDb(body);
+      audit('db.save', { rev: body.rev, actor: 'client' });
       return sendJson(res, 200, { ok: true, rev: body.rev });
     }
     if (url.pathname === '/api/sync' && req.method === 'POST') {
@@ -1507,7 +1602,8 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/master/inventory' && req.method === 'GET') {
       const db = loadDb();
       const items = (db.inventory || []).map(i => ({
-        id: i.id, productNo: i.productNo || null, name: i.name,
+        id: i.id, sku: i.sku || inventorySku(i), productNo: i.productNo || null,
+        variantCode: i.variantCode || '', name: i.name,
         color: i.color || '', size: i.size || '', qty: Number(i.qty) || 0
       }));
       return sendJson(res, 200, { ok: true, source: 'baesong-doumi', rev: db.rev || 0, count: items.length, items });
@@ -1530,6 +1626,8 @@ const server = http.createServer(async (req, res) => {
           rows.push({
             kind, id: x.id, date, name: x.name, product: x.product || '',
             color: x.color || '', size: x.size || '', qty: Number(x.qty) || 1,
+            sku: x.sku || '', sourceChannel: x.sourceChannel || (kind === 'seeding' ? 'seeding' : 'direct'),
+            fulfillmentId: fulfillmentKey(kind, x), orderNo: x.orderNo || '',
             invoice: x.invoice || '', courier: x.courier || '',
             delivered: !!x.delivered, deliveredDate: x.deliveredDate || '',
             exchange: !!x.exchange
@@ -1552,6 +1650,7 @@ const server = http.createServer(async (req, res) => {
       const applied = inv.qty - before;
       if (applied) logStock(db, inv, applied, applied > 0 ? '입고 (직접)' : '차감 (직접)', '');
       saveDb(db);
+      audit('inventory.adjust', { ref: inv.sku || inventorySku(inv), count: applied, rev: db.rev });
       return sendJson(res, 200, { ok: true, db });
     }
     if (url.pathname === '/api/master/stocklog' && req.method === 'GET') {
@@ -1578,6 +1677,8 @@ const server = http.createServer(async (req, res) => {
       const extra = sizes.slice(1).map(sz => ({
         id: db.nextId++, name: inv.name, color: inv.color || '', size: sz, qty: 0, productNo: inv.productNo
       }));
+      inv.sku = inventorySku(inv);
+      for (const item of extra) item.sku = inventorySku(item);
       db.inventory.splice(idx + 1, 0, ...extra);
       saveDb(db);
       return sendJson(res, 200, { ok: true, db, made: sizes });
@@ -1714,7 +1815,8 @@ const server = http.createServer(async (req, res) => {
       let post = { stock: [], cafe24: [], sheet: null };
       if (shippedItems.length) post = await postProcessShipped(db, shippedItems);
       saveDb(db);
-      return sendJson(res, 200, { ok: true, results: out, dups, stock: post.stock, cafe24: post.cafe24, sheet: post.sheet, db });
+      if (shippedItems.length) audit('shipment.epost', { count: groups.size, rev: db.rev });
+      return sendJson(res, 200, { ok: true, results: out, dups, stock: post.stock, stockMissing: post.stockMissing, cafe24: post.cafe24, sheet: post.sheet, db });
     }
     if (url.pathname === '/api/resend-ok' && req.method === 'POST') {
       // "이미 보낸 것과 같은 내용" 차단을 이 건에 한해 1회 풀어줌 (한 번 더 보내기)
@@ -1747,6 +1849,7 @@ const server = http.createServer(async (req, res) => {
       const packGroupId = 'PACK-' + Date.now().toString(36).toUpperCase();
       for (const { item } of picked) item.packGroupId = packGroupId;
       saveDb(db);
+      audit('packing.merge', { ref: packGroupId, count: picked.length, rev: db.rev });
       return sendJson(res, 200, { ok: true, packGroupId, count: picked.length, db });
     }
     if (url.pathname === '/api/packing/unmerge' && req.method === 'POST') {
@@ -1763,6 +1866,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (!count) return sendJson(res, 200, { error: '풀 수 있는 합포장 건을 찾지 못했어요.' });
       saveDb(db);
+      audit('packing.unmerge', { ref: packGroupId, count, rev: db.rev });
       return sendJson(res, 200, { ok: true, count, db });
     }
     if (url.pathname === '/api/manual-ship' && req.method === 'POST') {
@@ -1780,7 +1884,8 @@ const server = http.createServer(async (req, res) => {
       item.sentDate = today();
       const post = await postProcessShipped(db, [{ type: body.type === 'seeding' ? 'seeding' : 'order', item }]);
       saveDb(db);
-      return sendJson(res, 200, { ok: true, db, stock: post.stock, cafe24: post.cafe24, sheet: post.sheet });
+      audit('shipment.manual', { type: body.type === 'seeding' ? 'seeding' : 'order', count: 1, rev: db.rev });
+      return sendJson(res, 200, { ok: true, db, stock: post.stock, stockMissing: post.stockMissing, cafe24: post.cafe24, sheet: post.sheet });
     }
     if (url.pathname === '/api/epost/status' && req.method === 'POST') {
       // 우체국에 접수된 건들의 처리상태(예약/운송장출력/집하 등) 새로고침
@@ -1915,9 +2020,10 @@ const server = http.createServer(async (req, res) => {
       if (!fs.existsSync(src)) return sendJson(res, 200, { error: '그 날짜의 백업이 없어요.' });
       // 되돌리기 직전 상태도 안전하게 보관
       if (fs.existsSync(DB_PATH)) fs.copyFileSync(DB_PATH, path.join(BACKUP_DIR, 'db-before-restore-' + nowStamp() + '.json'));
-      fs.copyFileSync(src, DB_PATH);
+      writeJsonAtomic(DB_PATH, JSON.parse(fs.readFileSync(src, 'utf8')));
       const db = loadDb();
       saveDb(db); // rev를 올려 모든 화면이 새로 받게
+      audit('backup.restore', { ref: b.file, rev: db.rev });
       return sendJson(res, 200, { ok: true, db });
     }
     if (url.pathname === '/api/backup/open' && req.method === 'POST') {
@@ -1932,10 +2038,15 @@ const server = http.createServer(async (req, res) => {
       if (!String(b.name || '').trim() || !String(b.addr || '').trim()) {
         return sendJson(res, 200, { error: '이름과 주소는 꼭 적어 주세요.' });
       }
+      const retId = db.nextId++;
       db.returns.push({
-        id: db.nextId++,
+        id: retId, rmaNo: 'RMA-' + retId,
         kind: b.kind === '교환' ? '교환' : '반품',
         sourceType: b.sourceType || '',
+        sourceChannel: b.sourceChannel || (b.sourceType === 'orders' ? 'cafe24' : b.sourceType === 'seeding' ? 'seeding' : 'direct'),
+        sourceId: Number(b.sourceId) || null,
+        originalOrderNo: String(b.originalOrderNo || '').trim(),
+        sku: String(b.sku || '').trim(),
         name: String(b.name).trim(),
         phone: String(b.phone || '').trim(),
         zip: String(b.zip || '').trim(),
@@ -1949,6 +2060,7 @@ const server = http.createServer(async (req, res) => {
         status: '대기', invoice: '', regDate: today()
       });
       saveDb(db);
+      audit('return.create', { ref: 'RMA-' + retId, type: b.kind === '교환' ? 'exchange' : 'return', rev: db.rev });
       return sendJson(res, 200, { ok: true, db });
     }
     if (url.pathname === '/api/return/pickup' && req.method === 'POST') {
@@ -1968,6 +2080,7 @@ const server = http.createServer(async (req, res) => {
         if (r.regiNo && r.regiNo !== 'TESTREGINOAPI') ret.invoice = r.regiNo;
         ret.status = '회수중';
         saveDb(db);
+        audit('return.pickup', { ref: ret.rmaNo, rev: db.rev });
         return sendJson(res, 200, { ok: true, db, regiNo: r.regiNo, price: r.price });
       } catch (e) {
         return sendJson(res, 200, { error: '회수 접수 실패: ' + e.message });
@@ -2002,6 +2115,7 @@ const server = http.createServer(async (req, res) => {
       }
       ret.status = b.scope === 'pickup' ? '대기' : '취소됨';
       saveDb(db);
+      audit('return.cancel', { ref: ret.rmaNo, type: b.scope || 'entry', rev: db.rev });
       return sendJson(res, 200, { ok: true, db });
     }
     if (url.pathname === '/api/return/complete' && req.method === 'POST') {
@@ -2012,11 +2126,13 @@ const server = http.createServer(async (req, res) => {
       if (!ret) return sendJson(res, 200, { error: '해당 건을 찾지 못했어요.' });
       if (ret.status === '완료') return sendJson(res, 200, { error: '이미 완료된 건이에요.' });
       const out = { stock: [], resend: null };
+      ret.inspection = b.inspection === 'damaged' ? 'damaged' : 'sellable';
+      ret.inspectionAt = new Date().toISOString();
       if (b.restock !== false && ret.product) {
         // 옵션 텍스트("Indigoblue M" 등)에서 사이즈를 뽑아 사이즈별 재고 행에도 복귀되게
         const optTxt = String(ret.option || '').trim();
         const sm = optTxt.match(/(XXS|XS|S|M|L|XL|XXL|2XL|FREE|F)\s*$/i);
-        const fake = { product: ret.product + ' ' + optTxt, color: '', size: sm ? sm[1] : '', qty: ret.qty };
+        const fake = { product: ret.product + ' ' + optTxt, color: '', size: sm ? sm[1] : '', qty: ret.qty, sku: ret.sku || '' };
         for (const inv of findStockMatches(db, fake)) {
           const n = Number(ret.qty) || 1;
           inv.qty += n;
@@ -2026,18 +2142,22 @@ const server = http.createServer(async (req, res) => {
       }
       if (ret.kind === '교환') {
         // 교환 재발송 건은 주문 목록에 넣는다 (시딩 목록은 시트 동기화가 지워버리므로 금지)
+        const resendId = db.nextId++;
         db.orders.push({
-          id: db.nextId++,
+          id: resendId,
           name: ret.name, phone: ret.phone, zip: ret.zip, addr: ret.addr,
           product: ret.exchangeProduct || ret.product, option: ret.option,
           color: '', size: '', qty: ret.qty, msg: '교환 재발송',
-          exchange: true, status: '대기', invoice: '', regDate: today()
+          exchange: true, returnId: ret.id, parentOrderNo: ret.originalOrderNo || '',
+          sourceChannel: 'exchange', status: '대기', invoice: '', regDate: today()
         });
+        ret.resendId = resendId;
         out.resend = { name: ret.name, product: ret.exchangeProduct || ret.product };
       }
       ret.status = '완료';
       ret.doneDate = today();
       saveDb(db);
+      audit('return.complete', { ref: ret.rmaNo, status: ret.inspection, rev: db.rev });
       return sendJson(res, 200, Object.assign({ ok: true, db }, out));
     }
     if (url.pathname === '/api/cafe24/disconnect' && req.method === 'POST') {

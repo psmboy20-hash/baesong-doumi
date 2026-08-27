@@ -417,19 +417,18 @@ function renderHome() {
 function dashGrid(all) {
   const ym = new Date().getFullYear() + '-' + String(new Date().getMonth() + 1).padStart(2, '0');
   // 채널 구분: 앞으로 29CM·무신사 등이 여기에 늘어난다
-  const tagged = [
-    ...DB.orders.map(x => ({ ...x, _chan: 'order' })),
-    ...DB.seeding.map(x => ({ ...x, _chan: 'seeding' }))
-  ];
-  const chans = ['카페24', '시딩', '직접 등록'];
+  const tagged = [...DB.orders, ...DB.seeding];
+  const channelName = x => ({ cafe24: '카페24', seeding: '시딩', exchange: '교환 재발송', direct: '직접 등록' }[x.sourceChannel] || '직접 등록');
+  const chans = ['카페24', '시딩', '교환 재발송', '직접 등록', '혼합 합포장'];
   const c24ok = SYNC_STATUS && SYNC_STATUS.cafe24 && SYNC_STATUS.cafe24.ok;
   const gooOk = SYNC_STATUS && SYNC_STATUS.google && SYNC_STATUS.google.ok;
   const epOk = SYNC_STATUS && SYNC_STATUS.epost && SYNC_STATUS.epost.connected;
-  const chanDot = { '카페24': c24ok ? 'on' : 'off', '시딩': gooOk ? 'on' : 'off', '직접 등록': 'na' };
+  const chanDot = { '카페24': c24ok ? 'on' : 'off', '시딩': gooOk ? 'on' : 'off', '교환 재발송': 'na', '직접 등록': 'na', '혼합 합포장': 'na' };
   const channelOfGroup = group => {
-    if (group.some(x => x._chan === 'order' && x.orderNo)) return '카페24';
-    if (group.some(x => x._chan === 'seeding')) return '시딩';
-    return '직접 등록';
+    const sources = new Set(group.map(channelName));
+    if (sources.has('카페24') && sources.has('직접 등록') && sources.size === 2) return '카페24';
+    if (sources.has('시딩') && sources.has('직접 등록') && sources.size === 2) return '시딩';
+    return sources.size === 1 ? [...sources][0] : '혼합 합포장';
   };
   const waitingGroups = shipmentGroups(tagged.filter(x => x.status === '대기' || x.status === '접수중'));
   const sentGroups = shipmentGroups(tagged.filter(x => x.status === '발송완료' && (x.sentDate || '').startsWith(ym)));
@@ -913,7 +912,7 @@ function renderReturns() {
     }
     return `
     <tr>
-      <td style="white-space:nowrap">${x.kind === '교환' ? '🔄 교환' : '↩️ 반품'}${x._src === 'c24' ? '<br><span class="note-badge">카페24 신청</span>' : ''}</td>
+      <td style="white-space:nowrap">${x.kind === '교환' ? '🔄 교환' : '↩️ 반품'}<br><span class="muted" style="font-size:0.78rem">${esc(x.rmaNo || 'RMA-' + x.id)}</span>${x.sourceChannel === 'cafe24' || x._src === 'c24' ? '<br><span class="note-badge">카페24 신청</span>' : ''}</td>
       <td><b>${esc(x.name)}</b><br><span class="muted" style="font-size:0.85rem">${esc(x.phone)}</span></td>
       <td style="min-width:200px;max-width:420px">${productParts(x).name}${x.kind === '교환' && x.exchangeProduct ? `<div class="muted" style="font-size:0.85rem">→ 교환으로 보낼 것: ${esc(x.exchangeProduct)}</div>` : ''}</td>
       <td>${productParts(x).opt || '<span class="muted">-</span>'}</td>
@@ -947,6 +946,10 @@ function renderReturns() {
 }
 function returnForm(pre) {
   pre = pre || {};
+  window._returnSource = {
+    sourceType: pre.sourceType || '', sourceId: pre.sourceId || null,
+    originalOrderNo: pre.originalOrderNo || '', sku: pre.sku || '', sourceChannel: pre.sourceChannel || ''
+  };
   const box = $('#ret-form');
   if (!box) return;
   const shipped = [
@@ -990,6 +993,10 @@ async function returnSubmit(sourceType) {
   const kind = document.querySelector('input[name="ret-kind"]:checked').value;
   const body = {
     kind, sourceType,
+    sourceId: window._returnSource && window._returnSource.sourceId,
+    originalOrderNo: window._returnSource && window._returnSource.originalOrderNo,
+    sku: window._returnSource && window._returnSource.sku,
+    sourceChannel: window._returnSource && window._returnSource.sourceChannel,
     name: $('#ret-name').value, phone: $('#ret-phone').value,
     zip: $('#ret-zip').value, addr: $('#ret-addr').value,
     product: $('#ret-product').value, option: $('#ret-option').value,
@@ -1012,6 +1019,10 @@ function retPick(v) {
   const list = kind === 'seeding' ? DB.seeding : DB.orders;
   const x = list.find(i => i.id === Number(id));
   if (!x) return;
+  window._returnSource = {
+    sourceType: kind, sourceId: x.id, originalOrderNo: x.orderNo || '',
+    sku: x.sku || '', sourceChannel: x.sourceChannel || (kind === 'seeding' ? 'seeding' : 'cafe24')
+  };
   $('#ret-name').value = x.name || '';
   $('#ret-phone').value = x.phone || '';
   $('#ret-zip').value = x.zip || '';
@@ -1067,6 +1078,8 @@ function returnFormFrom(kind, id) {
   go('returns');
   returnForm({
     sourceType: kind,
+    sourceId: x.id, originalOrderNo: x.orderNo || '', sku: x.sku || '',
+    sourceChannel: x.sourceChannel || (kind === 'seeding' ? 'seeding' : 'cafe24'),
     name: x.name, phone: x.phone, zip: x.zip || '', addr: x.addr,
     product: x.product, option: x.option || [x.color, x.size].filter(Boolean).join(' '),
     qty: x.qty || 1, origInvoice: x.invoice || ''
@@ -1088,9 +1101,10 @@ async function returnPickup(id, name) {
 }
 async function returnComplete(id, name, kind) {
   const extra = kind === '교환' ? '\n· 교환이라서 [📮 보내기]에 재발송 건이 새로 생겨요' : '';
-  if (!confirm(`${name}님의 물건이 도착했나요?\n\n· 재고가 다시 채워져요 (제품 이름이 재고와 맞으면)${extra}`)) return;
+  const sellable = confirm(`${name}님의 회수품을 검수해 주세요.\n\n정상 상품으로 다시 판매할 수 있나요?\n\n[확인] 정상 — 재고에 다시 넣기\n[취소] 불량/오염 — 재고에서 제외`);
+  if (!sellable && !confirm(`불량/오염으로 처리할까요?\n\n· 재고에는 다시 넣지 않습니다${extra}`)) return;
   busy(true, '처리하는 중…');
-  const r = await api('/api/return/complete', { method: 'POST', body: JSON.stringify({ id }) });
+  const r = await api('/api/return/complete', { method: 'POST', body: JSON.stringify({ id, restock: sellable, inspection: sellable ? 'sellable' : 'damaged' }) });
   busy(false);
   if (r.error) { toast('⚠️ ' + r.error, 6000); return; }
   adoptDb(r.db);
@@ -1199,11 +1213,11 @@ function renderInventory() {
   };
   // 현재 재고 요약 (전체 기준 — 검색/필터와 무관하게 항상 실제 현황)
   const totalQty = DB.inventory.reduce((s, i) => s + (Number(i.qty) || 0), 0);
-  const zeroN = DB.inventory.filter(i => i.qty === 0).length;
+  const zeroN = DB.inventory.filter(i => i.qty <= 0).length;
   const lowN = DB.inventory.filter(i => i.qty > 0 && i.qty <= 2).length;
   const prodN = new Set(DB.inventory.map(i => invParts(i).name)).size;
   let items = q ? DB.inventory.filter(i => (i.name + ' ' + (i.color || '') + ' ' + (i.size || '')).includes(q)) : DB.inventory;
-  if (filter === 'zero') items = items.filter(i => i.qty === 0);
+  if (filter === 'zero') items = items.filter(i => i.qty <= 0);
   if (filter === 'low') items = items.filter(i => i.qty > 0 && i.qty <= 2);
   const findP = i => (DB.products || []).find(p => p.no === i.productNo) ||
     (DB.products || []).find(p => lettersOnly(p.name) === lettersOnly(i.name));
@@ -1214,7 +1228,8 @@ function renderInventory() {
     if (!gmap.has(k)) { gmap.set(k, []); groups.push(gmap.get(k)); }
     gmap.get(k).push(i);
   }
-  const stChip = i => i.qty === 0 ? '<span class="chip wait">품절</span>'
+  const stChip = i => i.qty < 0 ? `<span class="chip wait">재고 ${Math.abs(i.qty)}개 부족</span>`
+    : i.qty === 0 ? '<span class="chip wait">품절</span>'
     : i.qty <= 2 ? '<span class="chip processing">부족</span>'
     : '<span class="chip done">정상</span>';
   const rows = groups.map(g => {
@@ -1237,6 +1252,7 @@ function renderInventory() {
       ${prodCell}
       <td class="color">${esc(display.color) || '<span class="muted">-</span>'}</td>
       <td class="sz">${esc(i.size) || '<span class="muted" style="font-weight:400">-</span>'}</td>
+      <td class="sku">${esc(i.sku || '') || '<span class="muted">자동 생성 전</span>'}</td>
       <td class="qcell">
         <button class="qty-btn sm" onclick="invAdj(${i.id},-1)">−</button>
         <span class="qty ${i.qty <= 2 ? 'low' : ''}">${i.qty}</span>
@@ -1274,8 +1290,8 @@ function renderInventory() {
     ${rows ? `
     <div class="table-wrap inv-table-wrap" style="max-height:68vh">
       <table class="inv-table">
-        <colgroup><col class="col-product"><col class="col-color"><col class="col-size"><col class="col-qty"><col class="col-status"><col class="col-action"></colgroup>
-        <thead><tr><th>상품명</th><th>컬러</th><th style="text-align:center">사이즈</th><th style="text-align:center">현재 재고</th><th style="text-align:center">상태</th><th style="text-align:center">관리</th></tr></thead>
+        <colgroup><col class="col-product"><col class="col-color"><col class="col-size"><col class="col-sku"><col class="col-qty"><col class="col-status"><col class="col-action"></colgroup>
+        <thead><tr><th>상품명</th><th>컬러</th><th style="text-align:center">사이즈</th><th>SKU</th><th style="text-align:center">현재 재고</th><th style="text-align:center">상태</th><th style="text-align:center">관리</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>` : `<div class="muted" style="font-size:1.1rem">${filter !== 'all' ? '이 조건에 맞는 제품이 없어요. ' : q ? `'${esc(q)}'(으)로 찾은 제품이 없어요. ` : '아직 등록된 제품이 없어요. '}<button class="link-btn" onclick="window._invQ='';window._invFilter='all';renderInventory()">🔄 전체 보기</button></div>`}`;
@@ -1315,7 +1331,7 @@ async function invImportProducts() {
   if (!news.length) { toast('새로 넣을 제품이 없어요. (이미 다 등록됨)'); return; }
   if (!confirm(`카페24 제품 ${news.length}개를 재고 목록에 넣을까요?\n(개수는 0으로 들어가니, 실제 재고 수량을 ＋로 채워 주세요)`)) return;
   for (const p of news) {
-    DB.inventory.push({ id: DB.nextId++, name: p.name, color: '', size: '', qty: 0 });
+    DB.inventory.push({ id: DB.nextId++, name: p.name, color: '', size: '', qty: 0, productNo: p.no || null });
   }
   await saveDb();
   renderInventory();
@@ -1663,6 +1679,7 @@ async function manualShip(kind, id, name) {
   render();
   const extras = [];
   if (r.stock && r.stock.length) extras.push('재고 차감');
+  if (r.stockMissing && r.stockMissing.length) extras.push(`재고 확인 필요 ${r.stockMissing.length}개`);
   if (r.cafe24 && r.cafe24.some(c => c.ok)) extras.push('카페24 배송처리');
   if (r.sheet && r.sheet.ok) extras.push('구글시트 기록');
   toast(`✔️ ${name}님 건을 발송완료로 정리했어요.` + (extras.length ? ' (자동: ' + extras.join(' · ') + ')' : ''), 7000);
@@ -1711,6 +1728,9 @@ async function doEpostRegister() {
     r.cafe24.filter(x => !x.ok).slice(0, 3).forEach(f => extra.push(`🛒 카페24 등록 못 함 (${esc(f.orderNo)}): ${esc(f.error)}`));
   }
   if (r.stock && r.stock.length) extra.push('📋 재고 자동 차감: ' + r.stock.map(s => `${esc(s.name)} −${s.minus}`).join(', '));
+  if (r.stockMissing && r.stockMissing.length) {
+    extra.push('⚠️ 재고에서 못 찾음: ' + r.stockMissing.map(s => `${esc(s.product)}${s.option ? ' (' + esc(s.option) + ')' : ''}`).join(', ') + ' — [재고]에서 SKU를 확인해 주세요.');
+  }
   if (r.sheet) extra.push(r.sheet.ok ? `📝 구글시트에도 송장 ${r.sheet.count}건 기록 완료` : `📝 구글시트 기록 실패: ${esc(r.sheet.error)}`);
   if (extra.length) html += `<div class="result-box ok" style="font-weight:400">${extra.join('<br>')}</div>`;
   const box = $('#export-result');
@@ -1785,6 +1805,9 @@ async function uploadFile(which, file) {
       }
       if (r.stock && r.stock.length) {
         extra.push('📋 재고에서 자동으로 뺐어요: ' + r.stock.slice(0, 6).map(s => `${esc(s.name)} −${s.minus} (남은 ${s.left}개)`).join(', '));
+      }
+      if (r.stockMissing && r.stockMissing.length) {
+        extra.push('⚠️ 재고에서 못 찾은 제품: ' + r.stockMissing.slice(0, 6).map(s => `${esc(s.product)}${s.option ? ' (' + esc(s.option) + ')' : ''}`).join(', ') + ' — [재고]에서 SKU를 확인해 주세요.');
       }
       if (r.sheet) {
         extra.push(r.sheet.ok ? `📝 구글시트에도 송장 ${r.sheet.count}건을 자동으로 적었어요.` : `📝 구글시트 기록 실패: ${esc(r.sheet.error)}`);

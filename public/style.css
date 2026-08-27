@@ -229,12 +229,13 @@ input[type="checkbox"] { width: 1.6rem; height: 1.6rem; accent-color: var(--gree
 .inv-zero { color: var(--red); }
 .inv-table-wrap { width: 100%; }
 .inv-table { table-layout: fixed; min-width: 880px; }
-.inv-table col.col-product { width: 42%; }
-.inv-table col.col-color { width: 16%; }
-.inv-table col.col-size { width: 9%; }
-.inv-table col.col-qty { width: 15%; }
-.inv-table col.col-status { width: 9%; }
-.inv-table col.col-action { width: 9%; }
+.inv-table col.col-product { width: 34%; }
+.inv-table col.col-color { width: 12%; }
+.inv-table col.col-size { width: 8%; }
+.inv-table col.col-sku { width: 16%; }
+.inv-table col.col-qty { width: 14%; }
+.inv-table col.col-status { width: 8%; }
+.inv-table col.col-action { width: 8%; }
 .inv-table th, .inv-table td { padding: 0.48rem 0.65rem; }
 .inv-table tr.g-start td { border-top: 3px solid #dfe4ee; }
 .inv-table .inv-prod { display: flex; align-items: center; gap: 0.7rem; min-width: 0; }
@@ -243,6 +244,7 @@ input[type="checkbox"] { width: 1.6rem; height: 1.6rem; accent-color: var(--gree
 .inv-table .inv-prod .popt { font-size: 0.85rem; color: #5a6478; }
 .inv-table .color { font-weight: 700; overflow-wrap: anywhere; }
 .inv-table .sz { font-weight: 800; text-align: center; }
+.inv-table .sku { color: #5a6478; font: 700 0.78rem/1.25 Consolas, monospace; overflow-wrap: anywhere; }
 .inv-table .qcell { white-space: nowrap; text-align: center; }
 .inv-table .qcell .qty { display: inline-block; min-width: 2.6rem; text-align: center; font-size: 1.25rem; font-weight: 800; vertical-align: middle; }
 .inv-table .qcell .qty.low { color: var(--red); }
@@ -250,8 +252,8 @@ input[type="checkbox"] { width: 1.6rem; height: 1.6rem; accent-color: var(--gree
 .inv-table .acts { white-space: nowrap; text-align: center; }
 @media (min-width: 1500px) {
   main { max-width: none; padding-left: 1rem; padding-right: 1rem; }
-  .inv-table col.col-product { width: 46%; }
-  .inv-table col.col-color { width: 15%; }
+  .inv-table col.col-product { width: 38%; }
+  .inv-table col.col-color { width: 13%; }
 }
 .inv-card {
   background: var(--card); border: 2px solid var(--line); border-radius: 14px;
