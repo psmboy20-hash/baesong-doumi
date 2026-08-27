@@ -1245,9 +1245,11 @@ function renderInventory() {
   };
   const c24Known = i => i.cafe24StockTracked && i.cafe24Qty !== null && i.cafe24Qty !== undefined && Number.isFinite(Number(i.cafe24Qty));
   const c24Sellable = i => c24Known(i) && i.cafe24VariantActive !== false && i.cafe24Display !== 'F' && i.cafe24Selling !== 'F';
+  const c24SnapshotKnown = i => typeof i.cafe24StockTracked === 'boolean' || i.cafe24VariantActive === false;
   const groupCafeTotal = g => g.filter(c24Sellable).reduce((sum, i) => sum + Number(i.cafe24Qty), 0);
   const totalQty = [...allGroups.values()].reduce((sum, g) => sum + groupTotal(g), 0);
   const cafeTotalQty = activeInventory.filter(c24Sellable).reduce((sum, i) => sum + Number(i.cafe24Qty), 0);
+  const hasCafeSnapshot = activeInventory.some(c24SnapshotKnown);
   const zeroN = activeInventory.filter(i => c24Sellable(i) && Number(i.cafe24Qty) === 0).length;
   const lowN = activeInventory.filter(i => c24Sellable(i) && i.cafe24Qty > 0 && i.cafe24Qty <= 2).length;
   const unknownN = activeInventory.filter(i => i.needsCount || i.needsAllocation).length;
@@ -1267,6 +1269,8 @@ function renderInventory() {
   }
   const stChip = i => i.cafe24VariantActive === false
     ? '<span class="chip wait">카페24 옵션 삭제됨</span>'
+    : typeof i.cafe24StockTracked !== 'boolean'
+    ? '<span class="chip processing">카페24 수량 미확인</span>'
     : !i.cafe24StockTracked
     ? '<span class="chip processing">카페24 재고관리 안 함</span>'
     : !c24Known(i) ? '<span class="chip processing">카페24 수량 미확인</span>'
@@ -1286,7 +1290,7 @@ function renderInventory() {
           ${p && p.img ? prodImgTag(p.img).replace('class="pimg"', 'class="pimg inv-img"') : ''}
           <div>
             <div class="pname">${p ? `<span class="pname-link" onclick="window.open('${saleUrl(p.no)}','_blank')" title="판매 페이지 열기">${esc(display.name)}</span>` : esc(display.name)}</div>
-            <div class="popt">카페24 <b class="${cafeSum === 0 ? 'inv-zero' : ''}">${cafeSum}개</b> · 실물 입력합계 <b>${sum}개</b></div>
+            <div class="popt">카페24 <b class="${cafeSum === 0 && g.some(c24SnapshotKnown) ? 'inv-zero' : ''}">${g.some(c24SnapshotKnown) ? `${cafeSum}개` : '미확인'}</b> · 실물 입력합계 <b>${sum}개</b></div>
           </div>
         </div>
       </td>` : '';
@@ -1316,7 +1320,7 @@ function renderInventory() {
     <div class="sub"><b>카페24 판매가능</b>은 주문 시 자동으로 바뀌고, <b>실물재고</b>는 창고에서 실제로 센 수량이에요.${DB.productsStockAt ? ` <span class="muted">최근 확인 ${new Date(DB.productsStockAt).toLocaleString('ko-KR', { hour12: false })}</span>` : ''}</div>
     <div class="inv-stats">
       <div class="stat"><div class="n">${prodN}</div><div class="l">제품 종류</div></div>
-      <div class="stat"><div class="n" style="color:var(--blue)">${cafeTotalQty}</div><div class="l">카페24 판매가능 (개)</div></div>
+      <div class="stat"><div class="n" style="color:var(--blue)">${hasCafeSnapshot ? cafeTotalQty : '-'}</div><div class="l">카페24 판매가능 (개)</div></div>
       <div class="stat"><div class="n">${totalQty}</div><div class="l">실물재고 입력합계</div></div>
       <div class="stat ${lowN ? 'warn' : ''}"><div class="n" style="color:var(--orange)">${lowN}</div><div class="l">판매재고 부족 옵션</div></div>
       <div class="stat ${zeroN ? 'bad' : ''}"><div class="n" style="color:var(--red)">${zeroN}</div><div class="l">판매 품절 옵션</div></div>
