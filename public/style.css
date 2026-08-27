@@ -328,3 +328,7 @@ input[type="checkbox"] { width: 1.6rem; height: 1.6rem; accent-color: var(--gree
 #img-preview img { width: 260px; height: 260px; object-fit: cover; border-radius: 10px; display: block; }
 .track-link { color: var(--blue); font-weight: 700; text-decoration: underline; }
 .muted { color: #8a93a5; }
+.warn-text { color: var(--red); font-size: 0.78rem; line-height: 1.35; margin-top: 0.3rem; white-space: normal; }
+.rma-line { min-height: 42px; padding: 0.15rem 0; }
+.rma-line + .rma-line { border-top: 1px solid #e5e1d9; margin-top: 0.2rem; padding-top: 0.35rem; }
+.rma-target { font-size: 0.8rem; line-height: 1.25; margin-top: -0.15rem; white-space: normal; }

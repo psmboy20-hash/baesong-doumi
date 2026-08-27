@@ -18,7 +18,9 @@ const {
   cafe24VariantInventory,
   markMissingCafe24Variants,
   variantAllocationState,
-  shouldProcessStockDeduction
+  shouldProcessStockDeduction,
+  buildReturnRestockPlan,
+  selectStockMatches
 } = require('../lib/operations');
 
 test('같은 주문번호의 두 품목은 한 포장으로 묶는다', () => {
@@ -85,6 +87,16 @@ test('기존 장부에 출처 SKU RMA 번호를 보강한다', () => {
   assert.equal(db.returns[0].rmaNo, 'RMA-4');
   assert.equal(db.returns[0].sourceChannel, 'cafe24');
   assert.equal(db.stockLog[0].sku, 'C24-7-SKYBLUE-S');
+});
+
+test('예전 완료 RMA는 이미 재고 반영된 건으로 이전한다', () => {
+  const db = {
+    orders: [], seeding: [], inventory: [], stockLog: [],
+    returns: [{ id: 5, status: '완료', product: 'Clara', qty: 1 }]
+  };
+  ensureOperationalFields(db);
+  assert.equal(db.returns[0].flowState, 'completed');
+  assert.equal(db.returns[0].localCompleted, true);
 });
 
 test('날짜가 오래돼도 택배사 완료 응답 없이는 배송완료가 되지 않는다', () => {
@@ -222,4 +234,32 @@ test('과거 출고 취소 후 재발송은 재고를 다시 차감하지 않는
     stockDeductionDetails: [],
     legacyStockUnverified: true
   }), false);
+});
+
+test('반품 재고는 모든 품목이 정확히 매칭될 때만 한꺼번에 복귀한다', () => {
+  const inv = { sku: 'SKU-A', qty: 3 };
+  const items = [
+    { product: 'Clara', option: 'Skyblue, M', color: 'Skyblue', size: 'M', qty: 1, sku: 'SKU-A' },
+    { product: 'Tessa', option: 'Brown, L', color: 'Brown', size: 'L', qty: 1, sku: 'SKU-MISSING' }
+  ];
+  const plan = buildReturnRestockPlan(items, item => item.sku === 'SKU-A' ? [inv] : []);
+  assert.equal(plan.rows.length, 1);
+  assert.equal(plan.missing.length, 1);
+  assert.equal(inv.qty, 3);
+  const blank = buildReturnRestockPlan([{ product: '', option: '', qty: 1 }], () => []);
+  assert.equal(blank.missing.length, 1);
+  const empty = buildReturnRestockPlan([], () => []);
+  assert.equal(empty.missing.length, 1);
+});
+
+test('재고 매칭은 안정된 식별자가 틀리거나 후보가 여러 개면 추측하지 않는다', () => {
+  const inventory = [{ sku: 'SKU-A', variantCode: 'V-A', productNo: 10 }, { sku: 'SKU-B', variantCode: 'V-B', productNo: 20 }];
+  assert.deepEqual(selectStockMatches(inventory, { sku: 'SKU-MISSING' }, () => true), []);
+  assert.deepEqual(selectStockMatches(inventory, { variantCode: 'V-MISSING' }, () => true), []);
+  assert.deepEqual(selectStockMatches(inventory, { product: 'same' }, () => true), []);
+  assert.deepEqual(selectStockMatches(inventory, { sku: 'SKU-B' }, () => false), [inventory[1]]);
+  const plan = buildReturnRestockPlan([{ product: 'same', sourceProductNo: 999, qty: 1 }], item =>
+    selectStockMatches([inventory[0]], item, () => true));
+  assert.equal(plan.rows.length, 0);
+  assert.equal(plan.missing.length, 1);
 });

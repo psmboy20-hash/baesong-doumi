@@ -317,10 +317,12 @@ const HELP = {
 · <b>파란 송장번호</b>를 누르면 지금 어디쯤 가는지 우체국 페이지가 열려요<br>
 · 배달이 끝나면 <b>배달완료 ✓✓</b>가 자동으로 붙어요 (5분마다 확인)<br>
 · 고객이 교환·반품을 원하면 그 줄의 <b>[🔁 교환/반품]</b>을 누르세요 — 정보가 자동으로 채워져요`,
-  returns: `교환·반품은 3단계예요.<br>
-① <b>등록</b> — [🚚 배송 확인]에서 [🔁]를 누르면 자동으로 채워져요<br>
-② <b>[🚚 우체국 회수 신청]</b> — 기사님이 운송장을 갖고 <b>고객 집으로 가서</b> 물건을 받아와요<br>
-③ 물건이 도착하면 <b>[📦 물건 도착 확인]</b> — 재고가 다시 채워지고, 교환이면 [보내기]에 재발송 건이 생겨요`,
+  returns: `카페24·우체국·배송도우미의 교환/반품을 <b>RMA 번호 하나</b>로 연결해요.<br>
+① 카페24에서 신청되거나 여기서 등록하면 같은 목록에 나타나요<br>
+② <b>[🚚 우체국 회수 신청]</b> — 기사님이 송장을 들고 고객 집으로 방문해요<br>
+③ <b>[📦 물건 도착 확인]</b> — 검수·재고 복귀, 교환 재발송까지 이어져요<br>
+· <b>회수만 취소</b>는 기사님 방문만 취소하고, <b>전체 취소</b>는 카페24 접수까지 함께 취소해요<br>
+· 반품 환불 결제는 자동 승인하지 않으며 카페24 환불 완료 상태를 받아 최종 완료로 표시해요`,
   inventory: `남은 옷 개수예요.<br>
 · 택배를 보내면 <b>자동으로 −</b>, 교환·반품으로 돌아오면 <b>자동으로 +</b> 돼요<br>
 · 새 옷이 들어왔을 때만 ＋를 직접 눌러 채우세요<br>
@@ -373,7 +375,7 @@ function renderHome() {
   const problem = shipmentCount(all.filter(x => x.status === '발송완료' && !x.delivered && x.epost && x.epost.stus === '04'));
   const delivered = shipmentCount(all.filter(x => x.status === '발송완료' && x.delivered));
   const moving = shipmentCount(all.filter(x => x.status === '발송완료' && !x.delivered && !(x.epost && ['00', '01', '02', '04'].includes(x.epost.stus || '01'))));
-  const retActive = (DB.returns || []).filter(x => x.status === '대기' || x.status === '회수중').length;
+  const retActive = (DB.returns || []).filter(x => !['completed', 'canceled'].includes(x.flowState)).length;
   // 이번 달 통계: 발송 건수 / 택배비(우체국 접수 요금, 묶음당 1회) / 배달완료
   const _d = new Date();
   const ym = _d.getFullYear() + '-' + String(_d.getMonth() + 1).padStart(2, '0');
@@ -481,8 +483,11 @@ function dashGrid(all) {
   const zero = DB.inventory.filter(i => i.qty === 0).length;
   const lowRows = low.map(i => `<div class="mini-row"><span class="grow">${esc(i.name)}${i.size ? ` <b>${esc(i.size)}</b>` : ''}</span><b style="color:var(--red)">${i.qty}개</b></div>`).join('');
   // 교환/반품 진행 중
-  const rets = (DB.returns || []).filter(x => x.status === '대기' || x.status === '회수중').slice(0, 5);
-  const retRows = rets.map(x => `<div class="mini-row"><span>${x.kind === '교환' ? '🔄' : '↩️'}</span><span class="grow"><b>${esc(x.name)}</b> ${esc(productParts(x).name.replace(/<[^>]*>/g, '').slice(0, 24))}</span><span class="chip ${x.status === '회수중' ? 'processing' : 'wait'}">${x.status === '회수중' ? '회수중' : '대기'}</span></div>`).join('');
+  const rets = (DB.returns || []).filter(x => !['completed', 'canceled'].includes(x.flowState)).slice(0, 5);
+  const retRows = rets.map(x => {
+    const [cls, label] = RMA_FLOW[x.flowState] || ['wait', x.status || '확인'];
+    return `<div class="mini-row"><span>${x.kind === '교환' ? '🔄' : '↩️'}</span><span class="grow"><b>${esc(x.name)}</b> ${esc(productParts(x).name.replace(/<[^>]*>/g, '').slice(0, 24))}</span><span class="chip ${cls}">${label}</span></div>`;
+  }).join('');
   // 최근 입출고
   const logs = (DB.stockLog || []).slice(-5).reverse();
   const logRows = logs.map(e => `<div class="mini-row"><span>${e.delta < 0 ? '📤' : '📥'}</span><span class="grow">${esc(e.name)}${e.size ? ` <b>${esc(e.size)}</b>` : ''}${e.ref ? ` <span class="muted">→ ${esc(e.ref)}</span>` : ''}</span><b style="color:${e.delta < 0 ? '#c0392b' : '#1e7e46'}">${e.delta > 0 ? '+' : ''}${e.delta}</b></div>`).join('');
@@ -910,41 +915,90 @@ async function epostCancel(kind, id, name) {
 }
 
 // ---------- 교환/반품 ----------
-const RET_CHIP = { '대기': ['wait', '회수 신청 전'], '회수중': ['processing', '회수 진행중'], '완료': ['done', '완료 ✓'], '취소됨': ['wait', '취소됨 ✕'] };
+const RMA_FLOW = {
+  requested: ['wait', '접수됨 · 회수 전'],
+  accepted: ['wait', '접수됨 · 회수 전'],
+  hold: ['wait', '카페24 보류'],
+  awaiting_pickup: ['processing', '회수 기다림'],
+  pickup_booked: ['processing', '기사님 방문 예정'],
+  collected: ['processing', '기사님 수거 완료'],
+  received: ['processing', '물건 도착 · 검수'],
+  reship_ready: ['processing', '교환 재발송 준비'],
+  processing: ['processing', '카페24 처리 중'],
+  refund_pending: ['processing', '반품 완료 · 환불 확인'],
+  completed: ['done', '전체 완료 ✓'],
+  canceled: ['wait', '전체 취소 ✕']
+};
+function rmaLineItems(x) {
+  return Array.isArray(x.items) && x.items.length ? x.items : [x];
+}
+function rmaCells(x) {
+  const lines = rmaLineItems(x);
+  return {
+    products: lines.map(row => {
+      const target = x.kind === '교환' && row.exchangeProduct
+        ? `<div class="muted rma-target">→ ${esc(row.exchangeProduct)}</div>` : '';
+      return `<div class="rma-line">${productParts(row).name}${target}</div>`;
+    }).join(''),
+    options: lines.map(row => {
+      const targetOpt = x.kind === '교환' ? [row.exchangeColor, row.exchangeSize].filter(Boolean).join(', ') : '';
+      return `<div class="rma-line">${productParts(row).opt || '<span class="muted">-</span>'}${targetOpt ? `<div class="muted rma-target">→ ${esc(targetOpt)}</div>` : ''}</div>`;
+    }).join('')
+  };
+}
 function renderReturns() {
   const items = [...(DB.returns || [])].sort((a, b) => (b.regDate || '').localeCompare(a.regDate || '') || b.id - a.id);
   const epostOn = SYNC_STATUS && SYNC_STATUS.epost && SYNC_STATUS.epost.connected;
   const rows = items.map(x => {
-    const [cls, nm] = RET_CHIP[x.status] || ['wait', x.status];
+    const [cls, nm] = RMA_FLOW[x.flowState] || ['wait', x.status || '확인 필요'];
     const stusNm = x.epost && x.epost.stus ? (RET_STUS[x.epost.stus] || [])[1] || '' : '';
+    const cafe24Line = x.sourceChannel === 'cafe24'
+      ? `<span class="muted" style="font-size:0.78rem">카페24 ${esc(x.cafe24OrderStatus || '연결 중')}</span>` : '';
+    const issues = (x.syncIssues || []).map(row => row.message).filter(Boolean);
+    const issueLine = issues.length ? `<div class="warn-text" style="max-width:210px">⚠️ ${esc(issues[issues.length - 1])}</div>` : '';
+    const cells = rmaCells(x);
     let btns = '';
-    if (x.status === '대기') {
-      btns = (epostOn ? `<button class="link-btn" onclick="returnPickup(${x.id},'${jsq(x.name)}')">🚚 우체국 회수 신청</button>` : '<span class="muted" style="font-size:0.85rem">우체국 연결 필요</span>') +
-        ` <button class="link-btn" style="color:var(--red)" onclick="returnCancel(${x.id},'delete','${jsq(x.name)}')">🗑 지우기</button>`;
-    } else if (x.status === '회수중') {
-      btns = `<button class="link-btn" onclick="returnComplete(${x.id},'${esc(x.name)}','${jsq(x.kind)}')">📦 물건 도착 확인</button>
-        <button class="link-btn" style="color:var(--red)" onclick="returnCancel(${x.id},'pickup','${jsq(x.name)}')">회수 취소</button>`;
-    } else if (x.status === '취소됨') {
+    const cancelUnresolved = x.flowState !== 'canceled' && x.syncOps && x.syncOps.cancel && ['pending', 'unknown', 'failed'].includes(x.syncOps.cancel.state);
+    if (cancelUnresolved) {
+      btns = `<button class="link-btn" style="color:var(--red)" onclick="returnCancel(${x.id},'entry','${jsq(x.name)}')">전체 취소 다시 시도</button>`;
+    } else if (['requested', 'accepted', 'hold', 'awaiting_pickup'].includes(x.flowState)) {
+      btns = (x.externalPickupActive
+        ? '<span class="chip processing">카페24에서 회수 진행 중</span>'
+        : epostOn ? `<button class="link-btn" onclick="returnPickup(${x.id},'${jsq(x.name)}')">🚚 우체국 회수 신청</button>` : '<span class="muted" style="font-size:0.85rem">우체국 연결 필요</span>') +
+        (x.sourceChannel === 'cafe24'
+          ? (x.externalPickupActive
+            ? ' <button class="link-btn" onclick="externalPickupHelp()">취소 방법</button>'
+            : ` <button class="link-btn" style="color:var(--red)" onclick="returnCancel(${x.id},'entry','${jsq(x.name)}')">전체 취소</button>`)
+          : ` <button class="link-btn" style="color:var(--red)" onclick="returnCancel(${x.id},'delete','${jsq(x.name)}')">🗑 지우기</button>`);
+    } else if (['pickup_booked', 'collected'].includes(x.flowState)) {
+      btns = `<button class="link-btn" onclick="returnComplete(${x.id},'${jsq(x.name)}','${jsq(x.kind)}')">📦 물건 도착 확인</button>
+        ${x.epost && ['00', '01', '02', '04'].includes(x.epost.stus || '01') ? `<button class="link-btn" onclick="returnCancel(${x.id},'pickup','${jsq(x.name)}')">회수만 취소</button>` : ''}
+        <button class="link-btn" style="color:var(--red)" onclick="returnCancel(${x.id},'entry','${jsq(x.name)}')">전체 취소</button>`;
+    } else if (x.stockReviewNeeded) {
+      btns = `<button class="link-btn" onclick="returnComplete(${x.id},'${jsq(x.name)}','${jsq(x.kind)}')">📦 재고·재발송 확인</button>`;
+    } else if (issues.length && x.localCompleted) {
+      btns = `<button class="link-btn" onclick="returnComplete(${x.id},'${jsq(x.name)}','${jsq(x.kind)}')">🔄 카페24 다시 반영</button>`;
+    } else if (x.flowState === 'canceled' && x.sourceChannel !== 'cafe24') {
       btns = `<button class="link-btn" onclick="returnReopen(${x.id},'${jsq(x.name)}')">↩️ 다시 신청하기</button>
         <button class="link-btn" style="color:var(--red)" onclick="returnCancel(${x.id},'delete','${jsq(x.name)}')">🗑 지우기</button>`;
-    } else {
+    } else if (x.flowState === 'completed' && x.sourceChannel !== 'cafe24') {
       btns = `<button class="link-btn" onclick="returnCancel(${x.id},'delete','${jsq(x.name)}')">🗑 지우기</button>`;
     }
     return `
     <tr>
-      <td style="white-space:nowrap">${x.kind === '교환' ? '🔄 교환' : '↩️ 반품'}<br><span class="muted" style="font-size:0.78rem">${esc(x.rmaNo || 'RMA-' + x.id)}</span>${x.sourceChannel === 'cafe24' || x._src === 'c24' ? '<br><span class="note-badge">카페24 신청</span>' : ''}</td>
+      <td style="white-space:nowrap">${x.kind === '교환' ? '🔄 교환' : '↩️ 반품'}<br><span class="muted" style="font-size:0.78rem">${esc(x.rmaNo || 'RMA-' + x.id)}</span>${x.sourceChannel === 'cafe24' || x._src === 'c24' ? '<br><span class="note-badge">카페24 연결</span>' : ''}</td>
       <td><b>${esc(x.name)}</b><br><span class="muted" style="font-size:0.85rem">${esc(x.phone)}</span></td>
-      <td style="min-width:200px;max-width:420px">${productParts(x).name}${x.kind === '교환' && x.exchangeProduct ? `<div class="muted" style="font-size:0.85rem">→ 교환으로 보낼 것: ${esc(x.exchangeProduct)}</div>` : ''}</td>
-      <td>${productParts(x).opt || '<span class="muted">-</span>'}</td>
+      <td style="min-width:200px;max-width:420px">${cells.products}</td>
+      <td>${cells.options}</td>
       <td style="max-width:280px">${esc(x.reason || '')}</td>
       <td style="max-width:150px">${x.invoice ? invoiceCell(x.invoice) : '<span class="muted">-</span>'}${stusNm ? `<span class="muted" style="font-size:0.85rem">${stusNm}</span>` : ''}</td>
-      <td><span class="chip ${cls}">${nm}</span></td>
+      <td><span class="chip ${cls}">${nm}</span><br>${cafe24Line}${issueLine}</td>
       <td style="white-space:nowrap"><div class="btn-col">${btns}</div></td>
     </tr>`;
   }).join('');
   main().innerHTML = `
     <h1>🔁 교환/반품</h1>
-    <div class="sub">카페24에서 고객이 교환·반품을 신청하면 <b>여기 자동으로 떠요</b> (5분마다 확인). 직접 등록할 땐 보낸 것 중에서 고르면 돼요.<br>흐름: <b>① 등록/자동감지</b> → <b>② 우체국 회수 신청</b> (기사님이 고객 집 방문) → <b>③ 물건 도착 확인</b> (재고 복귀 + 교환이면 재발송 준비)</div>
+    <div class="sub"><b>카페24 접수 → 우체국 회수 → 물건 도착·재고 → 교환 재발송/반품 완료</b>를 RMA 번호 하나로 이어서 보여줘요.<br>여기서 회수·도착·취소를 처리하면 카페24와 우체국에도 필요한 상태가 같이 반영되고, 양쪽에서 바뀐 상태도 5분마다 들어옵니다.</div>
     <div style="display:flex; gap:0.8rem; flex-wrap:wrap; margin-bottom:1.2rem">
       <button class="big-btn green" onclick="returnForm()">➕ 교환/반품 등록</button>
       <button class="big-btn" onclick="epostRefresh()">🔄 회수 진행상태 새로고침</button>
@@ -953,14 +1007,14 @@ function renderReturns() {
     <div id="ret-result"></div>
     <div class="card">
       ${items.length ? `
-      ${items.some(x => x.status === '대기' || x.status === '회수중') ? '' : '<div class="hint" style="font-size:1.05rem"><b>지금 처리할 일은 없어요.</b> 아래는 지난 기록이에요.</div>'}
+      ${items.some(x => !['completed', 'canceled'].includes(x.flowState)) ? '' : '<div class="hint" style="font-size:1.05rem"><b>지금 처리할 일은 없어요.</b> 아래는 지난 기록이에요.</div>'}
       <div class="table-wrap" style="max-height:65vh">
         <table>
           <thead><tr><th>구분</th><th>고객</th><th>제품</th><th>옵션</th><th>사유</th><th>회수 송장</th><th>상태</th><th>처리</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
-      <div class="hint" style="margin-top:0.8rem">· <b>회수 신청</b>을 하면 집배원이 운송장을 갖고 고객 집에 방문해요 (별도 출력 필요 없음)<br>· 물건이 도착하면 <b>[📦 물건 도착 확인]</b> — 재고가 다시 채워지고, 교환 건은 [📮 보내기]에 재발송 건이 생겨요<br>· 카페24 주문 건은 카페24 관리자에서도 교환/반품 상태를 처리해 주세요</div>
+      <div class="hint" style="margin-top:0.8rem">· <b>회수 신청</b>: 우체국 기사님이 송장을 들고 고객 집으로 방문해요 (출력 없음)<br>· <b>물건 도착 확인</b>: 검수 결과에 따라 재고가 들어오고, 교환이면 [📮 보내기]에 재발송 1건이 생겨요<br>· <b>회수만 취소</b>는 우체국 방문만 취소하고 교환·반품 접수는 남겨요. <b>전체 취소</b>는 우체국과 카페24 접수까지 같이 취소해요.<br>· 반품 환불 결제는 돈이 움직이므로 자동 승인하지 않고 카페24의 환불 상태를 확인해 완료로 넘겨요.</div>
       ` : `<div class="hint" style="font-size:1.1rem">진행 중인 교환/반품이 없어요.<br>고객이 교환·반품을 원하면 위의 <b>[➕ 교환/반품 등록]</b>을 누르거나,<br>[🚚 배송 확인]에서 해당 건의 <b>[🔁 교환/반품]</b> 버튼을 누르세요.</div>`}
     </div>`;
 }
@@ -968,7 +1022,9 @@ function returnForm(pre) {
   pre = pre || {};
   window._returnSource = {
     sourceType: pre.sourceType || '', sourceId: pre.sourceId || null,
-    originalOrderNo: pre.originalOrderNo || '', sku: pre.sku || '', sourceChannel: pre.sourceChannel || ''
+    originalOrderNo: pre.originalOrderNo || '', orderItemCode: pre.orderItemCode || '',
+    variantCode: pre.variantCode || '', sourceProductNo: pre.sourceProductNo || null,
+    sku: pre.sku || '', sourceChannel: pre.sourceChannel || ''
   };
   const box = $('#ret-form');
   if (!box) return;
@@ -978,6 +1034,9 @@ function returnForm(pre) {
   ].sort((a, b) => (b.x.sentDate || '').localeCompare(a.x.sentDate || '')).slice(0, 80);
   const pickOpts = shipped.map(({ kind, x }) =>
     `<option value="${kind}:${x.id}">${esc(x.name)} — ${esc(String(x.product || '').slice(0, 40))} (${esc(x.sentDate || '날짜없음')})</option>`).join('');
+  const exchangeOpts = (DB.inventory || []).filter(x => x.variantCode && x.cafe24VariantActive !== false)
+    .sort((a, b) => [a.name, a.color, a.size].join('|').localeCompare([b.name, b.color, b.size].join('|')))
+    .map(x => `<option value="${esc(x.sku || '')}" ${pre.exchangeSku === x.sku ? 'selected' : ''}>${esc([x.name, x.color, x.size].filter(Boolean).join(' · '))}</option>`).join('');
   box.innerHTML = `
     <div class="card">
       <div class="step-title">➕ 교환/반품 등록</div>
@@ -1002,7 +1061,7 @@ function returnForm(pre) {
       <div class="form-row"><label>수량</label><input id="ret-qty" type="number" min="1" value="${Number(pre.qty) || 1}"></div>
       <div class="form-row"><label>사유</label><input id="ret-reason" placeholder="예: 사이즈가 작아요"></div>
       <div class="form-row"><label>원래 보낸 송장번호 (있으면)</label><input id="ret-orig" value="${esc(pre.origInvoice || '')}"></div>
-      <div class="form-row" id="ret-ex-row" style="${pre.kind === '교환' ? '' : 'display:none'}"><label>교환으로 새로 보낼 제품 (옵션까지)</label><input id="ret-exchange" placeholder="예: W#03_Elin Pale Blouse (Ivory M)"></div>
+      <div class="form-row" id="ret-ex-row" style="${pre.kind === '교환' ? '' : 'display:none'}"><label>교환으로 새로 보낼 제품 · 컬러 · 사이즈</label><select id="ret-exchange-sku"><option value="">꼭 골라 주세요</option>${exchangeOpts}</select></div>
       <button class="big-btn green" onclick="returnSubmit(${pre.sourceType === 'seeding' ? "'seeding'" : pre.sourceType === 'orders' ? "'orders'" : "''"})">✔️ 등록</button>
       <button class="big-btn gray" onclick="document.getElementById('ret-form').innerHTML=''">취소</button>
     </div>`;
@@ -1011,10 +1070,16 @@ function returnForm(pre) {
 }
 async function returnSubmit(sourceType) {
   const kind = document.querySelector('input[name="ret-kind"]:checked').value;
+  const exchangeSku = kind === '교환' ? $('#ret-exchange-sku').value : '';
+  const exchangeItem = exchangeSku ? (DB.inventory || []).find(x => x.sku === exchangeSku) : null;
+  if (kind === '교환' && !exchangeItem) { toast('⚠️ 교환으로 새로 보낼 제품·컬러·사이즈를 골라 주세요.', 6000); return; }
   const body = {
-    kind, sourceType,
+    kind, sourceType: window._returnSource && window._returnSource.sourceType || sourceType,
     sourceId: window._returnSource && window._returnSource.sourceId,
     originalOrderNo: window._returnSource && window._returnSource.originalOrderNo,
+    orderItemCode: window._returnSource && window._returnSource.orderItemCode,
+    variantCode: window._returnSource && window._returnSource.variantCode,
+    sourceProductNo: window._returnSource && window._returnSource.sourceProductNo,
     sku: window._returnSource && window._returnSource.sku,
     sourceChannel: window._returnSource && window._returnSource.sourceChannel,
     name: $('#ret-name').value, phone: $('#ret-phone').value,
@@ -1022,7 +1087,12 @@ async function returnSubmit(sourceType) {
     product: $('#ret-product').value, option: $('#ret-option').value,
     qty: $('#ret-qty').value, reason: $('#ret-reason').value,
     origInvoice: $('#ret-orig').value,
-    exchangeProduct: kind === '교환' ? $('#ret-exchange').value : ''
+    exchangeProduct: exchangeItem ? exchangeItem.name : '',
+    exchangeSku: exchangeItem ? exchangeItem.sku : '',
+    exchangeVariantCode: exchangeItem ? exchangeItem.variantCode : '',
+    exchangeProductNo: exchangeItem ? exchangeItem.productNo : null,
+    exchangeColor: exchangeItem ? exchangeItem.color : '',
+    exchangeSize: exchangeItem ? exchangeItem.size : ''
   };
   busy(true, '등록하는 중…');
   const r = await api('/api/return/create', { method: 'POST', body: JSON.stringify(body) });
@@ -1031,6 +1101,7 @@ async function returnSubmit(sourceType) {
   adoptDb(r.db);
   render();
   toast(`✔️ ${kind} 건을 등록했어요. 이제 [🚚 우체국 회수 신청]을 누르면 기사님이 고객 집으로 가요.`, 6000);
+  if (r.warning) setTimeout(() => alert('⚠️ ' + r.warning), 200);
 }
 // 폼의 "보낸 것에서 고르기" 선택 시 칸 자동 채움
 function retPick(v) {
@@ -1041,6 +1112,7 @@ function retPick(v) {
   if (!x) return;
   window._returnSource = {
     sourceType: kind, sourceId: x.id, originalOrderNo: x.orderNo || '',
+    orderItemCode: x.orderItemCode || '', variantCode: x.variantCode || '', sourceProductNo: x.productNo || null,
     sku: x.sku || '', sourceChannel: x.sourceChannel || (kind === 'seeding' ? 'seeding' : 'cafe24')
   };
   $('#ret-name').value = x.name || '';
@@ -1099,6 +1171,7 @@ function returnFormFrom(kind, id) {
   returnForm({
     sourceType: kind,
     sourceId: x.id, originalOrderNo: x.orderNo || '', sku: x.sku || '',
+    orderItemCode: x.orderItemCode || '', variantCode: x.variantCode || '', sourceProductNo: x.productNo || null,
     sourceChannel: x.sourceChannel || (kind === 'seeding' ? 'seeding' : 'cafe24'),
     name: x.name, phone: x.phone, zip: x.zip || '', addr: x.addr,
     product: x.product, option: x.option || [x.color, x.size].filter(Boolean).join(' '),
@@ -1118,8 +1191,21 @@ async function returnPickup(id, name) {
     ${esc(name)}님 집으로 기사님이 갈 거예요.<br>회수 송장번호: <b>${esc(r.regiNo || '')}</b>${r.price ? ' (요금 ' + esc(r.price) + '원)' : ''}<br>
     <span style="font-weight:400">진행상황은 이 화면의 [🔄 회수 진행상태 새로고침]으로 확인해요.</span></div>`;
   toast('✔️ 회수 신청 완료!', 5000);
+  if (r.warning) setTimeout(() => alert('⚠️ ' + r.warning), 200);
 }
 async function returnComplete(id, name, kind) {
+  const ret = (DB.returns || []).find(x => x.id === id);
+  if (ret && ret.localCompleted) {
+    if (!confirm(`${name}님 건의 실물·재고 처리는 이미 끝났어요.\n카페24 상태 반영만 다시 시도할까요?`)) return;
+    busy(true, '카페24에 다시 반영하는 중…');
+    const retry = await api('/api/return/complete', { method: 'POST', body: JSON.stringify({ id, restock: false, inspection: ret.inspection || 'sellable' }) });
+    busy(false);
+    if (retry.error) { toast('⚠️ ' + retry.error, 7000); return; }
+    adoptDb(retry.db);
+    render();
+    toast(retry.warning ? '⚠️ ' + retry.warning : '✔️ 카페24 상태까지 다시 맞췄어요.', 8000);
+    return;
+  }
   const extra = kind === '교환' ? '\n· 교환이라서 [📮 보내기]에 재발송 건이 새로 생겨요' : '';
   const sellable = confirm(`${name}님의 회수품을 검수해 주세요.\n\n정상 상품으로 다시 판매할 수 있나요?\n\n[확인] 정상 — 재고에 다시 넣기\n[취소] 불량/오염 — 재고에서 제외`);
   if (!sellable && !confirm(`불량/오염으로 처리할까요?\n\n· 재고에는 다시 넣지 않습니다${extra}`)) return;
@@ -1133,11 +1219,14 @@ async function returnComplete(id, name, kind) {
   if (r.stock && r.stock.length) msg += ' 재고 +' + r.stock.map(s => s.name + '(' + s.left + '개)').join(', ');
   if (r.resend) msg += ` / 재발송 건이 [보내기]에 생겼어요: ${r.resend.product}`;
   toast(msg, 8000);
+  if (r.warning) setTimeout(() => alert('⚠️ ' + r.warning), 200);
 }
 async function returnCancel(id, scope, name) {
   const q = scope === 'delete'
     ? `${name}님의 교환/반품 기록을 완전히 지울까요?\n\n· 한 번 지우면 되돌릴 수 없어요\n· 기록만 남겨두려면 [취소]를 누르세요`
-    : `${name}님의 우체국 회수 신청을 취소할까요?\n(건은 남아 있어서 다시 신청할 수 있어요)`;
+    : scope === 'pickup'
+      ? `${name}님의 우체국 방문 회수만 취소할까요?\n\n· 카페24 교환·반품 접수는 그대로 남아요\n· 나중에 회수를 다시 신청할 수 있어요`
+      : `${name}님의 교환·반품을 전체 취소할까요?\n\n· 우체국 회수가 있으면 함께 취소돼요\n· 카페24 접수도 함께 취소돼요`;
   if (!confirm(q)) return;
   busy(true, '처리하는 중…');
   const r = await api('/api/return/cancel', { method: 'POST', body: JSON.stringify({ id, scope }) });
@@ -1147,15 +1236,17 @@ async function returnCancel(id, scope, name) {
   render();
   toast('✔️ 처리했어요.', 4000);
 }
+function externalPickupHelp() {
+  alert('이 회수는 카페24에서 먼저 신청해서 배송도우미에는 택배사 취소번호가 없어요.\n\n1. 카페24에서 회수 신청을 취소하세요.\n2. 카페24에서 교환·반품을 취소하세요.\n3. 배송도우미에서 [지금 확인하기]를 누르면 함께 바뀝니다.');
+}
 // 우체국 쪽에서 취소된(또는 앱에서 취소한) 회수 건을 다시 신청 가능 상태로
 async function returnReopen(id, name) {
   if (!confirm(`${name}님 건을 다시 [회수 신청 전] 상태로 되돌릴까요?`)) return;
-  const ret = (DB.returns || []).find(x => x.id === id);
-  if (!ret) return;
-  ret.status = '대기';
-  ret.invoice = '';
-  delete ret.epost;
-  await saveDb();
+  busy(true, '되돌리는 중…');
+  const r = await api('/api/return/cancel', { method: 'POST', body: JSON.stringify({ id, scope: 'reopen' }) });
+  busy(false);
+  if (r.error) { toast('⚠️ ' + r.error, 7000); return; }
+  adoptDb(r.db);
   render();
   toast('✔️ 되돌렸어요. [🚚 우체국 회수 신청]을 다시 누르면 됩니다.', 6000);
 }
@@ -1939,10 +2030,10 @@ async function refreshStatus(force) {
     if (r.version) { const v = document.getElementById('ver'); if (v) v.textContent = 'v' + r.version + (r.viewOnly ? ' · 👁 보기 모드' : ''); }
     if (force || (DB && r.rev !== DB.rev)) {
       const before = DB ? pendingOf(DB.seeding).length + pendingOf(DB.orders).length : 0;
-      const retBefore = DB ? (DB.returns || []).filter(x => x.status === '대기').length : 0;
+      const retBefore = DB ? (DB.returns || []).filter(x => ['requested', 'accepted'].includes(x.flowState)).length : 0;
       adoptDb(await api('/api/db'));
       const after = pendingOf(DB.seeding).length + pendingOf(DB.orders).length;
-      const retAfter = (DB.returns || []).filter(x => x.status === '대기').length;
+      const retAfter = (DB.returns || []).filter(x => ['requested', 'accepted'].includes(x.flowState)).length;
       // 입력 중인 화면(설정, 재고 추가 폼)이나 접수 결과가 떠 있을 땐 건드리지 않음 (송장번호·인쇄 버튼 소실 방지)
       const formOpen = PAGE === 'settings' || document.querySelector('#inv-form input') ||
         document.querySelector('#export-result .result-box') || document.querySelector('#ret-form input');

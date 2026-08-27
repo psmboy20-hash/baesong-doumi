@@ -27,14 +27,46 @@ const {
   stockLedgerRef,
   ensureOperationalFields,
   applyCarrierDeliveryResult,
-  splitShipmentItems
+  splitShipmentItems,
+  buildReturnRestockPlan,
+  selectStockMatches
 } = require('./lib/operations');
 const { writeJsonAtomic, appendAudit, createMutationQueue } = require('./lib/storage');
+const { clientJson, mergeClientDb, accessCodeRequiredForIp } = require('./lib/security');
+const {
+  cafe24ClaimStage,
+  statusForFlowState,
+  appendClaimEvent,
+  returnLineItems,
+  upsertReturnLine,
+  applyCafe24ClaimSnapshot,
+  buildCafe24ClaimCreate,
+  buildCafe24ClaimUpdate,
+  hasValidClaimLines,
+  hasValidExchangeTargets,
+  extractCafe24ClaimCode,
+  claimOperationKey,
+  isClaimPostAction,
+  activeRmaConflict,
+  pickupRmaConflict,
+  legacyRmaMatch,
+  prepareLegacyRma,
+  findExchangeTarget,
+  allowSingleExchangeFallback,
+  cafe24PickupActive,
+  findCafe24ClaimDetail,
+  pickupOperationUnresolved,
+  canCompleteRma,
+  shouldApplyPickupProgress,
+  pickupCanceledFlowState,
+  shouldCancelRecoveredPickup,
+  claimCancelUnresolved,
+  resolveClaimCodeFromItems,
+  missingCafe24ExchangeTargets
+} = require('./lib/claims');
 
 const PORT = 8899;
 // ── 접속 코드 게이트 (클라우드 서버용) ───────────────────────────────
-// db.json에 accessCode가 있으면, 집/매장 밖(공개 인터넷)에서 온 접속에만 코드를 요구한다.
-// 로컬(127.0.0.1)·사설망(192.168/10/172.16~31)·Tailscale(100.64~127)은 지금처럼 그냥 열린다.
 const gateCrypto = require('crypto');
 let _accessCode = null;
 function accessCode() {
@@ -45,10 +77,6 @@ function accessCode() {
 }
 function gateHash(code) { return gateCrypto.createHash('sha256').update('ham-gate:' + code).digest('hex'); }
 function clientIp(req) { return String(req.socket.remoteAddress || '').replace(/^::ffff:/, ''); }
-function isPrivateIp(ip) {
-  return ip === '' || ip === '127.0.0.1' || ip === '::1' || /^10\./.test(ip) || /^192\.168\./.test(ip) ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(ip) || /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ip);
-}
 function reqCookies(req) {
   const out = {};
   String(req.headers.cookie || '').split(';').forEach(p => {
@@ -70,9 +98,14 @@ document.getElementById('c').addEventListener('keydown',e=>{if(e.key==='Enter')g
 </script></body></html>`;
 async function gateCheck(req, res, url) {
   const code = accessCode();
-  if (!code) return false;                       // 코드 미설정 → 게이트 없음 (매장/노트북 로컬 실행)
   const ip = clientIp(req);
-  if (isPrivateIp(ip)) return false;             // 같은 집/매장/Tailscale → 그냥 통과
+  if (!code && accessCodeRequiredForIp(ip)) {
+    if (url.pathname.startsWith('/api/')) sendJson(res, 403, { error: '이 서버는 다른 컴퓨터 접속이 잠겨 있어요. 서버 컴퓨터에서 접속 코드를 먼저 설정해 주세요.' });
+    else { res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('서버 컴퓨터에서 접속 코드를 먼저 설정해 주세요.'); }
+    return true;
+  }
+  if (!code) return false;
+  if (!accessCodeRequiredForIp(ip)) return false;
   if (reqCookies(req).hamKey === gateHash(code)) return false; // 이미 코드 입력한 컴퓨터
   if (String(req.headers['x-ham-code'] || '').trim() === code) return false; // 외부 시스템(allin_v4 등)의 마스터 API 호출
   if (url.pathname === '/api/login' && req.method === 'POST') {
@@ -411,23 +444,79 @@ async function cafe24RegisterShipment(db, orderNo, invoice) {
   // 이미 배송처리된 주문 등은 참고용 메시지로
   throw new Error(msg || ('등록 실패(' + r.status + ')'));
 }
+
+async function cafe24ClaimCarrierId(db, ret) {
+  if (ret.cafe24CarrierId) return ret.cafe24CarrierId;
+  if (!ret.originalOrderNo) return '';
+  const token = await cafe24EnsureToken(db);
+  const response = await cafe24Fetch(db, token, `/api/v2/admin/orders/${encodeURIComponent(ret.originalOrderNo)}/shipments`);
+  if (response.status !== 200 || !response.json) return '';
+  const shipments = response.json.shipments || [];
+  const hit = shipments.find(row => ['0012', '0013'].includes(String(row.shipping_company_code || ''))) ||
+    shipments.find(row => /우체국/.test(String(row.shipping_company_name || '')));
+  if (hit && hit.carrier_id) ret.cafe24CarrierId = String(hit.carrier_id);
+  return ret.cafe24CarrierId || '';
+}
+
+async function cafe24FetchOrderPages(db, token, start, end, dateType) {
+  const fmt = d => d.toISOString().slice(0, 10);
+  const rows = [];
+  for (let offset = 0; offset < 2000; offset += 100) {
+    const params = new URLSearchParams({
+      start_date: fmt(start), end_date: fmt(end), date_type: dateType,
+      embed: 'items,receivers,buyer,return,exchange,cancellation',
+      limit: '100', offset: String(offset)
+    });
+    const response = await cafe24Fetch(db, token, `/api/v2/admin/orders?${params}`);
+    if (response.status === 401) throw new Error('카페24 인증이 풀렸어요. 설정에서 다시 연결해 주세요.');
+    if (response.status !== 200 || !response.json) {
+      const message = response.json && response.json.error && response.json.error.message;
+      throw new Error('카페24 주문 조회 실패 (' + response.status + '): ' + (message || response.text.slice(0, 200)));
+    }
+    const orders = response.json.orders || [];
+    rows.push(...orders);
+    if (orders.length < 100) break;
+  }
+  return rows;
+}
+
+function cafe24ClaimDetail(order, item, kind) {
+  const list = kind === '교환' ? order.exchange : order.return;
+  return findCafe24ClaimDetail(list, item.claim_code);
+}
+
+function cafe24OptionParts(raw) {
+  let color = '', size = '';
+  for (const part of String(raw || '').split(/[,/]/)) {
+    const kv = part.split('=');
+    if (kv.length !== 2) continue;
+    const key = kv[0].trim().toLowerCase();
+    const value = kv.slice(1).join('=').trim();
+    if (key.includes('색상') || key.includes('color')) color = value;
+    else if (key.includes('사이즈') || key.includes('size')) size = value;
+  }
+  return { color, size };
+}
+
 async function cafe24FetchOrders(db) {
   const token = await cafe24EnsureToken(db);
   const end = new Date();
-  const start = new Date(end.getTime() - 13 * 86400 * 1000); // 최근 2주
-  const fmt = d => d.toISOString().slice(0, 10);
+  const orderStart = new Date(end.getTime() - 13 * 86400 * 1000);
+  const claimStart = new Date(end.getTime() - 89 * 86400 * 1000);
+  const orderMap = new Map();
+  const ranges = [
+    ['order_date', orderStart],
+    ['exchange_request_date', claimStart],
+    ['exchange_complete_date', claimStart],
+    ['return_request_date', claimStart],
+    ['return_complete_date', claimStart]
+  ];
+  for (const [dateType, start] of ranges) {
+    const orders = await cafe24FetchOrderPages(db, token, start, end, dateType);
+    for (const order of orders) orderMap.set(String(order.order_id || ''), order);
+  }
   const parsed = [];
-  for (let offset = 0; offset < 2000; offset += 100) {
-    const p = new URLSearchParams({
-      start_date: fmt(start), end_date: fmt(end),
-      embed: 'items,receivers,buyer',
-      limit: '100', offset: String(offset)
-    });
-    const r = await cafe24Fetch(db, token, `/api/v2/admin/orders?${p}`);
-    if (r.status === 401) throw new Error('카페24 인증이 풀렸어요. 설정에서 다시 연결해 주세요.');
-    if (r.status !== 200 || !r.json) throw new Error('카페24 주문 조회 실패 (' + r.status + '): ' + (r.json && (r.json.error && r.json.error.message) || r.text.slice(0, 200)));
-    const orders = r.json.orders || [];
-    for (const o of orders) {
+  for (const o of orderMap.values()) {
       const rc = (o.receivers && o.receivers[0]) || {};
       const name = rc.name || (o.buyer && o.buyer.name) || '';
       const phone = rc.cellphone || rc.phone || '';
@@ -437,24 +526,34 @@ async function cafe24FetchOrders(db) {
       for (const it of (o.items || [])) {
         const st = String(it.order_status || '');
         // option_value 예: "색상=Indigo Blue, 사이즈=M"
-        let color = '', size = '';
-        for (const part of String(it.option_value || '').split(/[,/]/)) {
-          const kv = part.split('=');
-          if (kv.length === 2) {
-            const k = kv[0].trim(), v = kv[1].trim();
-            if (k.includes('색상') || k.toLowerCase().includes('color')) color = v;
-            else if (k.includes('사이즈') || k.toLowerCase().includes('size')) size = v;
-          }
-        }
+        const { color, size } = cafe24OptionParts(it.option_value);
         if (/^[CRE]/.test(st)) {
-          // 취소(C)/반품(R)/교환(E): 미발송 건은 취소 처리, 발송된 건의 R/E는 교환/반품 목록에 자동 등록
+          const retKind = st[0] === 'R' ? '반품' : st[0] === 'E' ? '교환' : '';
+          const detail = retKind ? cafe24ClaimDetail(o, it, retKind) : {};
+          const pickup = detail.pickup || {};
+          const exchangedRows = retKind === '교환' && Array.isArray(detail.exchanged_items) ? detail.exchanged_items : [];
+          const exchanged = findExchangeTarget(exchangedRows, it.order_item_code, allowSingleExchangeFallback(o.items, it));
+          const exchangeOption = cafe24OptionParts(exchanged.option_value || exchanged.options || '');
           parsed.push({
-            orderNo: o.order_id || '', name, phone,
-            zip: String(zip), addr, color, size,
-            option: it.option_value || '', qty: Number(it.quantity) || 1,
+            orderNo: o.order_id || '', name: pickup.name || name, phone: pickup.cellphone || pickup.phone || phone,
+            zip: String(pickup.zipcode || zip), addr: [pickup.address1, pickup.address2].filter(Boolean).join(' ') || addr, color, size,
+            option: it.option_value || '', qty: Number(it.claim_quantity) || Number(it.quantity) || 1,
             productNo: it.product_no || null, variantCode: it.variant_code || '', orderItemCode: it.order_item_code || '',
             product: it.product_name || '', _canceled: true, _src: 'c24',
-            _retKind: st[0] === 'R' ? '반품' : st[0] === 'E' ? '교환' : ''
+            _retKind: retKind,
+            _claimCode: it.claim_code || detail.claim_code || '',
+            _claimStatus: st,
+            _claimReasonType: it.claim_reason_type || detail.claim_reason_type || '',
+            _claimReason: it.claim_reason || detail.claim_reason || '',
+            _returnInvoice: detail.return_invoice_no || '',
+            _returnCarrierId: detail.carrier_id || '',
+            _pickupRequestState: detail.pickup_request_state || '',
+            _exchangeTargetResolved: retKind !== '교환' || !!String(exchanged.exchange_variant_code || exchanged.variant_code || ''),
+            _exchangeVariantCode: exchanged.exchange_variant_code || exchanged.variant_code || '',
+            _exchangeProduct: exchanged.product_name || '',
+            _exchangeProductNo: exchanged.product_no || null,
+            _exchangeColor: exchangeOption.color,
+            _exchangeSize: exchangeOption.size
           });
           continue;
         }
@@ -481,10 +580,97 @@ async function cafe24FetchOrders(db) {
           _src: 'c24'
         });
       }
-    }
-    if (orders.length < 100) break;
   }
   return parsed;
+}
+
+function setClaimSyncIssue(ret, system, action, message) {
+  if (!Array.isArray(ret.syncIssues)) ret.syncIssues = [];
+  ret.syncIssues = ret.syncIssues.filter(row => !(row.system === system && row.action === action));
+  ret.syncIssues.push({ system, action, message: String(message || ''), at: new Date().toISOString() });
+  if (ret.syncIssues.length > 20) ret.syncIssues = ret.syncIssues.slice(-20);
+}
+
+function clearClaimSyncIssue(ret, system, action) {
+  if (!Array.isArray(ret.syncIssues)) ret.syncIssues = [];
+  ret.syncIssues = ret.syncIssues.filter(row => !(row.system === system && row.action === action));
+}
+
+function cafe24ClaimResource(ret) {
+  return ret.kind === '교환' ? 'exchange' : 'return';
+}
+
+function cafe24ClaimError(response) {
+  return response.json && response.json.error && response.json.error.message || response.text && response.text.slice(0, 200) || '카페24가 요청을 처리하지 못했어요.';
+}
+
+async function cafe24ResolveClaimCode(db, token, ret) {
+  const response = await cafe24Fetch(db, token, `/api/v2/admin/orders/${encodeURIComponent(ret.originalOrderNo)}?embed=items,return,exchange`);
+  const order = response.status === 200 && response.json && response.json.order;
+  if (!order) return '';
+  const itemCodes = returnLineItems(ret).map(row => String(row.orderItemCode || ''));
+  const resolved = resolveClaimCodeFromItems(order.items, itemCodes);
+  if (resolved.orderStatus) ret.cafe24OrderStatus = resolved.orderStatus;
+  return resolved.claimCode;
+}
+
+async function cafe24WriteClaim(db, ret, action, values) {
+  if (ret.sourceChannel !== 'cafe24') return { ok: true, skipped: true };
+  const claimLines = returnLineItems(ret);
+  if (!String(ret.originalOrderNo || '').trim() || !hasValidClaimLines(ret)) throw new Error('카페24 주문번호 또는 품목코드가 없어 자동 반영할 수 없어요.');
+  if (ret.kind === '교환' && ['create', 'accept'].includes(action) && !hasValidExchangeTargets(ret)) {
+    throw new Error('교환으로 보낼 제품·컬러·사이즈를 먼저 골라 주세요.');
+  }
+  if (!['create', 'accept'].includes(action) && !ret.cafe24ClaimCode) throw new Error('카페24 교환·반품 번호가 아직 없어요. [지금 확인하기]를 눌러 주세요.');
+  if (!ret.syncOps || typeof ret.syncOps !== 'object') ret.syncOps = {};
+  const key = claimOperationKey(ret, action, values);
+  const old = ret.syncOps[action];
+  if (old && old.key === key && old.state === 'success') return { ok: true, skipped: true, claimCode: ret.cafe24ClaimCode };
+  if (old && old.key === key && ['pending', 'unknown'].includes(old.state) && ['create', 'accept'].includes(action)) {
+    throw new Error('카페24 접수 결과를 확인 중이에요. 잠시 뒤 [지금 확인하기]를 눌러 주세요.');
+  }
+  ret.syncOps[action] = { key, state: 'pending', at: new Date().toISOString() };
+  saveDb(db);
+  try {
+    const token = await cafe24EnsureToken(db);
+    const resource = cafe24ClaimResource(ret);
+    const creating = isClaimPostAction(action);
+    const path = creating
+      ? `/api/v2/admin/orders/${encodeURIComponent(ret.originalOrderNo)}/${resource}`
+      : `/api/v2/admin/orders/${encodeURIComponent(ret.originalOrderNo)}/${resource}/${encodeURIComponent(ret.cafe24ClaimCode)}`;
+    const body = creating ? buildCafe24ClaimCreate(ret) : buildCafe24ClaimUpdate(ret, action, values);
+    const response = await cafe24Fetch(db, token, path, creating ? 'POST' : 'PUT', body);
+    if (response.status < 200 || response.status >= 300) {
+      const failure = new Error(cafe24ClaimError(response));
+      failure.responseReceived = true;
+      throw failure;
+    }
+    if (action === 'create') {
+      let claimCode = extractCafe24ClaimCode(ret.kind, response.json, ret.cafe24ClaimCode);
+      if (!claimCode) claimCode = await cafe24ResolveClaimCode(db, token, ret);
+      if (claimCode) ret.cafe24ClaimCode = claimCode;
+    }
+    const unresolvedCreate = action === 'create' && !ret.cafe24ClaimCode;
+    ret.syncOps[action] = { key, state: unresolvedCreate ? 'unknown' : 'success', at: new Date().toISOString() };
+    ret.cafe24PushedAt = ret.syncOps[action].at;
+    clearClaimSyncIssue(ret, 'cafe24', action);
+    if (action === 'create' && !ret.cafe24ClaimCode) {
+      setClaimSyncIssue(ret, 'cafe24', 'lookup', '카페24 접수는 됐고 접수번호를 확인 중이에요. 잠시 뒤 자동으로 연결됩니다.');
+    } else {
+      clearClaimSyncIssue(ret, 'cafe24', 'lookup');
+    }
+    appendClaimEvent(ret, action, 'shipping-helper', ret.cafe24ClaimCode || ret.originalOrderNo, ret.cafe24PushedAt);
+    saveDb(db);
+    return { ok: true, claimCode: ret.cafe24ClaimCode || '' };
+  } catch (error) {
+    const unknown = ['create', 'accept'].includes(action) && !error.responseReceived;
+    ret.syncOps[action] = { key, state: unknown ? 'unknown' : 'failed', at: new Date().toISOString(), error: error.message };
+    setClaimSyncIssue(ret, 'cafe24', action, unknown
+      ? '카페24 응답이 중간에 끊겨 접수 여부를 확인 중이에요. 중복 방지를 위해 다시 접수하지 않았습니다.'
+      : error.message);
+    saveDb(db);
+    throw error;
+  }
 }
 
 // ---------- 우체국 계약소포 OpenAPI ----------
@@ -646,6 +832,91 @@ async function epostInsertReturn(db, ret, orderNo, testYn) {
     resNo: xmlVal(xml, 'resNo'),
     price: xmlVal(xml, 'price')
   };
+}
+
+async function epostCancelReturnPickup(db, ret) {
+  if (!ret.epost) return { ok: true, skipped: true };
+  await epostCall(db, 'api.GetResCancelCmd.jparcel', {
+    custNo: db.epost.custNo,
+    apprNo: db.epost.apprNo,
+    reqType: '2',
+    reqNo: ret.epost.reqNo,
+    resNo: ret.epost.resNo,
+    regiNo: String(ret.invoice || '').replace(/\D/g, ''),
+    reqYmd: ret.epost.reqYmd,
+    delYn: 'Y'
+  });
+  ret.lastEpost = Object.assign({}, ret.epost, { canceledAt: new Date().toISOString() });
+  delete ret.epost;
+  ret.invoice = '';
+  ret.needsEpostCancel = false;
+  if (ret.pickupOp) ret.pickupOp.state = 'canceled';
+  clearClaimSyncIssue(ret, 'epost', 'cancel');
+  appendClaimEvent(ret, 'pickup_canceled', 'epost', ret.lastEpost.orderNo || '');
+  return { ok: true };
+}
+
+function returnPickupNeedsSync(ret) {
+  if (ret.epost && ret.epost.orderNo) {
+    if (ret.epost.stus === '05') return false;
+    if (ret.epost.stus === '03') {
+      return !!(ret.sourceChannel === 'cafe24' && ret.cafe24ClaimCode && (!ret.syncOps || !ret.syncOps.collected || ret.syncOps.collected.state !== 'success'));
+    }
+    return true;
+  }
+  return pickupOperationUnresolved(ret);
+}
+
+async function syncReturnPickup(db, ret, pushCafe24) {
+  const orderNo = ret.epost && ret.epost.orderNo || ret.pickupOp && ret.pickupOp.orderNo;
+  const reqYmd = ret.epost && ret.epost.reqYmd || String(ret.pickupOp && ret.pickupOp.at || '').slice(0, 10).replace(/-/g, '') || today().replace(/-/g, '');
+  const xml = await epostCall(db, 'api.GetResInfo.jparcel', {
+    custNo: db.epost.custNo, reqType: '2', orderNo, reqYmd
+  });
+  const stus = xmlVal(xml, 'treatStusCd');
+  const regiNo = xmlVal(xml, 'regiNo');
+  if (!stus && !regiNo) throw new Error('아직 우체국 접수 결과가 없어요.');
+  if (stus === '05') {
+    ret.lastEpost = Object.assign({}, ret.epost || {}, { orderNo, canceledAt: new Date().toISOString() });
+    delete ret.epost;
+    ret.invoice = '';
+    if (ret.pickupOp) ret.pickupOp.state = 'canceled';
+    ret.needsEpostCancel = false;
+    ret.flowState = pickupCanceledFlowState(ret);
+    ret.status = statusForFlowState(ret.flowState);
+    clearClaimSyncIssue(ret, 'epost', 'pickup');
+    appendClaimEvent(ret, 'pickup_canceled', 'epost', orderNo);
+    return { changed: true, status: stus };
+  }
+  ret.epost = {
+    orderNo,
+    reqNo: xmlVal(xml, 'reqNo') || ret.epost && ret.epost.reqNo || '',
+    resNo: xmlVal(xml, 'resNo') || ret.epost && ret.epost.resNo || '',
+    reqYmd,
+    stus: stus || ret.epost && ret.epost.stus || '01',
+    price: xmlVal(xml, 'price') || ret.epost && ret.epost.price || ''
+  };
+  if (shouldCancelRecoveredPickup(ret)) ret.needsEpostCancel = true;
+  if (regiNo && regiNo !== 'TESTREGINOAPI') ret.invoice = regiNo;
+  if (ret.pickupOp) ret.pickupOp.state = 'success';
+  if (stus === '03') {
+    if (shouldApplyPickupProgress(ret)) {
+      ret.flowState = 'collected';
+      ret.status = statusForFlowState(ret.flowState);
+      appendClaimEvent(ret, 'collected', 'epost', ret.invoice || orderNo);
+      if (pushCafe24 && ret.sourceChannel === 'cafe24' && ret.cafe24ClaimCode) {
+        const carrierId = await cafe24ClaimCarrierId(db, ret);
+        await cafe24WriteClaim(db, ret, 'collected', { invoice: ret.invoice || '', carrierId });
+      }
+    } else {
+      appendClaimEvent(ret, 'pickup_found_while_canceling', 'epost', ret.invoice || orderNo);
+    }
+  } else if (!ret.localCompleted && !['completed', 'canceled'].includes(ret.flowState)) {
+    ret.flowState = 'pickup_booked';
+    ret.status = statusForFlowState(ret.flowState);
+  }
+  clearClaimSyncIssue(ret, 'epost', 'pickup');
+  return { changed: true, status: stus };
 }
 
 // 카페24 제품 목록(품번/이미지) 가져오기 - 제품 사진 표시와 이름 매칭용
@@ -957,6 +1228,45 @@ async function syncAll() {
       out.cafe24 = r;
       syncStatus.cafe24 = { configured: true, connected: true, ok: true, error: null, added: r.added };
       changed = true;
+      for (const ret of db.returns.filter(row => row.needsEpostCancel && row.epost)) {
+        try {
+          await epostCancelReturnPickup(db, ret);
+        } catch (error) {
+          setClaimSyncIssue(ret, 'epost', 'cancel', '카페24에서는 취소됐지만 우체국 회수 취소 실패: ' + error.message);
+        }
+      }
+      for (const ret of db.returns.filter(row => row.sourceChannel === 'cafe24' && row.syncOps && row.syncOps.create && ['pending', 'unknown'].includes(row.syncOps.create.state))) {
+        try {
+          const token = ret.cafe24ClaimCode ? null : await cafe24EnsureToken(db);
+          const claimCode = ret.cafe24ClaimCode || await cafe24ResolveClaimCode(db, token, ret);
+          if (claimCode) {
+            ret.cafe24ClaimCode = claimCode;
+            ret.syncOps.create.state = 'success';
+            clearClaimSyncIssue(ret, 'cafe24', 'create');
+            clearClaimSyncIssue(ret, 'cafe24', 'lookup');
+            changed = true;
+          } else {
+            ret.syncOps.create.state = 'unknown';
+            setClaimSyncIssue(ret, 'cafe24', 'create', '카페24 접수 여부를 계속 확인 중이에요. 중복 접수를 막기 위해 자동 재접수하지 않습니다.');
+            changed = true;
+          }
+        } catch (error) {
+          setClaimSyncIssue(ret, 'cafe24', 'lookup', '카페24 접수번호 확인 실패: ' + error.message);
+          changed = true;
+        }
+      }
+      for (const ret of db.returns.filter(row => row.sourceChannel === 'cafe24' && row.syncOps && row.syncOps.accept && ['pending', 'unknown'].includes(row.syncOps.accept.state))) {
+        const stage = cafe24ClaimStage(ret.cafe24OrderStatus);
+        if (!['requested', 'unknown'].includes(stage)) {
+          ret.syncOps.accept.state = 'success';
+          clearClaimSyncIssue(ret, 'cafe24', 'accept');
+          changed = true;
+        } else {
+          ret.syncOps.accept.state = 'unknown';
+          setClaimSyncIssue(ret, 'cafe24', 'accept', '카페24 승인 여부를 계속 확인 중이에요. 중복 승인을 막기 위해 자동 재승인하지 않습니다.');
+          changed = true;
+        }
+      }
       // 카페24에서 직접 배송처리한 주문의 송장번호를 회수해 채움 (앱 밖 발송 매칭)
       const codeMap = { '0012': '우체국', '0013': '우체국', '0079': '롯데', '0006': 'CJ대한통운', '0018': '한진', '0004': '로젠' };
       const needInv = db.orders.filter(o => o.status === '발송완료' && !o.invoice && o.orderNo).slice(0, 5);
@@ -990,6 +1300,26 @@ async function syncAll() {
   if (applySyncedSettings(db)) changed = true;
   // 우편번호 없는 건 자동 채우기 (카카오 키 설정 시)
   if (await fillMissingZips(db) > 0) changed = true;
+  if (epostConfigured(db) && db.epost) {
+    for (const ret of (db.returns || []).filter(returnPickupNeedsSync).slice(0, 30)) {
+      try {
+        await syncReturnPickup(db, ret, !c24Skip);
+        changed = true;
+      } catch (error) {
+        setClaimSyncIssue(ret, 'epost', 'pickup', '우체국 회수 상태 확인 실패: ' + error.message);
+        changed = true;
+      }
+    }
+    for (const ret of (db.returns || []).filter(row => row.needsEpostCancel && row.epost)) {
+      try {
+        await epostCancelReturnPickup(db, ret);
+        changed = true;
+      } catch (error) {
+        setClaimSyncIssue(ret, 'epost', 'cancel', '우체국 회수 취소 실패: ' + error.message);
+        changed = true;
+      }
+    }
+  }
   backupDb(); // 하루 1개 자동 백업
   try { if (await checkDelivered(db)) changed = true; } catch (e) { /* 무시 */ }
   if (changed) saveDb(db);
@@ -1177,55 +1507,116 @@ function mergeOrders(db, parsed) {
   // 카페24 교환(E) 신청이 있는 주문번호: 그 주문의 미발송 품목은 교환 재발송분
   const exchNos = new Set(parsed.filter(p => p._retKind === '교환' && p.orderNo).map(p => p.orderNo));
   const map = new Map(db.orders.map(o => [orderKey(o), o]));
+  const byItemCode = new Map(db.orders.filter(o => o.orderItemCode).map(o => [String(o.orderItemCode), o]));
   // 느슨한 키는 아직 안 보낸 건에만 — 과거 발송완료 건이 재주문을 흡수해 누락시키는 것 방지
   const fuzzy = new Map();
   for (const o of db.orders) {
     if ((o.status === '대기' || o.status === '접수중') && !fuzzy.has(fuzzyOrderKey(o))) fuzzy.set(fuzzyOrderKey(o), o);
   }
-  let added = 0, updated = 0, canceled = 0;
+  let added = 0, updated = 0, canceled = 0, claimsAdded = 0, claimsUpdated = 0;
   for (const p of parsed) {
     // 카페24에서 취소/반품/교환된 주문: 아직 안 보낸 건이면 취소 처리
     if (p._canceled) {
-      const ex = map.get(orderKey(p)) || fuzzy.get(fuzzyOrderKey(p));
-      // 교환(E)은 이미 보낸 원래 품목 얘기라, 대기 중인 재발송분을 취소하면 안 됨
-      if (ex && (ex.status === '대기' || ex.status === '접수중') && p._retKind !== '교환') {
+      const ex = byItemCode.get(String(p.orderItemCode || '')) || map.get(orderKey(p)) || fuzzy.get(fuzzyOrderKey(p));
+      if (ex && (ex.status === '대기' || ex.status === '접수중') && !p._retKind) {
         ex.status = '취소됨';
         canceled++;
       }
-      // 이미 발송된 건의 반품(R)/교환(E) 신청 → 교환/반품 목록에 자동 등록 (한 번만)
-      if (p._retKind && ex && ex.status === '발송완료') {
-        const key = cafe24ReturnKey(p);
-        if (!Array.isArray(db.c24RetSeen)) db.c24RetSeen = [];
-        if (!db.c24RetSeen.includes(key)) {
-          const legacyKey = 'c24:' + p.orderNo + '|' + normName(p.product) + '|' + p._retKind;
-          const legacyIndex = db.c24RetSeen.indexOf(legacyKey);
-          if (legacyIndex >= 0) {
-            db.c24RetSeen.splice(legacyIndex, 1, key);
-            const oldReturn = db.returns.find(ret => ret.kind === p._retKind && normName(ret.product) === normName(p.product) && !ret.originalOrderNo);
-            if (oldReturn) {
-              oldReturn.sourceId = ex.id;
-              oldReturn.originalOrderNo = p.orderNo;
-              oldReturn.sku = ex.sku || p.sku || oldReturn.sku || '';
-              oldReturn.sourceChannel = 'cafe24';
-            }
-            continue;
+      if (p._retKind) {
+        if (p._exchangeVariantCode) {
+          const target = (db.inventory || []).find(item => String(item.variantCode || '') === String(p._exchangeVariantCode));
+          if (target) {
+            p._exchangeProduct = p._exchangeProduct || target.name || '';
+            p._exchangeProductNo = p._exchangeProductNo || target.productNo || null;
+            p._exchangeSku = target.sku || '';
+            p._exchangeColor = p._exchangeColor || target.color || '';
+            p._exchangeSize = p._exchangeSize || target.size || '';
           }
-          db.c24RetSeen.push(key);
+        }
+        const key = p._claimCode ? ['c24', p._retKind, p._claimCode].join(':') : cafe24ReturnKey(p);
+        if (!Array.isArray(db.c24RetSeen)) db.c24RetSeen = [];
+        if (!db.c24RetSeen.includes(key)) db.c24RetSeen.push(key);
+        const legacy = legacyRmaMatch(db.returns, p);
+        let ret = db.returns.find(row => p._claimCode && row.cafe24ClaimCode === p._claimCode && row.kind === p._retKind);
+        if (!ret) {
+          ret = db.returns.find(row => row.kind === p._retKind && row.originalOrderNo === p.orderNo &&
+            !['completed', 'canceled'].includes(row.flowState) &&
+            (!row.cafe24ClaimCode || row.cafe24ClaimCode === p._claimCode) &&
+            returnLineItems(row).some(item => String(item.orderItemCode || '') === String(p.orderItemCode || '')));
+        }
+        if (!ret) {
+          ret = db.returns.find(row => row.kind === p._retKind && row.originalOrderNo === p.orderNo &&
+            !['completed', 'canceled'].includes(row.flowState) &&
+            ((ex && Number(row.sourceId) === Number(ex.id)) || normName(row.product) === normName(p.product)) && !row.cafe24ClaimCode);
+        }
+        if (!ret && legacy) {
+          ret = legacy;
+          prepareLegacyRma(ret, p);
+        }
+        if (ret && legacy && ret !== legacy) {
+          ret.origInvoice = ret.origInvoice || legacy.origInvoice || '';
+          ret.sourceId = ret.sourceId || legacy.sourceId || null;
+          ret.reason = ret.reason || legacy.reason || '';
+          if (Array.isArray(legacy.events) && legacy.events.length) {
+            ret.events = [...legacy.events, ...(ret.events || [])].slice(-50);
+          }
+          db.returns = db.returns.filter(row => row !== legacy);
+        }
+        if (!ret) {
+          const conflict = activeRmaConflict(db.returns, {
+            orderItemCode: String(p.orderItemCode || ''), sourceId: ex && ex.id || null
+          });
+          if (conflict) {
+            conflict.flowState = 'canceled';
+            conflict.status = statusForFlowState('canceled');
+            if (conflict.epost || conflict.pickupOp && ['pending', 'unknown', 'success'].includes(conflict.pickupOp.state)) conflict.needsEpostCancel = true;
+            appendClaimEvent(conflict, 'canceled', 'cafe24', '교환·반품 종류가 변경되어 이전 건을 종료함');
+          }
+        }
+        if (!ret) {
           const retId = db.nextId++;
-          db.returns.push({
+          ret = {
             id: retId, rmaNo: 'RMA-' + retId,
             kind: p._retKind,
             sourceType: 'orders', sourceChannel: 'cafe24', _src: 'c24',
-            sourceId: ex.id, originalOrderNo: p.orderNo, sku: ex.sku || p.sku || '',
+            sourceId: ex && ex.id || null, originalOrderNo: p.orderNo, sku: ex && ex.sku || p.sku || '',
             name: p.name, phone: p.phone,
-            zip: String(p.zip || ex.zip || ''), addr: p.addr || ex.addr || '',
+            zip: String(p.zip || ex && ex.zip || ''), addr: p.addr || ex && ex.addr || '',
             product: p.product, option: [p.color, p.size].filter(Boolean).join(' ') || p.option || '',
             qty: p.qty || 1,
-            reason: '카페24에서 ' + p._retKind + ' 신청 들어옴',
-            origInvoice: ex.invoice || '', exchangeProduct: '',
-            status: '대기', invoice: '', regDate: today()
-          });
+            reason: p._claimReason || '카페24에서 ' + p._retKind + ' 신청 들어옴',
+            origInvoice: ex && ex.invoice || '', exchangeProduct: p._exchangeProduct || '',
+            sourceProductNo: p.productNo || null,
+            exchangeProductNo: p._exchangeProductNo || null,
+            exchangeVariantCode: p._exchangeVariantCode || '',
+            items: [], flowState: 'requested', status: '대기', invoice: '', regDate: today(), events: [], syncIssues: []
+          };
+          db.returns.push(ret);
+          claimsAdded++;
+        } else {
+          claimsUpdated++;
         }
+        upsertReturnLine(ret, p, ex);
+        ret.originalOrderNo = ret.originalOrderNo || p.orderNo || '';
+        applyCafe24ClaimSnapshot(ret, {
+          claimCode: p._claimCode,
+          orderStatus: p._claimStatus,
+          reasonType: p._claimReasonType,
+          reason: p._claimReason,
+          invoice: p._returnInvoice,
+          carrierId: p._returnCarrierId,
+          pickupState: p._pickupRequestState,
+          name: p.name,
+          phone: p.phone,
+          zip: p.zip,
+          addr: p.addr,
+          qty: ret.qty
+        });
+        if (ret.cafe24ClaimCode) clearClaimSyncIssue(ret, 'cafe24', 'lookup');
+        ret.sourceId = ret.sourceId || ex && ex.id || null;
+        ret.sourceProductNo = ret.sourceProductNo || p.productNo || null;
+        ret.exchangeProductNo = ret.exchangeProductNo || p._exchangeProductNo || null;
+        if (shouldCancelRecoveredPickup(ret)) ret.needsEpostCancel = true;
       }
       continue;
     }
@@ -1265,6 +1656,7 @@ function mergeOrders(db, parsed) {
       });
       db.orders.push(item);
       map.set(orderKey(item), item);
+      if (item.orderItemCode) byItemCode.set(String(item.orderItemCode), item);
       if (!fuzzy.has(fuzzyOrderKey(item))) fuzzy.set(fuzzyOrderKey(item), item);
       added++;
     }
@@ -1275,7 +1667,7 @@ function mergeOrders(db, parsed) {
       if (exchNos.has(o.orderNo) && (o.status === '대기' || o.status === '접수중') && !o.exchange) o.exchange = true;
     }
   }
-  return { added, updated, canceled };
+  return { added, updated, canceled, claimsAdded, claimsUpdated };
 }
 
 // ---------- 우체국 엑셀 생성 ----------
@@ -1482,25 +1874,7 @@ function stockMatches(inv, item) {
 
 // 여러 재고 행이 걸리면 옵션이 구체적으로 맞는 1건만 (이중 차감/유령 복구 방지)
 function findStockMatches(db, item) {
-  if (item.variantCode) {
-    const exactVariant = db.inventory.find(inv => inv.variantCode === item.variantCode);
-    return exactVariant ? [exactVariant] : [];
-  }
-  if (item.sku) {
-    const exactSku = db.inventory.find(inv => inv.sku === item.sku);
-    if (exactSku) return [exactSku];
-  }
-  if (item.productNo) {
-    const sku = inventorySku(item);
-    const exactProductOption = db.inventory.find(inv => inv.sku === sku);
-    if (exactProductOption) return [exactProductOption];
-    if (item.size || item.color) return [];
-  }
-  const hits = db.inventory.filter(inv => stockMatches(inv, item));
-  if (hits.length <= 1) return hits;
-  const scored = hits.map(inv => ({ inv, s: (inv.size ? 2 : 0) + (inv.color ? 1 : 0) }));
-  scored.sort((a, b) => b.s - a.s);
-  return [scored[0].inv];
+  return selectStockMatches(db.inventory, item, stockMatches);
 }
 
 // 재고 변동 장부: 입고/출고/복구가 일어날 때마다 한 줄씩 남긴다 (입출고 내역 화면·마스터 API용)
@@ -1621,7 +1995,7 @@ function readBody(req) {
   });
 }
 function sendJson(res, code, obj) {
-  const body = JSON.stringify(obj);
+  const body = clientJson(obj);
   res.writeHead(code, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store, max-age=0'
@@ -1667,9 +2041,10 @@ const server = http.createServer((req, res) => {
       if (body.rev != null && cur.rev != null && body.rev !== cur.rev) {
         return sendJson(res, 200, { conflict: true, db: cur });
       }
-      saveDb(body);
-      audit('db.save', { rev: body.rev, actor: 'client' });
-      return sendJson(res, 200, { ok: true, rev: body.rev });
+      const merged = mergeClientDb(cur, body);
+      saveDb(merged);
+      audit('db.save', { rev: merged.rev, actor: 'client' });
+      return sendJson(res, 200, { ok: true, rev: merged.rev });
     }
     if (url.pathname === '/api/sync' && req.method === 'POST') {
       const { db, out } = await syncAll();
@@ -2024,20 +2399,13 @@ const server = http.createServer((req, res) => {
           refreshed++;
         } catch (e) { errors.push(item.name + ': ' + e.message); }
       }
-      // 교환/반품 회수 건 진행상태도 함께 새로고침 (reqType=2)
-      for (const ret of db.returns.filter(x => x.epost && x.epost.orderNo && x.status === '회수중')) {
+      for (const ret of db.returns.filter(returnPickupNeedsSync)) {
         try {
-          const xml = await epostCall(db, 'api.GetResInfo.jparcel', {
-            custNo: db.epost.custNo, reqType: '2',
-            orderNo: ret.epost.orderNo, reqYmd: ret.epost.reqYmd || today().replace(/-/g, '')
-          });
-          const stus = xmlVal(xml, 'treatStusCd');
-          if (stus) ret.epost.stus = stus;
-          const rn = xmlVal(xml, 'regiNo');
-          if (rn && rn !== 'TESTREGINOAPI') ret.invoice = rn;
-          if (stus === '05') ret.status = '취소됨'; // 우체국 쪽에서 취소된 경우
+          await syncReturnPickup(db, ret, true);
           refreshed++;
-        } catch (e) { errors.push(ret.name + '(회수): ' + e.message); }
+        } catch (error) {
+          errors.push(ret.name + '(회수): ' + error.message);
+        }
       }
       saveDb(db);
       return sendJson(res, 200, { ok: true, refreshed, errors: errors.slice(0, 5), db });
@@ -2146,14 +2514,23 @@ const server = http.createServer((req, res) => {
       if (!String(b.name || '').trim() || !String(b.addr || '').trim()) {
         return sendJson(res, 200, { error: '이름과 주소는 꼭 적어 주세요.' });
       }
+      const kind = b.kind === '교환' ? '교환' : '반품';
+      const sourceChannel = b.sourceChannel || (b.sourceType === 'orders' ? 'cafe24' : b.sourceType === 'seeding' ? 'seeding' : 'direct');
+      const duplicate = activeRmaConflict(db.returns, {
+        orderItemCode: String(b.orderItemCode || ''), sourceId: Number(b.sourceId) || null
+      });
+      if (duplicate) return sendJson(res, 200, { error: `이미 진행 중인 교환·반품 건이 있어요 (${duplicate.rmaNo || 'RMA-' + duplicate.id}).` });
       const retId = db.nextId++;
-      db.returns.push({
+      const ret = {
         id: retId, rmaNo: 'RMA-' + retId,
-        kind: b.kind === '교환' ? '교환' : '반품',
+        kind,
         sourceType: b.sourceType || '',
-        sourceChannel: b.sourceChannel || (b.sourceType === 'orders' ? 'cafe24' : b.sourceType === 'seeding' ? 'seeding' : 'direct'),
+        sourceChannel,
         sourceId: Number(b.sourceId) || null,
         originalOrderNo: String(b.originalOrderNo || '').trim(),
+        orderItemCode: String(b.orderItemCode || '').trim(),
+        variantCode: String(b.variantCode || '').trim(),
+        sourceProductNo: b.sourceProductNo || null,
         sku: String(b.sku || '').trim(),
         name: String(b.name).trim(),
         phone: String(b.phone || '').trim(),
@@ -2165,11 +2542,47 @@ const server = http.createServer((req, res) => {
         reason: String(b.reason || '').trim(),
         origInvoice: String(b.origInvoice || '').trim(),
         exchangeProduct: String(b.exchangeProduct || '').trim(),
-        status: '대기', invoice: '', regDate: today()
-      });
+        exchangeSku: String(b.exchangeSku || '').trim(),
+        exchangeVariantCode: String(b.exchangeVariantCode || '').trim(),
+        exchangeProductNo: b.exchangeProductNo || null,
+        exchangeColor: String(b.exchangeColor || '').trim(),
+        exchangeSize: String(b.exchangeSize || '').trim(),
+        cafe24ClaimReasonType: String(b.cafe24ClaimReasonType || 'I'),
+        items: [{
+          orderItemCode: String(b.orderItemCode || '').trim(),
+          variantCode: String(b.variantCode || '').trim(),
+          sourceProductNo: b.sourceProductNo || null,
+          sku: String(b.sku || '').trim(),
+          product: String(b.product || '').trim(),
+          option: String(b.option || '').trim(),
+          color: String(b.color || '').trim(),
+          size: String(b.size || '').trim(),
+          qty: Math.max(1, Number(b.qty) || 1),
+          exchangeProduct: String(b.exchangeProduct || '').trim(),
+          exchangeSku: String(b.exchangeSku || '').trim(),
+          exchangeVariantCode: String(b.exchangeVariantCode || '').trim(),
+          exchangeProductNo: b.exchangeProductNo || null,
+          exchangeColor: String(b.exchangeColor || '').trim(),
+          exchangeSize: String(b.exchangeSize || '').trim()
+        }],
+        flowState: 'requested', status: '대기', invoice: '', regDate: today(), events: [], syncIssues: []
+      };
+      db.returns.push(ret);
       saveDb(db);
+      let warning = '';
+      if (sourceChannel === 'cafe24') {
+        try {
+          await cafe24WriteClaim(db, ret, 'create', {});
+          ret.flowState = 'accepted';
+          ret.status = statusForFlowState(ret.flowState);
+          if (!ret.cafe24ClaimCode) warning = '카페24 접수는 됐고 접수번호를 확인 중이에요. 잠시 뒤 자동으로 연결된 다음 회수를 신청해 주세요.';
+          saveDb(db);
+        } catch (error) {
+          warning = '배송도우미에는 저장했지만 카페24 접수 반영을 못 했어요: ' + error.message;
+        }
+      }
       audit('return.create', { ref: 'RMA-' + retId, type: b.kind === '교환' ? 'exchange' : 'return', rev: db.rev });
-      return sendJson(res, 200, { ok: true, db });
+      return sendJson(res, 200, { ok: true, db, warning });
     }
     if (url.pathname === '/api/return/pickup' && req.method === 'POST') {
       // 우체국 반품소포 접수: 집배원이 고객 집으로 방문해 회수
@@ -2178,20 +2591,75 @@ const server = http.createServer((req, res) => {
       if (!epostConfigured(db) || !db.epost) return sendJson(res, 200, { error: '먼저 설정에서 [우체국 연결]을 해주세요.' });
       const ret = db.returns.find(x => x.id === b.id);
       if (!ret) return sendJson(res, 200, { error: '해당 건을 찾지 못했어요.' });
+      if (['completed', 'canceled'].includes(ret.flowState)) return sendJson(res, 200, { error: '이미 끝났거나 취소된 건이에요.' });
       if (ret.epost) return sendJson(res, 200, { error: '이미 회수 신청이 되어 있어요.' });
+      if (ret.pickupOp && ['pending', 'unknown'].includes(ret.pickupOp.state)) {
+        return sendJson(res, 200, { error: '이전 회수 신청 결과를 확인 중이라 중복 접수하지 않았어요. [회수 진행상태 새로고침]을 눌러 주세요.' });
+      }
+      if (claimCancelUnresolved(ret)) {
+        return sendJson(res, 200, { error: '카페24 전체 취소가 아직 끝나지 않아 새 회수를 신청하지 않았어요. [전체 취소 다시 시도]를 먼저 눌러 주세요.', db });
+      }
+      const otherPickup = pickupRmaConflict(db.returns, ret);
+      if (otherPickup) return sendJson(res, 200, { error: `같은 주문의 다른 교환·반품(${otherPickup.rmaNo || 'RMA-' + otherPickup.id})에 이미 회수가 있어 중복 신청하지 않았어요.` });
       const zip = String(ret.zip || '').trim() || extractZip(ret.addr);
       if (!/^\d{5}$/.test(zip)) return sendJson(res, 200, { error: '고객 주소에서 우편번호(5자리)를 찾지 못했어요. 건을 지우고 우편번호를 넣어 다시 등록해 주세요.' });
-      const orderNo = 'HAMR' + Date.now();
+      if (ret.sourceChannel === 'cafe24') {
+        if (ret.externalPickupActive || cafe24PickupActive(ret.cafe24PickupState)) {
+          return sendJson(res, 200, { error: '카페24에서 이미 회수 신청이 진행 중이라 우체국에 중복 접수하지 않았어요. 카페24의 회수 송장과 진행상태를 확인해 주세요.', db });
+        }
+        const stage = cafe24ClaimStage(ret.cafe24OrderStatus);
+        if (!ret.cafe24ClaimCode) {
+          const createState = ret.syncOps && ret.syncOps.create && ret.syncOps.create.state;
+          if (createState !== 'failed') {
+            return sendJson(res, 200, { error: '카페24 접수번호를 확인 중이라 중복 접수하지 않았어요. 잠시 뒤 [지금 확인하기]를 눌러 주세요.', db });
+          }
+          try {
+            await cafe24WriteClaim(db, ret, 'create', {});
+          } catch (error) {
+            return sendJson(res, 200, { error: '카페24 교환·반품 접수를 먼저 맞추지 못해 우체국 회수를 시작하지 않았어요: ' + error.message, db });
+          }
+        }
+        if (ret.cafe24ClaimCode && stage === 'requested') {
+          const acceptState = ret.syncOps && ret.syncOps.accept && ret.syncOps.accept.state;
+          if (['pending', 'unknown'].includes(acceptState)) {
+            return sendJson(res, 200, { error: '카페24 승인 결과를 확인 중이라 중복 승인하지 않았어요. 잠시 뒤 [지금 확인하기]를 눌러 주세요.', db });
+          }
+          try {
+            await cafe24WriteClaim(db, ret, 'accept', {});
+          } catch (error) {
+            return sendJson(res, 200, { error: '카페24 교환·반품 신청을 승인하지 못해 우체국 회수를 시작하지 않았어요: ' + error.message, db });
+          }
+        }
+      }
+      const orderNo = 'HAMR' + String(ret.id) + '-' + Date.now();
+      ret.pickupOp = { key: ret.rmaNo + ':epost-pickup', state: 'pending', orderNo, at: new Date().toISOString() };
+      saveDb(db);
       try {
         const r = await epostInsertReturn(db, ret, orderNo, 'N');
         ret.epost = { orderNo, reqNo: r.reqNo, resNo: r.resNo, reqYmd: today().replace(/-/g, ''), stus: '01', price: r.price };
         if (r.regiNo && r.regiNo !== 'TESTREGINOAPI') ret.invoice = r.regiNo;
-        ret.status = '회수중';
+        ret.pickupOp = { key: ret.rmaNo + ':epost-pickup', state: 'success', orderNo, at: new Date().toISOString() };
+        ret.flowState = 'pickup_booked';
+        ret.status = statusForFlowState(ret.flowState);
+        appendClaimEvent(ret, 'pickup_booked', 'epost', ret.invoice || orderNo);
         saveDb(db);
+        let warning = '';
+        if (ret.sourceChannel === 'cafe24' && ret.cafe24ClaimCode) {
+          try {
+            const carrierId = await cafe24ClaimCarrierId(db, ret);
+            await cafe24WriteClaim(db, ret, 'invoice', { invoice: ret.invoice || '', carrierId });
+          } catch (error) {
+            warning = '우체국 회수는 신청됐지만 카페24 회수 송장 반영을 못 했어요: ' + error.message;
+          }
+        }
         audit('return.pickup', { ref: ret.rmaNo, rev: db.rev });
-        return sendJson(res, 200, { ok: true, db, regiNo: r.regiNo, price: r.price });
+        return sendJson(res, 200, { ok: true, db, regiNo: r.regiNo, price: r.price, warning });
       } catch (e) {
-        return sendJson(res, 200, { error: '회수 접수 실패: ' + e.message });
+        ret.pickupOp.state = 'unknown';
+        ret.pickupOp.error = e.message;
+        setClaimSyncIssue(ret, 'epost', 'pickup', e.message);
+        saveDb(db);
+        return sendJson(res, 200, { error: '회수 접수 결과를 확정하지 못했어요. 중복 방지를 위해 다시 접수하지 않았습니다: ' + e.message, db });
       }
     }
     if (url.pathname === '/api/return/cancel' && req.method === 'POST') {
@@ -2200,28 +2668,52 @@ const server = http.createServer((req, res) => {
       const db = loadDb();
       const ret = db.returns.find(x => x.id === b.id);
       if (!ret) return sendJson(res, 200, { error: '해당 건을 찾지 못했어요.' });
+      if (pickupOperationUnresolved(ret)) {
+        return sendJson(res, 200, { error: '우체국 회수 신청 결과를 아직 확인 중이라 취소하거나 지울 수 없어요. [회수 진행상태 새로고침]을 먼저 눌러 주세요.', db });
+      }
+      if (b.scope === 'reopen') {
+        if (ret.sourceChannel === 'cafe24') return sendJson(res, 200, { error: '카페24에서 취소된 건은 카페24에서 다시 신청한 뒤 자동으로 들어오게 해주세요.' });
+        ret.flowState = 'requested';
+        ret.status = statusForFlowState(ret.flowState);
+        ret.invoice = '';
+        delete ret.epost;
+        if (ret.pickupOp) ret.pickupOp.state = 'canceled';
+        appendClaimEvent(ret, 'requested', 'shipping-helper', 'reopen');
+        saveDb(db);
+        return sendJson(res, 200, { ok: true, db });
+      }
       if (b.scope === 'delete') {
-        if (ret.status === '회수중') return sendJson(res, 200, { error: '회수가 진행 중이에요. 먼저 [회수 취소]를 해주세요.' });
+        if (ret.sourceChannel === 'cafe24') return sendJson(res, 200, { error: '카페24 교환·반품 기록은 연결 이력이라 지울 수 없어요. 필요하면 [전체 취소]를 눌러 주세요.' });
+        if (ret.epost) return sendJson(res, 200, { error: '회수가 진행 중이에요. 먼저 [회수만 취소]를 해주세요.' });
         db.returns = db.returns.filter(x => x.id !== b.id);
         saveDb(db);
         return sendJson(res, 200, { ok: true, db });
       }
+      if (b.scope === 'entry' && ret.externalPickupActive) {
+        return sendJson(res, 200, { error: '카페24에서 신청한 회수는 배송도우미가 택배사 취소번호를 갖고 있지 않아 여기서 안전하게 취소할 수 없어요. 카페24에서 회수 취소 후 교환·반품을 취소하면 5분 안에 이 화면에도 반영됩니다.' });
+      }
       if (ret.epost) {
         if (!epostConfigured(db) || !db.epost) return sendJson(res, 200, { error: '우체국 연결이 필요해요.' });
         try {
-          await epostCall(db, 'api.GetResCancelCmd.jparcel', {
-            custNo: db.epost.custNo, apprNo: db.epost.apprNo, reqType: '2',
-            reqNo: ret.epost.reqNo, resNo: ret.epost.resNo,
-            regiNo: String(ret.invoice || '').replace(/\D/g, ''),
-            reqYmd: ret.epost.reqYmd, delYn: 'Y'
-          });
+          await epostCancelReturnPickup(db, ret);
         } catch (e) {
           return sendJson(res, 200, { error: '우체국 회수 취소 실패: ' + e.message + ' (반품은 운송장이 출력된 뒤에는 취소할 수 없어요. 우체국 1588-1300에 문의해 주세요)' });
         }
-        delete ret.epost;
-        ret.invoice = '';
       }
-      ret.status = b.scope === 'pickup' ? '대기' : '취소됨';
+      if (b.scope === 'entry' && ret.sourceChannel === 'cafe24' && ret.cafe24ClaimCode) {
+        try {
+          await cafe24WriteClaim(db, ret, 'cancel', { reason: String(b.reason || '배송도우미에서 전체 취소') });
+        } catch (error) {
+          ret.flowState = 'hold';
+          ret.status = statusForFlowState(ret.flowState);
+          saveDb(db);
+          return sendJson(res, 200, { error: '우체국 회수는 취소했지만 카페24 취소 반영을 못 했어요. 다시 [전체 취소]를 눌러 주세요: ' + error.message, db });
+        }
+      }
+      ret.flowState = b.scope === 'pickup' ? 'requested' : 'canceled';
+      ret.status = statusForFlowState(ret.flowState);
+      if (ret.pickupOp) ret.pickupOp.state = 'canceled';
+      appendClaimEvent(ret, ret.flowState, 'shipping-helper', b.scope || 'entry');
       saveDb(db);
       audit('return.cancel', { ref: ret.rmaNo, type: b.scope || 'entry', rev: db.rev });
       return sendJson(res, 200, { ok: true, db });
@@ -2232,41 +2724,91 @@ const server = http.createServer((req, res) => {
       const db = loadDb();
       const ret = db.returns.find(x => x.id === b.id);
       if (!ret) return sendJson(res, 200, { error: '해당 건을 찾지 못했어요.' });
-      if (ret.status === '완료') return sendJson(res, 200, { error: '이미 완료된 건이에요.' });
+      if (!canCompleteRma(ret)) return sendJson(res, 200, { error: '회수가 끝난 건만 물건 도착 처리할 수 있어요. 취소됐거나 아직 회수 전인 건은 완료로 바꾸지 않았습니다.', db });
+      if (ret.localCompleted && ['completed', 'refund_pending'].includes(ret.flowState) && !ret.syncIssues.length) {
+        return sendJson(res, 200, { error: '이미 처리된 건이에요.' });
+      }
+      const missingTargets = missingCafe24ExchangeTargets(ret);
+      if (missingTargets.length) {
+        const names = missingTargets.map(row => row.product || row.orderItemCode || '상품 정보 없음').join(', ');
+        setClaimSyncIssue(ret, 'cafe24', 'exchange-target', '교환 목표 옵션 확인 필요: ' + names);
+        saveDb(db);
+        return sendJson(res, 200, { error: '카페24 교환 목표 상품·옵션을 정확히 확인하지 못해 재발송과 완료를 멈췄어요: ' + names + '. [지금 확인하기]로 다시 동기화한 뒤 처리해 주세요.', db });
+      }
+      clearClaimSyncIssue(ret, 'cafe24', 'exchange-target');
       const out = { stock: [], resend: null };
-      ret.inspection = b.inspection === 'damaged' ? 'damaged' : 'sellable';
-      ret.inspectionAt = new Date().toISOString();
-      if (b.restock !== false && ret.product) {
-        // 옵션 텍스트("Indigoblue M" 등)에서 사이즈를 뽑아 사이즈별 재고 행에도 복귀되게
-        const optTxt = String(ret.option || '').trim();
-        const sm = optTxt.match(/(XXS|XS|S|M|L|XL|XXL|2XL|FREE|F)\s*$/i);
-        const fake = { product: ret.product + ' ' + optTxt, color: '', size: sm ? sm[1] : '', qty: ret.qty, sku: ret.sku || '' };
-        for (const inv of findStockMatches(db, fake)) {
-          const n = Number(ret.qty) || 1;
-          inv.qty += n;
-          out.stock.push({ name: [inv.name, inv.color, inv.size].filter(Boolean).join(' '), plus: n, left: inv.qty });
-          logStock(db, inv, n, ret.kind === '교환' ? '교환 회수 입고' : '반품 입고', stockLedgerRef(ret, 'return'));
+      if (!ret.localCompleted) {
+        const returnItems = returnLineItems(ret);
+        const restockPlan = b.restock === false
+          ? { rows: [], missing: [] }
+          : buildReturnRestockPlan(returnItems, item => findStockMatches(db, item));
+        if (restockPlan.missing.length) {
+          const missing = restockPlan.missing.map(row => [row.product, row.option].filter(Boolean).join(' / ')).join(', ');
+          ret.stockReviewNeeded = true;
+          setClaimSyncIssue(ret, 'inventory', 'restock', '재고 품목 매칭 필요: ' + missing);
+          saveDb(db);
+          return sendJson(res, 200, { error: '재고에서 정확한 상품·컬러·사이즈를 찾지 못해 입고 완료로 넘기지 않았어요: ' + missing + '. [재고]에서 옵션을 확인한 뒤 다시 눌러 주세요.', db });
         }
+        ret.inspection = b.inspection === 'damaged' ? 'damaged' : 'sellable';
+        ret.inspectionAt = new Date().toISOString();
+        if (b.restock !== false) {
+          for (const row of restockPlan.rows) {
+            row.inv.qty = (Number(row.inv.qty) || 0) + row.qty;
+            out.stock.push({ name: [row.inv.name, row.inv.color, row.inv.size].filter(Boolean).join(' '), plus: row.qty, left: row.inv.qty });
+            logStock(db, row.inv, row.qty, ret.kind === '교환' ? '교환 회수 입고' : '반품 입고', stockLedgerRef(ret, 'return'));
+          }
+          clearClaimSyncIssue(ret, 'inventory', 'restock');
+        }
+        if (ret.kind === '교환' && !ret.resendId && !(ret.resendIds || []).length) {
+          const resendIds = [];
+          const resendProducts = [];
+          for (const row of returnItems) {
+            const resendId = db.nextId++;
+            const product = row.exchangeProduct || row.product;
+            db.orders.push({
+              id: resendId,
+              name: ret.name, phone: ret.phone, zip: ret.zip, addr: ret.addr,
+              product,
+              option: [row.exchangeColor, row.exchangeSize].filter(Boolean).join(', ') || row.option,
+              color: row.exchangeColor || '', size: row.exchangeSize || '', qty: row.qty, msg: '교환 재발송',
+              productNo: row.exchangeProductNo || null,
+              variantCode: row.exchangeVariantCode || '',
+              sku: row.exchangeSku || '',
+              exchange: true, returnId: ret.id, parentOrderNo: ret.originalOrderNo || '',
+              sourceChannel: 'exchange', status: '대기', invoice: '', regDate: today()
+            });
+            resendIds.push(resendId);
+            resendProducts.push(product);
+          }
+          ret.resendIds = resendIds;
+          ret.resendId = resendIds[0] || null;
+          out.resend = { name: ret.name, product: resendProducts.join(', '), count: resendIds.length };
+        }
+        ret.localCompleted = true;
+        ret.stockReviewNeeded = false;
+        ret.flowState = ret.kind === '교환' ? 'reship_ready' : 'processing';
+        ret.status = statusForFlowState(ret.flowState);
+        appendClaimEvent(ret, 'received', 'shipping-helper', ret.inspection);
+        saveDb(db);
       }
-      if (ret.kind === '교환') {
-        // 교환 재발송 건은 주문 목록에 넣는다 (시딩 목록은 시트 동기화가 지워버리므로 금지)
-        const resendId = db.nextId++;
-        db.orders.push({
-          id: resendId,
-          name: ret.name, phone: ret.phone, zip: ret.zip, addr: ret.addr,
-          product: ret.exchangeProduct || ret.product, option: ret.option,
-          color: '', size: '', qty: ret.qty, msg: '교환 재발송',
-          exchange: true, returnId: ret.id, parentOrderNo: ret.originalOrderNo || '',
-          sourceChannel: 'exchange', status: '대기', invoice: '', regDate: today()
-        });
-        ret.resendId = resendId;
-        out.resend = { name: ret.name, product: ret.exchangeProduct || ret.product };
+      let warning = '';
+      const cafe24AlreadyCompleted = cafe24ClaimStage(ret.cafe24OrderStatus) === 'completed';
+      if (ret.sourceChannel === 'cafe24' && ret.cafe24ClaimCode && !cafe24AlreadyCompleted) {
+        try {
+          await cafe24WriteClaim(db, ret, 'complete', { inspection: ret.inspection });
+          ret.flowState = ret.kind === '교환' ? 'completed' : 'refund_pending';
+        } catch (error) {
+          warning = '실물 입고와 재고 처리는 끝났지만 카페24 완료 반영을 못 했어요: ' + error.message;
+        }
+      } else if (ret.sourceChannel !== 'cafe24' || cafe24AlreadyCompleted) {
+        ret.flowState = 'completed';
       }
-      ret.status = '완료';
+      ret.status = statusForFlowState(ret.flowState);
       ret.doneDate = today();
+      appendClaimEvent(ret, ret.flowState, 'shipping-helper', ret.inspection || '');
       saveDb(db);
       audit('return.complete', { ref: ret.rmaNo, status: ret.inspection, rev: db.rev });
-      return sendJson(res, 200, Object.assign({ ok: true, db }, out));
+      return sendJson(res, 200, Object.assign({ ok: true, db, warning }, out));
     }
     if (url.pathname === '/api/cafe24/disconnect' && req.method === 'POST') {
       const db = loadDb();
