@@ -1052,6 +1052,9 @@ async function markDelivered(kind, id, name) {
   const d = new Date(), p = n => String(n).padStart(2, '0');
   x.delivered = true;
   x.deliveredDate = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  x.deliverySource = 'manual';
+  x.deliveryCheckStatus = '배달완료';
+  delete x.deliveredAuto;
   await saveDb();
   render();
   toast('✔️ 배달 끝으로 표시했어요.');
@@ -1161,7 +1164,7 @@ function renderShipping() {
       <td><b>${esc(x.name)}</b></td>
       <td style="min-width:240px;max-width:480px">${pp.name}</td>
       <td>${pp.opt || '<span class="muted">-</span>'}</td>
-      <td>${chip(x.delivered ? '배달완료' : x.status)}</td>
+      <td>${chip(x.delivered ? '배달완료' : x.status)}${!x.delivered && x.status === '발송완료' && x.deliveryCheckStatus === '확인필요' ? '<br><span class="note-badge">택배사 확인 필요</span>' : ''}</td>
       <td style="max-width:150px">${invoiceCell(x.invoice, x.courier)}</td>
       <td style="white-space:nowrap"><div class="btn-col">${x.status === '발송완료'
         ? `<button class="link-btn" onclick="returnFormFrom('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id})">🔁 교환/반품</button>${!x.delivered ? `<button class="link-btn" style="font-size:0.9rem" onclick="markDelivered('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id},'${jsq(x.name)}')">✔ 배달 끝 처리</button>` : ''}`
