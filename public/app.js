@@ -1231,14 +1231,27 @@ function renderInventory() {
     const parsed = splitColor(i.name);
     return { name: parsed.base, color: i.color || parsed.color };
   };
-  // 현재 재고 요약 (전체 기준 — 검색/필터와 무관하게 항상 실제 현황)
-  const totalQty = DB.inventory.reduce((s, i) => s + (Number(i.qty) || 0), 0);
-  const zeroN = DB.inventory.filter(i => i.qty <= 0).length;
-  const lowN = DB.inventory.filter(i => i.qty > 0 && i.qty <= 2).length;
-  const prodN = new Set(DB.inventory.map(i => invParts(i).name)).size;
-  let items = q ? DB.inventory.filter(i => (i.name + ' ' + (i.color || '') + ' ' + (i.size || '')).includes(q)) : DB.inventory;
-  if (filter === 'zero') items = items.filter(i => i.qty <= 0);
-  if (filter === 'low') items = items.filter(i => i.qty > 0 && i.qty <= 2);
+  const activeInventory = DB.inventory.filter(i => !i.retiredAggregate);
+  const allGroups = new Map();
+  for (const i of activeInventory) {
+    const k = invParts(i).name;
+    if (!allGroups.has(k)) allGroups.set(k, []);
+    allGroups.get(k).push(i);
+  }
+  const groupTotal = g => {
+    const aggregate = g.filter(i => i.needsAllocation);
+    const source = aggregate.length ? aggregate : g.filter(i => !i.needsCount);
+    return source.reduce((sum, i) => sum + (Number(i.qty) || 0), 0);
+  };
+  const totalQty = [...allGroups.values()].reduce((sum, g) => sum + groupTotal(g), 0);
+  const zeroN = activeInventory.filter(i => !i.needsCount && !i.needsAllocation && Number(i.qty) === 0).length;
+  const lowN = activeInventory.filter(i => !i.needsCount && !i.needsAllocation && i.qty > 0 && i.qty <= 2).length;
+  const unknownN = activeInventory.filter(i => i.needsCount || i.needsAllocation).length;
+  const prodN = allGroups.size;
+  let items = q ? activeInventory.filter(i => (i.name + ' ' + (i.color || '') + ' ' + (i.size || '')).includes(q)) : activeInventory;
+  if (filter === 'zero') items = items.filter(i => !i.needsCount && !i.needsAllocation && Number(i.qty) === 0);
+  if (filter === 'low') items = items.filter(i => !i.needsCount && !i.needsAllocation && i.qty > 0 && i.qty <= 2);
+  if (filter === 'unknown') items = items.filter(i => i.needsCount || i.needsAllocation);
   const findP = i => (DB.products || []).find(p => p.no === i.productNo) ||
     (DB.products || []).find(p => lettersOnly(p.name) === lettersOnly(i.name));
   const gmap = new Map();
@@ -1248,12 +1261,14 @@ function renderInventory() {
     if (!gmap.has(k)) { gmap.set(k, []); groups.push(gmap.get(k)); }
     gmap.get(k).push(i);
   }
-  const stChip = i => i.qty < 0 ? `<span class="chip wait">재고 ${Math.abs(i.qty)}개 부족</span>`
+  const stChip = i => i.needsAllocation ? '<span class="chip processing">옵션별 배분 필요</span>'
+    : i.needsCount ? '<span class="chip processing">수량 입력 필요</span>'
+    : i.qty < 0 ? `<span class="chip wait">재고 ${Math.abs(i.qty)}개 부족</span>`
     : i.qty === 0 ? '<span class="chip wait">품절</span>'
     : i.qty <= 2 ? '<span class="chip processing">부족</span>'
     : '<span class="chip done">정상</span>';
   const rows = groups.map(g => {
-    const sum = g.reduce((s, i) => s + (Number(i.qty) || 0), 0);
+    const sum = groupTotal(g);
     return g.map((i, idx) => {
       const p = findP(i);
       const display = invParts(i);
@@ -1275,7 +1290,7 @@ function renderInventory() {
       <td class="sku">${esc(i.sku || '') || '<span class="muted">자동 생성 전</span>'}</td>
       <td class="qcell">
         <button class="qty-btn sm" onclick="invAdj(${i.id},-1)">−</button>
-        <span class="qty ${i.qty <= 2 ? 'low' : ''}">${i.qty}</span>
+        <span class="qty ${i.needsCount || i.qty <= 2 ? 'low' : ''}">${i.needsCount ? '?' : i.qty}</span>
         <button class="qty-btn sm" onclick="invAdj(${i.id},1)">＋</button>
       </td>
       <td style="text-align:center;width:5rem">${stChip(i)}</td>
@@ -1295,9 +1310,10 @@ function renderInventory() {
       <div class="stat"><div class="n" style="color:var(--blue)">${totalQty}</div><div class="l">현재 재고 (개)</div></div>
       <div class="stat ${lowN ? 'warn' : ''}"><div class="n" style="color:var(--orange)">${lowN}</div><div class="l">부족 (1~2개)</div></div>
       <div class="stat ${zeroN ? 'bad' : ''}"><div class="n" style="color:var(--red)">${zeroN}</div><div class="l">품절 (0개)</div></div>
+      <div class="stat ${unknownN ? 'warn' : ''}"><div class="n" style="color:var(--orange)">${unknownN}</div><div class="l">수량 확인 필요</div></div>
     </div>
     <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center; margin-bottom:0.8rem">
-      ${ftab('all', '전체')} ${ftab('low', '⚠️ 부족만')} ${ftab('zero', '🚫 품절만')}
+      ${ftab('all', '전체')} ${ftab('low', '⚠️ 부족만')} ${ftab('zero', '🚫 품절만')} ${ftab('unknown', '🔎 수량 확인')}
       <input class="search-input" style="flex:1;min-width:200px;margin:0" placeholder="🔍 제품 이름으로 찾기" value="${esc(q)}"
         oninput="window._invQ=this.value; renderInventory(); this.focus(); this.setSelectionRange(this.value.length,this.value.length)">
     </div>

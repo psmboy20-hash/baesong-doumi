@@ -11,12 +11,21 @@ const XLSX = require('xlsx');
 const seed = require('./lib/seed128');
 const {
   fulfillmentKey,
+  parcelReference,
+  selectInvoiceParcelGroup,
   inventorySku,
+  inventoryCountKnown,
+  getStockDeductions,
+  recordStockDeduction,
+  restoreStockDeductions,
+  parseLotteDeliveryStatus,
+  cafe24ReturnKey,
+  stockLedgerRef,
   ensureOperationalFields,
   applyCarrierDeliveryResult,
   splitShipmentItems
 } = require('./lib/operations');
-const { writeJsonAtomic, appendAudit } = require('./lib/storage');
+const { writeJsonAtomic, appendAudit, createMutationQueue } = require('./lib/storage');
 
 const PORT = 8899;
 // ── 접속 코드 게이트 (클라우드 서버용) ───────────────────────────────
@@ -682,6 +691,15 @@ function syncInventoryFromProducts(db) {
     if (!p.name) continue;
     if ((db.inventoryHidden || []).includes(p.no)) continue; // 사용자가 지운 제품은 다시 안 넣음
     if (Array.isArray(p.variants) && p.variants.length) {
+      const hasSizedVariants = p.variants.some(v => String(v.size || '').trim());
+      for (const aggregate of db.inventory.filter(i =>
+        !i.variantCode && !i.size && (String(i.productNo || '') === String(p.no) || lo(i.name) === lo(p.name)))) {
+        aggregate.productNo = p.no;
+        const hasAggregateStock = (Number(aggregate.qty) || 0) > 0;
+        aggregate.needsAllocation = hasSizedVariants && hasAggregateStock;
+        aggregate.retiredAggregate = hasSizedVariants && !hasAggregateStock;
+        aggregate.sku = inventorySku(aggregate);
+      }
       for (const v of p.variants) {
         let inv = db.inventory.find(i => v.variantCode && i.variantCode === v.variantCode);
         if (!inv) inv = db.inventory.find(i => String(i.productNo || '') === String(p.no) &&
@@ -694,12 +712,13 @@ function syncInventoryFromProducts(db) {
           inv.variantCode = v.variantCode;
           if (!inv.color && v.color) inv.color = v.color;
           if (!inv.size && v.size) inv.size = v.size;
+          inv.needsCount = inv.qty === null || inv.qty === undefined;
           inv.sku = inventorySku(inv);
           continue;
         }
         const item = {
-          id: db.nextId++, name: p.name, color: v.color, size: v.size, qty: 0,
-          productNo: p.no, variantCode: v.variantCode
+          id: db.nextId++, name: p.name, color: v.color, size: v.size, qty: null,
+          productNo: p.no, variantCode: v.variantCode, needsCount: true
         };
         item.sku = inventorySku(item);
         db.inventory.push(item);
@@ -715,7 +734,7 @@ function syncInventoryFromProducts(db) {
       continue;
     }
     existing.add(lo(p.name));
-    const item = { id: db.nextId++, name: p.name, color: '', size: '', qty: 0, productNo: p.no };
+    const item = { id: db.nextId++, name: p.name, color: '', size: '', qty: null, productNo: p.no, needsCount: true };
     item.sku = inventorySku(item);
     db.inventory.push(item);
     added++;
@@ -854,11 +873,11 @@ async function checkDelivered(db) {
     const no = String(it.invoice).replace(/\D/g, '');
     try {
       const html = (await fetchUrl('https://www.lotteglogis.com/home/reservation/tracking/linkView?InvNo=' + no, 0)).toString('utf8');
-      const delivered = /배달완료/.test(html);
+      const result = parseLotteDeliveryStatus(html);
       for (const arr of [db.orders, db.seeding]) {
         for (const o of arr) {
           if (String(o.invoice || '').replace(/\D/g, '') === no) {
-            applyCarrierDeliveryResult(o, { delivered, checked: true }, today());
+            applyCarrierDeliveryResult(o, result, today());
             found++;
           }
         }
@@ -1149,9 +1168,22 @@ function mergeOrders(db, parsed) {
       }
       // 이미 발송된 건의 반품(R)/교환(E) 신청 → 교환/반품 목록에 자동 등록 (한 번만)
       if (p._retKind && ex && ex.status === '발송완료') {
-        const key = 'c24:' + p.orderNo + '|' + normName(p.product) + '|' + p._retKind;
+        const key = cafe24ReturnKey(p);
         if (!Array.isArray(db.c24RetSeen)) db.c24RetSeen = [];
         if (!db.c24RetSeen.includes(key)) {
+          const legacyKey = 'c24:' + p.orderNo + '|' + normName(p.product) + '|' + p._retKind;
+          const legacyIndex = db.c24RetSeen.indexOf(legacyKey);
+          if (legacyIndex >= 0) {
+            db.c24RetSeen.splice(legacyIndex, 1, key);
+            const oldReturn = db.returns.find(ret => ret.kind === p._retKind && normName(ret.product) === normName(p.product) && !ret.originalOrderNo);
+            if (oldReturn) {
+              oldReturn.sourceId = ex.id;
+              oldReturn.originalOrderNo = p.orderNo;
+              oldReturn.sku = ex.sku || p.sku || oldReturn.sku || '';
+              oldReturn.sourceChannel = 'cafe24';
+            }
+            continue;
+          }
           db.c24RetSeen.push(key);
           const retId = db.nextId++;
           db.returns.push({
@@ -1276,7 +1308,7 @@ function buildEpostRows(db, selected) {
     const models = g.items.map(({ item }) =>
       [item.color, item.size].filter(Boolean).join(' ') || String(item.option || '').trim()
     ).filter(Boolean).join(' / ');
-    const orderNos = [...new Set(g.items.map(({ item }) => item.orderNo).filter(Boolean))].join(',');
+    const orderNos = [...new Set(g.items.map(({ type, item }) => parcelReference(type === 'seeding' ? 'seeding' : 'order', item)))].join(',');
     const msg = g.msgs.filter(Boolean).join(' / ').slice(0, 50);
     // 열 이름(공백 제거)별 값 - 양식이 바뀌어도 settings.epostColumns만 고치면 됨
     const val = {
@@ -1335,11 +1367,16 @@ function looksLikeInvoice(s) {
 }
 async function matchInvoices(db, rows) {
   // rows: 우체국 결과 엑셀 (aoa). 이름 열 + 송장 열 자동 탐지
-  let hIdx = -1, nameCol = -1, invCol = -1, phoneCol = -1;
+  let hIdx = -1, nameCol = -1, invCol = -1, phoneCol = -1, refCol = -1;
   for (let i = 0; i < Math.min(rows.length, 10); i++) {
     const nc = findCol(rows[i], ['받는분성명', '받는분', '수취인', '수령인', '받는사람', '성명', '이름']);
     const ic = findCol(rows[i], ['등기번호', '운송장', '송장', '접수번호']);
-    if (nc >= 0 && ic >= 0) { hIdx = i; nameCol = nc; invCol = ic; phoneCol = findCol(rows[i], ['전화', '연락처', '휴대']); break; }
+    if (nc >= 0 && ic >= 0) {
+      hIdx = i; nameCol = nc; invCol = ic;
+      phoneCol = findCol(rows[i], ['전화', '연락처', '휴대']);
+      refCol = findCol(rows[i], ['고객사용번호', '원주문번호', '주문번호', '오더번호']);
+      break;
+    }
   }
   if (hIdx < 0) {
     // 헤더 없이: 열 내용으로 추정
@@ -1368,24 +1405,20 @@ async function matchInvoices(db, rows) {
     }
     const nm = nameCol >= 0 ? normName(row[nameCol]) : '';
     const ph = phoneCol >= 0 ? phoneDigits(row[phoneCol]) : '';
-    if (!nm && !ph) { results.unmatched.push({ invoice: inv, name: '', reason: '이름 정보 없음' }); continue; }
-    let cand = pendings.filter(p => !p.done && normName(p.item.name) === nm);
-    if (cand.length > 1 && ph) cand = cand.filter(p => phoneDigits(p.item.phone).slice(-8) === ph.slice(-8));
-    if (cand.length >= 1) {
-      // 같은 사람 묶음 전체에 같은 송장 부여
-      for (const p of pendings) {
-        if (!p.done && normName(p.item.name) === nm &&
-            (!ph || phoneDigits(p.item.phone).slice(-8) === ph.slice(-8) || cand.length === 1)) {
-          p.item.invoice = inv;
-          p.item.courier = '우체국';
-          p.item.status = '발송완료';
-          p.item.sentDate = today();
-          p.done = true;
-          results.matched.push({ invoice: inv, name: p.item.name, type: p.type, id: p.item.id });
-        }
+    const reference = refCol >= 0 ? String(row[refCol] || '').trim() : '';
+    if (!nm && !ph && !reference) { results.unmatched.push({ invoice: inv, name: '', reason: '이름·주문번호 정보 없음' }); continue; }
+    const selected = selectInvoiceParcelGroup(pendings.filter(p => !p.done), { name: nm, phone: ph, reference });
+    if (selected.items.length) {
+      for (const p of selected.items) {
+        p.item.invoice = inv;
+        p.item.courier = '우체국';
+        p.item.status = '발송완료';
+        p.item.sentDate = today();
+        p.done = true;
+        results.matched.push({ invoice: inv, name: p.item.name, type: p.type, id: p.item.id });
       }
     } else {
-      results.unmatched.push({ invoice: inv, name: nameCol >= 0 ? String(row[nameCol] || '') : '', reason: '같은 이름의 대기 건 없음' });
+      results.unmatched.push({ invoice: inv, name: nameCol >= 0 ? String(row[nameCol] || '') : '', reason: selected.reason });
     }
   }
 
@@ -1425,7 +1458,7 @@ function stockMatches(inv, item) {
 function findStockMatches(db, item) {
   if (item.variantCode) {
     const exactVariant = db.inventory.find(inv => inv.variantCode === item.variantCode);
-    if (exactVariant) return [exactVariant];
+    return exactVariant ? [exactVariant] : [];
   }
   if (item.sku) {
     const exactSku = db.inventory.find(inv => inv.sku === item.sku);
@@ -1435,6 +1468,7 @@ function findStockMatches(db, item) {
     const sku = inventorySku(item);
     const exactProductOption = db.inventory.find(inv => inv.sku === sku);
     if (exactProductOption) return [exactProductOption];
+    if (item.size || item.color) return [];
   }
   const hits = db.inventory.filter(inv => stockMatches(inv, item));
   if (hits.length <= 1) return hits;
@@ -1455,6 +1489,35 @@ function logStock(db, inv, delta, reason, ref) {
   if (db.stockLog.length > 3000) db.stockLog = db.stockLog.slice(-3000); // 오래된 것부터 정리
 }
 
+function restoreShipmentStock(db, item, type, reason) {
+  const details = getStockDeductions(item);
+  if (details.length) {
+    const result = restoreStockDeductions(item, db.inventory);
+    for (const row of result.rows) logStock(db, row.inv, row.qty, reason, stockLedgerRef(item, type));
+    return result;
+  }
+  let restored = 0;
+  const unresolved = [];
+  if (item.stockDeducted) {
+    const restoredSkus = new Set();
+    for (const stockItem of splitShipmentItems(item)) {
+      const inv = findStockMatches(db, stockItem)[0];
+      if (!inv || restoredSkus.has(inv.sku)) continue;
+      const qty = Number(stockItem.qty) || 1;
+      inv.qty = (Number(inv.qty) || 0) + qty;
+      logStock(db, inv, qty, reason, stockLedgerRef(item, type));
+      restoredSkus.add(inv.sku);
+      restored += qty;
+    }
+    if (!restored) unresolved.push({ sku: 'LEGACY', qty: Number(item.qty) || 1 });
+  }
+  item.stockDeducted = unresolved.length > 0;
+  item.stockDeductionIncomplete = unresolved.length > 0;
+  item.stockDeductions = unresolved.map(row => row.sku);
+  item.stockDeductionDetails = unresolved;
+  return { restored, missingSkus: unresolved.map(row => row.sku) };
+}
+
 // 발송 확정된 건들의 공통 후처리 (송장매칭·API접수 양쪽에서 사용)
 async function postProcessShipped(db, matchedItems) {
   const results = {};
@@ -1462,29 +1525,37 @@ async function postProcessShipped(db, matchedItems) {
   // 1) 재고 자동 차감 (제품 이름이 재고 목록과 맞으면)
   results.stock = [];
   results.stockMissing = [];
-  for (const { item } of matchedItems) {
-    if (item.stockDeducted) continue;
+  for (const { type, item } of matchedItems) {
+    const existingDetails = getStockDeductions(item);
+    if (item.stockDeducted && !item.stockDeductionIncomplete && !existingDetails.length) continue;
     if (!item.product) continue;
-    const deducted = new Set(item.stockDeductions || []);
+    const already = new Map(existingDetails.map(row => [row.sku, row.qty]));
+    const planned = new Map();
     let missing = false;
     for (const stockItem of splitShipmentItems(item)) {
       const matches = findStockMatches(db, stockItem);
-      if (!matches.length) {
+      if (!matches.length || !inventoryCountKnown(matches[0])) {
         results.stockMissing.push({ name: item.name, product: stockItem.product, option: [stockItem.color, stockItem.size].filter(Boolean).join(' ') });
         missing = true;
         continue;
       }
       const inv = matches[0];
       const deductionKey = inv.sku || inventorySku(inv);
-      if (deducted.has(deductionKey)) continue;
       const n = Number(stockItem.qty) || 1;
-      inv.qty = (Number(inv.qty) || 0) - n;
-      results.stock.push({ sku: deductionKey, name: [inv.name, inv.color, inv.size].filter(Boolean).join(' '), minus: n, left: inv.qty });
-      logStock(db, inv, -n, '출고', item.name);
-      deducted.add(deductionKey);
+      const current = planned.get(deductionKey) || { inv, qty: 0 };
+      current.qty += n;
+      planned.set(deductionKey, current);
     }
-    item.stockDeductions = [...deducted];
-    item.stockDeducted = !missing;
+    for (const [sku, row] of planned) {
+      const n = Math.max(0, row.qty - (already.get(sku) || 0));
+      if (!n) continue;
+      row.inv.qty = (Number(row.inv.qty) || 0) - n;
+      results.stock.push({ sku, name: [row.inv.name, row.inv.color, row.inv.size].filter(Boolean).join(' '), minus: n, left: row.inv.qty });
+      logStock(db, row.inv, -n, '출고', stockLedgerRef(item, type));
+      recordStockDeduction(item, sku, n);
+    }
+    item.stockDeducted = getStockDeductions(item).length > 0;
+    item.stockDeductionIncomplete = missing;
   }
 
   // 2) 카페24에 송장번호 자동 등록 + 배송중 처리 (주문건만)
@@ -1542,9 +1613,11 @@ function sendJson(res, code, obj) {
 }
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.ico': 'image/x-icon', '.svg': 'image/svg+xml' };
 
-const server = http.createServer(async (req, res) => {
+const mutationQueue = createMutationQueue();
+const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
-  try {
+  const handle = async () => {
+    try {
     // 다른 사이트가 API를 몰래 호출하는 것 차단 — 같은 주소(same-origin)에서 온 요청만 허용
     // (localhost뿐 아니라 Tailscale 주소로 열어도 자기 자신이면 통과)
     if (req.method === 'POST') {
@@ -1601,10 +1674,12 @@ const server = http.createServer(async (req, res) => {
     // 외부 시스템은 X-Ham-Code 헤더에 접속 코드를 넣어 호출한다.
     if (url.pathname === '/api/master/inventory' && req.method === 'GET') {
       const db = loadDb();
-      const items = (db.inventory || []).map(i => ({
+      const items = (db.inventory || []).filter(i => !i.retiredAggregate).map(i => ({
         id: i.id, sku: i.sku || inventorySku(i), productNo: i.productNo || null,
         variantCode: i.variantCode || '', name: i.name,
-        color: i.color || '', size: i.size || '', qty: Number(i.qty) || 0
+        color: i.color || '', size: i.size || '',
+        qty: inventoryCountKnown(i) ? Number(i.qty) : null,
+        countKnown: inventoryCountKnown(i), needsAllocation: !!i.needsAllocation
       }));
       return sendJson(res, 200, { ok: true, source: 'baesong-doumi', rev: db.rev || 0, count: items.length, items });
     }
@@ -1645,8 +1720,20 @@ const server = http.createServer(async (req, res) => {
       if (!inv) return sendJson(res, 200, { error: '해당 재고를 찾지 못했어요.' });
       const d = Number(b.delta) || 0;
       if (!d) return sendJson(res, 200, { error: '변경할 개수가 없어요.' });
-      const before = inv.qty;
-      inv.qty = Math.max(0, inv.qty + d);
+      const before = Number(inv.qty) || 0;
+      inv.qty = Math.max(0, before + d);
+      inv.needsCount = false;
+      if (inv.variantCode && inv.productNo) {
+        const variants = db.inventory.filter(i => String(i.productNo || '') === String(inv.productNo) && i.variantCode);
+        if (variants.length && variants.every(inventoryCountKnown)) {
+          for (const aggregate of db.inventory.filter(i =>
+            String(i.productNo || '') === String(inv.productNo) && i.needsAllocation && !i.variantCode)) {
+            aggregate.qty = 0;
+            aggregate.needsAllocation = false;
+            aggregate.retiredAggregate = true;
+          }
+        }
+      }
       const applied = inv.qty - before;
       if (applied) logStock(db, inv, applied, applied > 0 ? '입고 (직접)' : '차감 (직접)', '');
       saveDb(db);
@@ -1699,7 +1786,7 @@ const server = http.createServer(async (req, res) => {
         await cafe24ExchangeCode(db, code);
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(html('카페24 연결 완료! 이 창은 닫으셔도 돼요.', true));
-        syncAll().catch(() => {});
+        mutationQueue.run(() => syncAll()).catch(() => {});
       } catch (e) {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(html('연결 실패: ' + e.message, false));
@@ -1719,7 +1806,7 @@ const server = http.createServer(async (req, res) => {
         const db = loadDb();
         if (!cafe24Configured(db)) return sendJson(res, 200, { error: '먼저 설정에 카페24 쇼핑몰 아이디, Client ID, Client Secret을 저장해 주세요.' });
         await cafe24ExchangeCode(db, code);
-        syncAll().catch(() => {});
+        mutationQueue.run(() => syncAll()).catch(() => {});
         return sendJson(res, 200, { ok: true });
       } catch (e) {
         return sendJson(res, 200, { error: e.message });
@@ -1952,18 +2039,12 @@ const server = http.createServer(async (req, res) => {
       }
       // 같은 접수(orderNo)로 묶인 항목 전부 원상복구
       const warn = [];
-      for (const arr of [db.orders, db.seeding]) {
+      const stockWarn = [];
+      for (const [type, arr] of [['order', db.orders], ['seeding', db.seeding]]) {
         for (const it of arr) {
           if (it.epost && it.epost.orderNo === item.epost.orderNo) {
-            // 재고 되돌리기
-            if (it.stockDeducted) {
-              for (const inv of findStockMatches(db, it)) {
-                const n = Number(it.qty) || 1;
-                inv.qty += n;
-                logStock(db, inv, n, '접수 취소 복구', it.name);
-              }
-              it.stockDeducted = false;
-            }
+            const restored = restoreShipmentStock(db, it, type, '접수 취소 복구');
+            if (restored.missingSkus.length) stockWarn.push(...restored.missingSkus);
             if (it.cafe24Shipped) warn.push(it.orderNo || it.name);
             // 재접수 시 새 송장이 카페24/시트에 다시 등록되도록 플래그 초기화 + 무효 송장 기억
             it.cafe24Shipped = false;
@@ -1977,9 +2058,12 @@ const server = http.createServer(async (req, res) => {
         }
       }
       saveDb(db);
+      const warnings = [];
+      if (warn.length) warnings.push(`카페24에는 이미 배송처리로 등록돼 있어요 (${warn.join(', ')}). 카페24 관리자에서 배송상태를 되돌려 주세요.`);
+      if (stockWarn.length) warnings.push(`재고 ${[...new Set(stockWarn)].join(', ')}는 목록에서 찾지 못해 자동 복구하지 못했어요. 재고 화면에서 확인해 주세요.`);
       return sendJson(res, 200, {
         ok: true, db,
-        warning: warn.length ? `카페24에는 이미 배송처리로 등록돼 있어요 (${warn.join(', ')}). 카페24 관리자에서 배송상태를 되돌려 주세요.` : null
+        warning: warnings.length ? warnings.join('\n') : null
       });
     }
     // 우편번호 즉시 조회 (화면에서 ⚠️ 뜨는 순간 자동 호출)
@@ -2137,7 +2221,7 @@ const server = http.createServer(async (req, res) => {
           const n = Number(ret.qty) || 1;
           inv.qty += n;
           out.stock.push({ name: [inv.name, inv.color, inv.size].filter(Boolean).join(' '), plus: n, left: inv.qty });
-          logStock(db, inv, n, ret.kind === '교환' ? '교환 회수 입고' : '반품 입고', ret.name);
+          logStock(db, inv, n, ret.kind === '교환' ? '교환 회수 입고' : '반품 입고', stockLedgerRef(ret, 'return'));
         }
       }
       if (ret.kind === '교환') {
@@ -2210,10 +2294,14 @@ const server = http.createServer(async (req, res) => {
       return fs.createReadStream(fpath).pipe(res);
     }
     res.writeHead(404); res.end('not found');
-  } catch (e) {
-    console.error(e);
-    sendJson(res, 500, { error: '서버 오류: ' + e.message });
-  }
+    } catch (e) {
+      console.error(e);
+      sendJson(res, 500, { error: '서버 오류: ' + e.message });
+    }
+  };
+  const mutates = req.method === 'POST' || url.pathname === '/api/cafe24/callback';
+  if (mutates) mutationQueue.run(handle);
+  else handle();
 });
 
 server.on('error', e => {
@@ -2228,8 +2316,8 @@ server.listen(PORT, '0.0.0.0', () => {
   // 모든 인터페이스에서 수신 (클라우드 서버·Tailscale 접속용; 공개 인터넷은 접속 코드 게이트가 지킴)
   console.log('배송 도우미 실행됨 → http://localhost:' + PORT);
   // 켜질 때 한 번 + 5분마다 자동으로 새 주문/시딩 확인
-  syncAll().then(({ out }) => {
+  mutationQueue.run(() => syncAll()).then(({ out }) => {
     console.log(`자동 확인: 시딩 +${out.seeding.added}, 시트주문 +${out.orders.added}, 카페24 +${out.cafe24.added}`);
   }).catch(e => console.log('자동 확인 실패:', e.message));
-  setInterval(() => syncAll().catch(() => {}), 5 * 60 * 1000);
+  setInterval(() => mutationQueue.run(() => syncAll()).catch(() => {}), 5 * 60 * 1000);
 });

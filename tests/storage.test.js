@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { writeJsonAtomic, appendAudit } = require('../lib/storage');
+const { writeJsonAtomic, appendAudit, createMutationQueue } = require('../lib/storage');
 
 test('장부 JSON은 임시 파일 없이 원자적으로 교체된다', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ham-storage-'));
@@ -33,4 +33,24 @@ test('감사 로그는 개인정보 없이 허용된 필드만 한 줄로 남긴
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('외부 접수와 장부 저장 작업은 한 번에 하나씩 실행한다', async () => {
+  const queue = createMutationQueue();
+  const events = [];
+  let releaseFirst;
+  const firstGate = new Promise(resolve => { releaseFirst = resolve; });
+  const first = queue.run(async () => {
+    events.push('first-start');
+    await firstGate;
+    events.push('first-end');
+  });
+  const second = queue.run(async () => {
+    events.push('second-start');
+  });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(events, ['first-start']);
+  releaseFirst();
+  await Promise.all([first, second]);
+  assert.deepEqual(events, ['first-start', 'first-end', 'second-start']);
 });
