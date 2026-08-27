@@ -15,6 +15,7 @@ const {
   cafe24ReturnKey,
   stockLedgerRef,
   inventoryCountKnown,
+  cafe24VariantInventory,
   variantAllocationState,
   shouldProcessStockDeduction
 } = require('../lib/operations');
@@ -152,6 +153,22 @@ test('입출고 공개 장부 참조에는 고객 이름을 쓰지 않는다', (
 test('옵션 재고는 실수량 확인 전 출고 차감 대상으로 보지 않는다', () => {
   assert.equal(inventoryCountKnown({ qty: null, needsCount: true }), false);
   assert.equal(inventoryCountKnown({ qty: 0, needsCount: false }), true);
+});
+
+test('카페24 재고관리 중인 옵션만 판매가능 수량으로 읽는다', () => {
+  assert.deepEqual(cafe24VariantInventory({
+    use_inventory: 'T', quantity: 7, safety_inventory: 2, inventory_control_type: 'A'
+  }), { tracked: true, quantity: 7, safetyInventory: 2, controlType: 'A' });
+  assert.deepEqual(cafe24VariantInventory({
+    use_inventory: 'F', quantity: 0, inventory_control_type: 'A'
+  }), { tracked: false, quantity: null, safetyInventory: null, controlType: 'A' });
+});
+
+test('카페24 embedded inventories 값을 품목 표면 값보다 우선한다', () => {
+  assert.deepEqual(cafe24VariantInventory({
+    use_inventory: 'F', quantity: 0,
+    inventories: { use_inventory: 'T', quantity: 11, safety_inventory: 3, inventory_control_type: 'B' }
+  }), { tracked: true, quantity: 11, safetyInventory: 3, controlType: 'B' });
 });
 
 test('옵션별 재고 합계가 기존 총재고와 같을 때만 전환을 완료한다', () => {

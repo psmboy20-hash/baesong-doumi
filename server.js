@@ -15,6 +15,7 @@ const {
   selectInvoiceParcelGroup,
   inventorySku,
   inventoryCountKnown,
+  cafe24VariantInventory,
   variantAllocationState,
   shouldProcessStockDeduction,
   getStockDeductions,
@@ -321,7 +322,7 @@ function cafe24AuthUrl(db) {
     client_id: s.cafe24ClientId,
     state: cafe24State,
     redirect_uri: cafe24RedirectUri(db),
-    scope: 'mall.read_order,mall.write_order'
+    scope: 'mall.read_order,mall.write_order,mall.read_product'
   });
   return `https://${s.cafe24MallId}.cafe24api.com/api/v2/oauth/authorize?${p}`;
 }
@@ -651,13 +652,14 @@ async function cafe24FetchProducts(db) {
   const token = await cafe24EnsureToken(db);
   const list = [];
   for (let offset = 0; offset < 1000; offset += 100) {
-    const r = await cafe24Fetch(db, token, `/api/v2/admin/products?limit=100&offset=${offset}&embed=variants`);
+    const r = await cafe24Fetch(db, token, `/api/v2/admin/products?limit=100&offset=${offset}&embed=variants,inventories`);
     if (r.status !== 200 || !r.json) throw new Error('제품 조회 실패(' + r.status + ')');
     const products = r.json.products || [];
     for (const p of products) {
       const productColorMatch = String(p.product_name || '').match(/\(([^()]+)\)\s*$/);
       const productColor = productColorMatch ? productColorMatch[1].trim() : '';
       const variants = (p.variants || []).map(v => {
+        const stock = cafe24VariantInventory(v);
         let color = '', size = '';
         for (const option of (v.options || [])) {
           const name = String(option.name || option.option_name || '').toLowerCase();
@@ -667,7 +669,10 @@ async function cafe24FetchProducts(db) {
         }
         return {
           variantCode: v.variant_code || '', customVariantCode: v.custom_variant_code || '',
-          color: color || productColor, size, display: v.display, selling: v.selling
+          color: color || productColor, size, display: v.display, selling: v.selling,
+          cafe24Qty: stock.quantity, cafe24StockTracked: stock.tracked,
+          cafe24SafetyInventory: stock.safetyInventory,
+          cafe24InventoryControlType: stock.controlType
         };
       });
       list.push({
@@ -682,7 +687,8 @@ async function cafe24FetchProducts(db) {
   }
   db.products = list;
   db.productsAt = today();
-  db.productsSchema = 2;
+  db.productsStockAt = new Date().toISOString();
+  db.productsSchema = 3;
   return list.length;
 }
 
@@ -719,12 +725,21 @@ function syncInventoryFromProducts(db) {
           if (!inv.color && v.color) inv.color = v.color;
           if (!inv.size && v.size) inv.size = v.size;
           inv.needsCount = inv.qty === null || inv.qty === undefined;
+          inv.cafe24Qty = v.cafe24Qty;
+          inv.cafe24StockTracked = v.cafe24StockTracked;
+          inv.cafe24SafetyInventory = v.cafe24SafetyInventory;
+          inv.cafe24InventoryControlType = v.cafe24InventoryControlType;
+          inv.cafe24StockAt = db.productsStockAt || '';
           inv.sku = inventorySku(inv);
           continue;
         }
         const item = {
           id: db.nextId++, name: p.name, color: v.color, size: v.size, qty: null,
-          productNo: p.no, variantCode: v.variantCode, needsCount: true
+          productNo: p.no, variantCode: v.variantCode, needsCount: true,
+          cafe24Qty: v.cafe24Qty, cafe24StockTracked: v.cafe24StockTracked,
+          cafe24SafetyInventory: v.cafe24SafetyInventory,
+          cafe24InventoryControlType: v.cafe24InventoryControlType,
+          cafe24StockAt: db.productsStockAt || ''
         };
         item.sku = inventorySku(item);
         db.inventory.push(item);
@@ -959,8 +974,8 @@ async function syncAll() {
     } catch (e) {
       syncStatus.cafe24 = { configured: true, connected: !!db.cafe24Token, ok: false, error: e.message, added: 0 };
     }
-    // 제품 목록(품번/사진)은 하루 한 번 갱신
-    if (!db.products || db.productsAt !== today() || db.productsSchema !== 2) {
+    const productsStockAge = Date.now() - new Date(db.productsStockAt || 0).getTime();
+    if (!db.products || db.productsSchema !== 3 || !Number.isFinite(productsStockAge) || productsStockAge >= 4 * 60 * 1000) {
       try { await cafe24FetchProducts(db); changed = true; } catch (e) { /* 다음 동기화 때 재시도 */ }
     }
   }
@@ -2290,7 +2305,8 @@ const server = http.createServer((req, res) => {
     if (fpath.startsWith(PUBLIC_DIR) && fs.existsSync(fpath) && fs.statSync(fpath).isFile()) {
       res.writeHead(200, {
         'Content-Type': MIME[path.extname(fpath)] || 'application/octet-stream',
-        'Access-Control-Allow-Origin': '*'
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'no-store, max-age=0'
       });
       return fs.createReadStream(fpath).pipe(res);
     }

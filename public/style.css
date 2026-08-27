@@ -10,7 +10,6 @@
   --line: #d8dee8;
   --text: #1c2333;
 }
-/* 큰 화면(1270px~)에선 20px, 창이 좁아지면 15px까지 자동 축소 — 줄꺾임 방지 */
 html { font-size: clamp(12px, 0.7vw + 5px, 14px); }
 body {
   font-family: "Malgun Gothic", "맑은 고딕", sans-serif;
@@ -228,14 +227,14 @@ input[type="checkbox"] { width: 1.6rem; height: 1.6rem; accent-color: var(--gree
 .inv-stats .stat.bad { border-color: #eeb1b1; background: #fff6f6; }
 .inv-zero { color: var(--red); }
 .inv-table-wrap { width: 100%; }
-.inv-table { table-layout: fixed; min-width: 880px; }
-.inv-table col.col-product { width: 31%; }
-.inv-table col.col-color { width: 11%; }
+.inv-table { table-layout: fixed; min-width: 920px; }
+.inv-table col.col-product { width: 30%; }
+.inv-table col.col-color { width: 17%; }
 .inv-table col.col-size { width: 7%; }
-.inv-table col.col-sku { width: 15%; }
-.inv-table col.col-qty { width: 13%; }
-.inv-table col.col-status { width: 15%; }
-.inv-table col.col-action { width: 8%; }
+.inv-table col.col-channel { width: 11%; }
+.inv-table col.col-qty { width: 14%; }
+.inv-table col.col-status { width: 14%; }
+.inv-table col.col-action { width: 7%; }
 .inv-table th, .inv-table td { padding: 0.48rem 0.65rem; }
 .inv-table tr.g-start td { border-top: 3px solid #dfe4ee; }
 .inv-table .inv-prod { display: flex; align-items: center; gap: 0.7rem; min-width: 0; }
@@ -243,20 +242,22 @@ input[type="checkbox"] { width: 1.6rem; height: 1.6rem; accent-color: var(--gree
 .inv-table .inv-prod .pname { font-weight: 800; overflow-wrap: anywhere; }
 .inv-table .inv-prod .popt { font-size: 0.85rem; color: #5a6478; }
 .inv-table .color { font-weight: 700; overflow-wrap: anywhere; }
+.inv-table .sku-mini { display: block; margin-top: 0.18rem; color: #7b8494; font: 600 0.72rem/1.2 Consolas, monospace; overflow-wrap: anywhere; }
 .inv-table .sz { font-weight: 800; text-align: center; }
-.inv-table .sku { color: #5a6478; font: 700 0.78rem/1.25 Consolas, monospace; overflow-wrap: anywhere; }
 .inv-table .qcell { white-space: nowrap; text-align: center; }
 .inv-table .qcell .qty { display: inline-block; min-width: 2.6rem; text-align: center; font-size: 1.25rem; font-weight: 800; vertical-align: middle; }
 .inv-table .qcell .qty.low { color: var(--red); }
+.inv-table .channel-stock { background: #f7faff; }
+.inv-table .stock-note { display: block; margin-top: 0.18rem; color: var(--orange); font-size: 0.72rem; font-weight: 700; }
 .qty-btn.sm { width: 2.1rem; height: 2.1rem; font-size: 1.15rem; border-radius: 9px; vertical-align: middle; }
 .inv-table .acts { white-space: nowrap; text-align: center; }
 @media (min-width: 1500px) {
   main { max-width: none; padding-left: 1rem; padding-right: 1rem; }
-  .inv-table col.col-product { width: 34%; }
-  .inv-table col.col-color { width: 12%; }
+  .inv-table col.col-product { width: 33%; }
+  .inv-table col.col-color { width: 17%; }
   .inv-table col.col-size { width: 7%; }
-  .inv-table col.col-sku { width: 15%; }
-  .inv-table col.col-qty { width: 12%; }
+  .inv-table col.col-channel { width: 10%; }
+  .inv-table col.col-qty { width: 13%; }
   .inv-table col.col-status { width: 13%; }
   .inv-table col.col-action { width: 7%; }
 }

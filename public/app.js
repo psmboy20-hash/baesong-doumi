@@ -1243,14 +1243,17 @@ function renderInventory() {
     const source = aggregate.length ? aggregate : g.filter(i => !i.needsCount);
     return source.reduce((sum, i) => sum + (Number(i.qty) || 0), 0);
   };
+  const c24Known = i => i.cafe24StockTracked && Number.isFinite(Number(i.cafe24Qty));
+  const groupCafeTotal = g => g.filter(c24Known).reduce((sum, i) => sum + Number(i.cafe24Qty), 0);
   const totalQty = [...allGroups.values()].reduce((sum, g) => sum + groupTotal(g), 0);
-  const zeroN = activeInventory.filter(i => !i.needsCount && !i.needsAllocation && Number(i.qty) === 0).length;
-  const lowN = activeInventory.filter(i => !i.needsCount && !i.needsAllocation && i.qty > 0 && i.qty <= 2).length;
+  const cafeTotalQty = activeInventory.filter(c24Known).reduce((sum, i) => sum + Number(i.cafe24Qty), 0);
+  const zeroN = activeInventory.filter(i => c24Known(i) && Number(i.cafe24Qty) === 0).length;
+  const lowN = activeInventory.filter(i => c24Known(i) && i.cafe24Qty > 0 && i.cafe24Qty <= 2).length;
   const unknownN = activeInventory.filter(i => i.needsCount || i.needsAllocation).length;
   const prodN = allGroups.size;
   let items = q ? activeInventory.filter(i => (i.name + ' ' + (i.color || '') + ' ' + (i.size || '')).includes(q)) : activeInventory;
-  if (filter === 'zero') items = items.filter(i => !i.needsCount && !i.needsAllocation && Number(i.qty) === 0);
-  if (filter === 'low') items = items.filter(i => !i.needsCount && !i.needsAllocation && i.qty > 0 && i.qty <= 2);
+  if (filter === 'zero') items = items.filter(i => c24Known(i) && Number(i.cafe24Qty) === 0);
+  if (filter === 'low') items = items.filter(i => c24Known(i) && i.cafe24Qty > 0 && i.cafe24Qty <= 2);
   if (filter === 'unknown') items = items.filter(i => i.needsCount || i.needsAllocation);
   const findP = i => (DB.products || []).find(p => p.no === i.productNo) ||
     (DB.products || []).find(p => lettersOnly(p.name) === lettersOnly(i.name));
@@ -1261,15 +1264,14 @@ function renderInventory() {
     if (!gmap.has(k)) { gmap.set(k, []); groups.push(gmap.get(k)); }
     gmap.get(k).push(i);
   }
-  const stChip = i => i.needsAllocation
-    ? `<span class="chip processing">${i.allocationTotal != null ? `배분 ${i.allocationTotal}/${i.allocationExpected}개` : '옵션별 배분 필요'}</span>`
-    : i.needsCount ? '<span class="chip processing">수량 입력 필요</span>'
-    : i.qty < 0 ? `<span class="chip wait">재고 ${Math.abs(i.qty)}개 부족</span>`
-    : i.qty === 0 ? '<span class="chip wait">품절</span>'
-    : i.qty <= 2 ? '<span class="chip processing">부족</span>'
-    : '<span class="chip done">정상</span>';
+  const stChip = i => !i.cafe24StockTracked
+    ? '<span class="chip processing">카페24 재고관리 안 함</span>'
+    : i.cafe24Qty === 0 ? '<span class="chip wait">판매 품절</span>'
+    : i.cafe24Qty <= 2 ? '<span class="chip processing">판매재고 부족</span>'
+    : '<span class="chip done">판매 가능</span>';
   const rows = groups.map(g => {
     const sum = groupTotal(g);
+    const cafeSum = groupCafeTotal(g);
     return g.map((i, idx) => {
       const p = findP(i);
       const display = invParts(i);
@@ -1279,20 +1281,21 @@ function renderInventory() {
           ${p && p.img ? prodImgTag(p.img).replace('class="pimg"', 'class="pimg inv-img"') : ''}
           <div>
             <div class="pname">${p ? `<span class="pname-link" onclick="window.open('${saleUrl(p.no)}','_blank')" title="판매 페이지 열기">${esc(display.name)}</span>` : esc(display.name)}</div>
-            <div class="popt">전체 아소트 · 총 <b class="${sum === 0 ? 'inv-zero' : ''}">${sum}개</b></div>
+            <div class="popt">카페24 <b class="${cafeSum === 0 ? 'inv-zero' : ''}">${cafeSum}개</b> · 실물 입력합계 <b>${sum}개</b></div>
           </div>
         </div>
       </td>` : '';
       return `
     <tr class="${idx === 0 ? 'g-start' : ''}">
       ${prodCell}
-      <td class="color">${esc(display.color) || '<span class="muted">-</span>'}</td>
+      <td class="color">${esc(display.color) || '<span class="muted">-</span>'}<span class="sku-mini">${esc(i.sku || '')}</span></td>
       <td class="sz">${esc(i.size) || '<span class="muted" style="font-weight:400">-</span>'}</td>
-      <td class="sku">${esc(i.sku || '') || '<span class="muted">자동 생성 전</span>'}</td>
+      <td class="qcell channel-stock"><span class="qty ${c24Known(i) && i.cafe24Qty <= 2 ? 'low' : ''}">${c24Known(i) ? i.cafe24Qty : '-'}</span></td>
       <td class="qcell">
         <button class="qty-btn sm" onclick="invAdj(${i.id},-1)">−</button>
         <span class="qty ${i.needsCount || i.qty <= 2 ? 'low' : ''}">${i.needsCount ? '?' : i.qty}</span>
         <button class="qty-btn sm" onclick="invAdj(${i.id},1)">＋</button>
+        ${i.needsAllocation ? `<span class="stock-note">${i.allocationTotal != null ? `배분 ${i.allocationTotal}/${i.allocationExpected}` : '옵션 배분 필요'}</span>` : i.needsCount ? '<span class="stock-note">실사 필요</span>' : ''}
       </td>
       <td style="text-align:center;width:5rem">${stChip(i)}</td>
       <td class="acts">
@@ -1305,12 +1308,13 @@ function renderInventory() {
   const ftab = (key, label) => `<button class="big-btn ${filter === key ? '' : 'gray'}" style="padding:0.45rem 1rem;font-size:0.95rem" onclick="window._invFilter='${key}';renderInventory()">${label}</button>`;
   main().innerHTML = `
     <h1>📋 재고</h1>
-    <div class="sub">남은 옷 개수예요. 옷을 보내면 <b>−</b>, 새로 들어오면 <b>＋</b>를 눌러요.</div>
+    <div class="sub"><b>카페24 판매가능</b>은 주문 시 자동으로 바뀌고, <b>실물재고</b>는 창고에서 실제로 센 수량이에요.${DB.productsStockAt ? ` <span class="muted">최근 확인 ${new Date(DB.productsStockAt).toLocaleString('ko-KR', { hour12: false })}</span>` : ''}</div>
     <div class="inv-stats">
       <div class="stat"><div class="n">${prodN}</div><div class="l">제품 종류</div></div>
-      <div class="stat"><div class="n" style="color:var(--blue)">${totalQty}</div><div class="l">현재 재고 (개)</div></div>
-      <div class="stat ${lowN ? 'warn' : ''}"><div class="n" style="color:var(--orange)">${lowN}</div><div class="l">부족 (1~2개)</div></div>
-      <div class="stat ${zeroN ? 'bad' : ''}"><div class="n" style="color:var(--red)">${zeroN}</div><div class="l">품절 (0개)</div></div>
+      <div class="stat"><div class="n" style="color:var(--blue)">${cafeTotalQty}</div><div class="l">카페24 판매가능 (개)</div></div>
+      <div class="stat"><div class="n">${totalQty}</div><div class="l">실물재고 입력합계</div></div>
+      <div class="stat ${lowN ? 'warn' : ''}"><div class="n" style="color:var(--orange)">${lowN}</div><div class="l">판매재고 부족 옵션</div></div>
+      <div class="stat ${zeroN ? 'bad' : ''}"><div class="n" style="color:var(--red)">${zeroN}</div><div class="l">판매 품절 옵션</div></div>
       <div class="stat ${unknownN ? 'warn' : ''}"><div class="n" style="color:var(--orange)">${unknownN}</div><div class="l">수량 확인 필요</div></div>
     </div>
     <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center; margin-bottom:0.8rem">
@@ -1327,8 +1331,8 @@ function renderInventory() {
     ${rows ? `
     <div class="table-wrap inv-table-wrap" style="max-height:68vh">
       <table class="inv-table">
-        <colgroup><col class="col-product"><col class="col-color"><col class="col-size"><col class="col-sku"><col class="col-qty"><col class="col-status"><col class="col-action"></colgroup>
-        <thead><tr><th>상품명</th><th>컬러</th><th style="text-align:center">사이즈</th><th>SKU</th><th style="text-align:center">현재 재고</th><th style="text-align:center">상태</th><th style="text-align:center">관리</th></tr></thead>
+        <colgroup><col class="col-product"><col class="col-color"><col class="col-size"><col class="col-channel"><col class="col-qty"><col class="col-status"><col class="col-action"></colgroup>
+        <thead><tr><th>상품명</th><th>컬러 / 품목코드</th><th style="text-align:center">사이즈</th><th style="text-align:center">카페24<br>판매가능</th><th style="text-align:center">실물재고</th><th style="text-align:center">판매 상태</th><th style="text-align:center">관리</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>` : `<div class="muted" style="font-size:1.1rem">${filter !== 'all' ? '이 조건에 맞는 제품이 없어요. ' : q ? `'${esc(q)}'(으)로 찾은 제품이 없어요. ` : '아직 등록된 제품이 없어요. '}<button class="link-btn" onclick="window._invQ='';window._invFilter='all';renderInventory()">🔄 전체 보기</button></div>`}`;
