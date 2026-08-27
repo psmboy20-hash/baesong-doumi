@@ -1245,11 +1245,14 @@ function renderInventory() {
   };
   const c24Known = i => i.cafe24StockTracked && i.cafe24Qty !== null && i.cafe24Qty !== undefined && Number.isFinite(Number(i.cafe24Qty));
   const c24Sellable = i => c24Known(i) && i.cafe24VariantActive !== false && i.cafe24Display !== 'F' && i.cafe24Selling !== 'F';
-  const c24SnapshotKnown = i => typeof i.cafe24StockTracked === 'boolean' || i.cafe24VariantActive === false;
+  const c24SnapshotComplete = rows => rows.length > 0 && rows.every(i =>
+    typeof i.cafe24StockTracked === 'boolean' && (!i.cafe24StockTracked || c24Known(i))
+  );
+  const activeCafeRows = activeInventory.filter(i => i.variantCode && i.cafe24VariantActive !== false);
   const groupCafeTotal = g => g.filter(c24Sellable).reduce((sum, i) => sum + Number(i.cafe24Qty), 0);
   const totalQty = [...allGroups.values()].reduce((sum, g) => sum + groupTotal(g), 0);
   const cafeTotalQty = activeInventory.filter(c24Sellable).reduce((sum, i) => sum + Number(i.cafe24Qty), 0);
-  const hasCafeSnapshot = activeInventory.some(c24SnapshotKnown);
+  const hasCafeSnapshot = c24SnapshotComplete(activeCafeRows);
   const zeroN = activeInventory.filter(i => c24Sellable(i) && Number(i.cafe24Qty) === 0).length;
   const lowN = activeInventory.filter(i => c24Sellable(i) && i.cafe24Qty > 0 && i.cafe24Qty <= 2).length;
   const unknownN = activeInventory.filter(i => i.needsCount || i.needsAllocation).length;
@@ -1281,6 +1284,8 @@ function renderInventory() {
   const rows = groups.map(g => {
     const sum = groupTotal(g);
     const cafeSum = groupCafeTotal(g);
+    const groupCafeRows = g.filter(i => i.variantCode && i.cafe24VariantActive !== false);
+    const groupCafeComplete = c24SnapshotComplete(groupCafeRows);
     return g.map((i, idx) => {
       const p = findP(i);
       const display = invParts(i);
@@ -1290,7 +1295,7 @@ function renderInventory() {
           ${p && p.img ? prodImgTag(p.img).replace('class="pimg"', 'class="pimg inv-img"') : ''}
           <div>
             <div class="pname">${p ? `<span class="pname-link" onclick="window.open('${saleUrl(p.no)}','_blank')" title="판매 페이지 열기">${esc(display.name)}</span>` : esc(display.name)}</div>
-            <div class="popt">카페24 <b class="${cafeSum === 0 && g.some(c24SnapshotKnown) ? 'inv-zero' : ''}">${g.some(c24SnapshotKnown) ? `${cafeSum}개` : '미확인'}</b> · 실물 입력합계 <b>${sum}개</b></div>
+            <div class="popt">카페24 <b class="${cafeSum === 0 && groupCafeComplete ? 'inv-zero' : ''}">${groupCafeComplete ? `${cafeSum}개` : '미확인'}</b> · 실물 입력합계 <b>${sum}개</b></div>
           </div>
         </div>
       </td>` : '';
@@ -1322,8 +1327,8 @@ function renderInventory() {
       <div class="stat"><div class="n">${prodN}</div><div class="l">제품 종류</div></div>
       <div class="stat"><div class="n" style="color:var(--blue)">${hasCafeSnapshot ? cafeTotalQty : '-'}</div><div class="l">카페24 판매가능 (개)</div></div>
       <div class="stat"><div class="n">${totalQty}</div><div class="l">실물재고 입력합계</div></div>
-      <div class="stat ${lowN ? 'warn' : ''}"><div class="n" style="color:var(--orange)">${lowN}</div><div class="l">판매재고 부족 옵션</div></div>
-      <div class="stat ${zeroN ? 'bad' : ''}"><div class="n" style="color:var(--red)">${zeroN}</div><div class="l">판매 품절 옵션</div></div>
+      <div class="stat ${hasCafeSnapshot && lowN ? 'warn' : ''}"><div class="n" style="color:var(--orange)">${hasCafeSnapshot ? lowN : '-'}</div><div class="l">판매재고 부족 옵션</div></div>
+      <div class="stat ${hasCafeSnapshot && zeroN ? 'bad' : ''}"><div class="n" style="color:var(--red)">${hasCafeSnapshot ? zeroN : '-'}</div><div class="l">판매 품절 옵션</div></div>
       <div class="stat ${unknownN ? 'warn' : ''}"><div class="n" style="color:var(--orange)">${unknownN}</div><div class="l">수량 확인 필요</div></div>
     </div>
     <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center; margin-bottom:0.8rem">
