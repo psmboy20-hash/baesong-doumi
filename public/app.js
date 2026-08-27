@@ -594,7 +594,10 @@ function renderSend() {
       <td style="max-width:420px">${esc(first.addr)}${noZip ? `
         <div style="margin-top:0.3rem;white-space:nowrap"><span class="note-badge">⚠️ 우편번호 없음</span>
         <input id="zip-g-${g[0].kind}-${first.id}" style="width:5.5rem;font-size:0.95rem;padding:0.25rem 0.4rem;border:2px solid var(--line);border-radius:8px" placeholder="5자리" maxlength="5">
-        <button class="link-btn" style="font-size:0.9rem" onclick="fixZipGroup('${spec}','zip-g-${g[0].kind}-${first.id}')">저장</button></div>` : ''}</td>
+        <button class="link-btn" style="font-size:0.9rem" onclick="fixZipGroup('${spec}','zip-g-${g[0].kind}-${first.id}')">저장</button></div>
+        ${first.zipLookupError
+          ? `<div style="margin-top:0.25rem;color:var(--red);font-size:0.84rem">${esc(first.zipLookupError)} <button class="link-btn" onclick="retryZip('${g[0].kind}',${first.id})">다시 찾기</button></div>`
+          : `<div class="muted" style="margin-top:0.25rem;font-size:0.84rem">주소로 자동 검색 중…</div>`}` : ''}</td>
       <td style="min-width:240px;max-width:480px">${names}</td>
       <td>${opts}</td>
       <td style="white-space:nowrap">${dupBadge}${staleBadge}${stusSet.map(s => chip(s)).join(' ')}<div class="btn-col" style="margin-top:0.3rem">${stusSet.includes('접수중') ? `<button class="link-btn" style="font-size:0.85rem" onclick="cancelExcelGroup('${spec}','${jsq(first.name)}')">↩️ 엑셀 접수 취소</button>` : ''}<button class="link-btn" style="font-size:0.85rem" onclick="manualShipGroup('${spec}','${jsq(first.name)}')">따로 보냈어요</button><button class="link-btn" style="font-size:0.85rem;color:var(--red)" onclick="cancelSendGroup('${spec}','${jsq(first.name)}')">안 보내요 ✕</button></div></td>
@@ -675,6 +678,7 @@ async function fixZip(kind, id) {
   const x = list.find(i => i.id === id);
   if (!x) return;
   x.zip = z;
+  delete x.zipLookupError;
   await saveDb();
   render();
   toast('✔️ 우편번호를 저장했어요. 이제 접수할 수 있어요.');
@@ -693,18 +697,36 @@ async function cancelExcel(kind, id, name) {
 
 // "kind:id,kind:id" 묶음 스펙 → 실제 항목들
 // 우편번호 없는 건: 화면에 뜨는 즉시 자동 조회 (건당 1회)
-async function autoZip(kind, id) {
+function zipAskKey(kind, id) {
+  const list = kind === 'seeding' ? DB.seeding : DB.orders;
+  const item = list.find(x => x.id === id);
+  return kind + ':' + id + ':' + String(item && item.addr || '').trim();
+}
+async function autoZip(kind, id, force = false) {
   window._zipAsked = window._zipAsked || new Set();
-  const key = kind + ':' + id;
-  if (window._zipAsked.has(key)) return;
+  const key = zipAskKey(kind, id);
+  if (!force && window._zipAsked.has(key)) return;
   window._zipAsked.add(key);
-  const r = await api('/api/zip/lookup', { method: 'POST', body: JSON.stringify({ type: kind, id }) });
+  const r = await api('/api/zip/lookup', { method: 'POST', body: JSON.stringify({ type: kind, id, force }) });
+  if (r && r.db) adoptDb(r.db);
   if (r && r.ok && r.zip) {
-    if (r.db) adoptDb(r.db);
     if (PAGE === 'send') render();
     toast('✔️ 우편번호를 자동으로 찾아 넣었어요: ' + r.zip, 5000);
+  } else {
+    if (!(r && r.db)) {
+      const list = kind === 'seeding' ? DB.seeding : DB.orders;
+      const item = list.find(x => x.id === id);
+      if (item) item.zipLookupError = (r && r.error) || '우편번호 조회 연결에 문제가 있어요. [다시 찾기]를 눌러 주세요.';
+    }
+    if (PAGE === 'send') render();
   }
-  // 실패(주소 불명확/키 없음)면 조용히 둠 — ⚠️ 배지에서 직접 입력
+  return r;
+}
+async function retryZip(kind, id) {
+  const key = zipAskKey(kind, id);
+  if (window._zipAsked) window._zipAsked.delete(key);
+  const r = await autoZip(kind, id, true);
+  if (!(r && r.ok && r.zip)) toast('⚠️ ' + ((r && r.error) || '주소를 확인한 뒤 다시 눌러 주세요.'), 6000);
 }
 // 전체 선택/해제 (보내기 목록)
 function selAll(v) {
@@ -732,7 +754,10 @@ async function fixZipGroup(spec, inputId) {
   const inp = document.getElementById(inputId);
   const z = (inp ? inp.value : '').replace(/\D/g, '');
   if (z.length !== 5) { toast('우편번호는 숫자 5자리예요. 예: 07997'); if (inp) inp.focus(); return; }
-  for (const { x } of specItems(spec)) x.zip = z;
+  for (const { x } of specItems(spec)) {
+    x.zip = z;
+    delete x.zipLookupError;
+  }
   await saveDb();
   render();
   toast('✔️ 우편번호를 저장했어요. 이제 접수할 수 있어요.');

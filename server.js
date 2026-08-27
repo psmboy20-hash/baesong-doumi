@@ -34,6 +34,12 @@ const {
 const { writeJsonAtomic, appendAudit, createMutationQueue } = require('./lib/storage');
 const { clientJson, mergeClientDb, accessCodeRequiredForIp } = require('./lib/security');
 const {
+  postalAddressCandidates,
+  postalZipFromDocuments,
+  postalLookupDue,
+  zipForChangedAddress
+} = require('./lib/postal');
+const {
   cafe24ClaimStage,
   statusForFlowState,
   appendClaimEvent,
@@ -66,6 +72,7 @@ const {
 } = require('./lib/claims');
 
 const PORT = 8899;
+const ZIP_LOOKUP_VERSION = 2;
 // ── 접속 코드 게이트 (클라우드 서버용) ───────────────────────────────
 const gateCrypto = require('crypto');
 let _accessCode = null;
@@ -1043,28 +1050,57 @@ function syncInventoryFromProducts(db) {
 async function kakaoZip(db, addr) {
   const key = (db.settings.kakaoRestKey || '').trim();
   if (!key) return '';
-  const q = encodeURIComponent(cleanAddr(addr).slice(0, 80));
-  const r = await httpsJson('GET', 'https://dapi.kakao.com/v2/local/search/address.json?query=' + q,
-    { Authorization: 'KakaoAK ' + key }, null);
-  const d = r.json && r.json.documents && r.json.documents[0];
-  return (d && ((d.road_address && d.road_address.zone_no) || (d.address && d.address.zip_code))) || '';
+  for (const candidate of postalAddressCandidates(addr)) {
+    const q = encodeURIComponent(candidate.query);
+    const r = await httpsJson('GET', 'https://dapi.kakao.com/v2/local/search/address.json?query=' + q,
+      { Authorization: 'KakaoAK ' + key }, null);
+    if (r.status === 401 || r.status === 403) throw new Error('카카오 주소검색 키를 다시 확인해 주세요.');
+    if (r.status !== 200) throw new Error('카카오 주소검색 응답 오류 (' + r.status + ')');
+    const docs = r.json && Array.isArray(r.json.documents) ? r.json.documents : [];
+    const zip = postalZipFromDocuments(docs);
+    if (zip) return zip;
+  }
+  return '';
+}
+function zipLookupAddressKey(addr) {
+  return gateCrypto.createHash('sha256').update(cleanAddr(addr)).digest('hex').slice(0, 16);
+}
+function clearZipLookupState(item) {
+  delete item._zipTried;
+  delete item._zipTriedAddr;
+  delete item._zipLookupVersion;
+  delete item.zipLookupError;
+}
+function markZipLookupFailure(item, message) {
+  item._zipTried = today();
+  item._zipTriedAddr = zipLookupAddressKey(item.addr);
+  item._zipLookupVersion = ZIP_LOOKUP_VERSION;
+  item.zipLookupError = message;
 }
 async function fillMissingZips(db) {
   if (!(db.settings.kakaoRestKey || '').trim()) return 0;
   const need = [...db.orders, ...db.seeding].filter(x =>
     (x.status === '대기' || x.status === '접수중') && x.addr &&
     !/^\d{5}$/.test(String(x.zip || '').trim()) && !extractZip(x.addr) &&
-    x._zipTried !== today()
+    postalLookupDue(x, today(), zipLookupAddressKey(x.addr), ZIP_LOOKUP_VERSION, false)
   ).slice(0, 5);
-  let filled = 0;
+  let changed = 0;
   for (const it of need) {
     try {
       const z = await kakaoZip(db, it.addr);
-      if (/^\d{5}$/.test(z)) { it.zip = z; filled++; }
-      else it._zipTried = today(); // 오늘은 더 안 물어봄 (내일 재시도)
-    } catch (e) { it._zipTried = today(); }
+      if (/^\d{5}$/.test(z)) {
+        it.zip = z;
+        clearZipLookupState(it);
+      } else {
+        markZipLookupFailure(it, '주소를 자동으로 찾지 못했어요. 도로명·건물번호를 확인해 주세요.');
+      }
+      changed++;
+    } catch (e) {
+      markZipLookupFailure(it, '우편번호 조회 연결에 문제가 있어요. [다시 찾기]를 눌러 주세요.');
+      changed++;
+    }
   }
-  return filled;
+  return changed;
 }
 
 // ---------- 설정 자동 배달 ----------
@@ -1462,9 +1498,18 @@ function mergeSeeding(db, parsed) {
       }
       // 내용 갱신은 아직 안 보낸 건만 — 발송완료 기록을 재신청이 덮어쓰지 않게
       if (ex.status === '대기' || ex.status === '접수중') {
-        for (const f of ['insta', 'addr', 'zip', 'product', 'size', 'request', 'note']) {
+        const addressChanged = !!(p.addr && p.addr !== ex.addr);
+        if (addressChanged) {
+          const previousZip = ex.zip;
+          ex.addr = p.addr;
+          ex.zip = zipForChangedAddress(previousZip, p.zip);
+          clearZipLookupState(ex);
+          ch = true;
+        }
+        for (const f of ['insta', 'product', 'size', 'request', 'note']) {
           if (p[f] && p[f] !== ex[f]) { ex[f] = p[f]; ch = true; }
         }
+        if (!addressChanged && p.zip && p.zip !== ex.zip) { ex.zip = p.zip; ch = true; }
       }
       if (ch) updated++;
     } else {
@@ -1640,8 +1685,20 @@ function mergeOrders(db, parsed) {
       }
       // 아직 안 보낸 건은 주소/연락처/옵션 변경을 최신으로 반영
       if (!shipped && ex.status !== '발송완료' && ex.status !== '취소됨') {
-        for (const f of ['addr', 'zip', 'phone', 'msg', 'option', 'color', 'size', 'qty']) {
+        const addressChanged = !!(p.addr && String(p.addr) !== String(ex.addr || ''));
+        if (addressChanged) {
+          const previousZip = ex.zip;
+          ex.addr = p.addr;
+          ex.zip = zipForChangedAddress(previousZip, p.zip);
+          clearZipLookupState(ex);
+          ch = true;
+        }
+        for (const f of ['phone', 'msg', 'option', 'color', 'size', 'qty']) {
           if (p[f] != null && String(p[f]) !== '' && String(p[f]) !== String(ex[f] ?? '')) { ex[f] = p[f]; ch = true; }
+        }
+        if (!addressChanged && /^\d{5}$/.test(String(p.zip || '').trim()) && String(p.zip) !== String(ex.zip || '')) {
+          ex.zip = p.zip;
+          ch = true;
         }
       }
       // 취소 철회 복구는 카페24가 다시 정상 주문으로 보내줄 때만 (시트 잔여 행/앱에서 손으로 취소한 건은 제외)
@@ -2466,17 +2523,34 @@ const server = http.createServer((req, res) => {
       const x = list.find(i => i.id === b.id);
       if (!x) return sendJson(res, 200, { error: '건을 찾지 못했어요.' });
       if (/^\d{5}$/.test(String(x.zip || '').trim())) return sendJson(res, 200, { ok: true, zip: x.zip });
-      if (!(db.settings.kakaoRestKey || '').trim()) return sendJson(res, 200, { error: 'nokey' });
+      if (!(db.settings.kakaoRestKey || '').trim()) {
+        x.zipLookupError = '우편번호 자동 검색이 꺼져 있어요. 설정에서 카카오 키를 확인해 주세요.';
+        saveDb(db);
+        return sendJson(res, 200, { error: x.zipLookupError, db });
+      }
+      const addressKey = zipLookupAddressKey(x.addr);
+      if (!postalLookupDue(x, today(), addressKey, ZIP_LOOKUP_VERSION, b.force === true)) {
+        return sendJson(res, 200, {
+          error: x.zipLookupError || '오늘 확인한 주소예요. 주소를 고쳤다면 [다시 찾기]를 눌러 주세요.',
+          skipped: true,
+          db
+        });
+      }
       try {
         const z = await kakaoZip(db, x.addr);
         if (/^\d{5}$/.test(z)) {
           x.zip = z;
+          clearZipLookupState(x);
           saveDb(db);
           return sendJson(res, 200, { ok: true, zip: z, db });
         }
-        return sendJson(res, 200, { error: '주소로 우편번호를 못 찾았어요. 직접 5자리를 입력해 주세요.' });
+        markZipLookupFailure(x, '주소를 자동으로 찾지 못했어요. 도로명·건물번호를 확인해 주세요.');
+        saveDb(db);
+        return sendJson(res, 200, { error: x.zipLookupError, db });
       } catch (e) {
-        return sendJson(res, 200, { error: '우편번호 조회 실패 — 잠시 뒤 다시 시도돼요.' });
+        markZipLookupFailure(x, '우편번호 조회 연결에 문제가 있어요. [다시 찾기]를 눌러 주세요.');
+        saveDb(db);
+        return sendJson(res, 200, { error: x.zipLookupError, db });
       }
     }
     // ---------- 백업 ----------
