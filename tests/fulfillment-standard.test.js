@@ -15,7 +15,8 @@ const {
   cafe24ReturnKey,
   stockLedgerRef,
   inventoryCountKnown,
-  variantAllocationState
+  variantAllocationState,
+  shouldProcessStockDeduction
 } = require('../lib/operations');
 
 test('같은 주문번호의 두 품목은 한 포장으로 묶는다', () => {
@@ -161,4 +162,18 @@ test('옵션별 재고 합계가 기존 총재고와 같을 때만 전환을 완
   assert.deepEqual(variantAllocationState(aggregate, [{ qty: 2, needsCount: false }, { qty: 2, needsCount: false }]), {
     complete: true, matches: false, expected: 5, total: 4
   });
+  assert.deepEqual(variantAllocationState({ qty: 5, color: 'Blue' }, [
+    { qty: 2, color: 'Blue', needsCount: false },
+    { qty: 3, color: 'Blue', needsCount: false },
+    { qty: 3, color: 'Ivory', needsCount: false }
+  ]), { complete: true, matches: true, expected: 5, total: 5 });
+});
+
+test('과거 출고 취소 후 재발송은 재고를 다시 차감하지 않는다', () => {
+  assert.equal(shouldProcessStockDeduction({
+    stockDeducted: true,
+    stockDeductionIncomplete: false,
+    stockDeductionDetails: [],
+    legacyStockUnverified: true
+  }), false);
 });

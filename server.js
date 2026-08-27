@@ -16,6 +16,7 @@ const {
   inventorySku,
   inventoryCountKnown,
   variantAllocationState,
+  shouldProcessStockDeduction,
   getStockDeductions,
   recordStockDeduction,
   restoreStockDeductions,
@@ -654,6 +655,8 @@ async function cafe24FetchProducts(db) {
     if (r.status !== 200 || !r.json) throw new Error('제품 조회 실패(' + r.status + ')');
     const products = r.json.products || [];
     for (const p of products) {
+      const productColorMatch = String(p.product_name || '').match(/\(([^()]+)\)\s*$/);
+      const productColor = productColorMatch ? productColorMatch[1].trim() : '';
       const variants = (p.variants || []).map(v => {
         let color = '', size = '';
         for (const option of (v.options || [])) {
@@ -664,7 +667,7 @@ async function cafe24FetchProducts(db) {
         }
         return {
           variantCode: v.variant_code || '', customVariantCode: v.custom_variant_code || '',
-          color, size, display: v.display, selling: v.selling
+          color: color || productColor, size, display: v.display, selling: v.selling
         };
       });
       list.push({
@@ -696,6 +699,8 @@ function syncInventoryFromProducts(db) {
       for (const aggregate of db.inventory.filter(i =>
         !i.variantCode && !i.size && (String(i.productNo || '') === String(p.no) || lo(i.name) === lo(p.name)))) {
         aggregate.productNo = p.no;
+        const productColorMatch = String(p.name || '').match(/\(([^()]+)\)\s*$/);
+        if (!aggregate.color && productColorMatch) aggregate.color = productColorMatch[1].trim();
         const hasAggregateStock = (Number(aggregate.qty) || 0) > 0;
         aggregate.needsAllocation = hasSizedVariants && hasAggregateStock;
         aggregate.retiredAggregate = hasSizedVariants && !hasAggregateStock;
@@ -1498,9 +1503,10 @@ function restoreShipmentStock(db, item, type, reason) {
     return result;
   }
   if (item.stockDeducted) {
-    item.stockDeductionIncomplete = true;
-    item.stockDeductions = ['LEGACY'];
-    item.stockDeductionDetails = [{ sku: 'LEGACY', qty: Number(item.qty) || 1 }];
+    item.stockDeductionIncomplete = false;
+    item.stockDeductions = [];
+    item.stockDeductionDetails = [];
+    item.legacyStockUnverified = true;
     return { restored: 0, missingSkus: ['과거 출고 기록'] };
   }
   return { restored: 0, missingSkus: [] };
@@ -1515,7 +1521,7 @@ async function postProcessShipped(db, matchedItems) {
   results.stockMissing = [];
   for (const { type, item } of matchedItems) {
     const existingDetails = getStockDeductions(item);
-    if (item.stockDeducted && !item.stockDeductionIncomplete && !existingDetails.length) continue;
+    if (!shouldProcessStockDeduction(item)) continue;
     if (!item.product) continue;
     const already = new Map(existingDetails.map(row => [row.sku, row.qty]));
     const planned = new Map();
@@ -2053,7 +2059,9 @@ const server = http.createServer((req, res) => {
       saveDb(db);
       const warnings = [];
       if (warn.length) warnings.push(`카페24에는 이미 배송처리로 등록돼 있어요 (${warn.join(', ')}). 카페24 관리자에서 배송상태를 되돌려 주세요.`);
-      if (stockWarn.length) warnings.push(`재고 ${[...new Set(stockWarn)].join(', ')}는 목록에서 찾지 못해 자동 복구하지 못했어요. 재고 화면에서 확인해 주세요.`);
+      if (stockWarn.includes('과거 출고 기록')) warnings.push('예전 출고 건은 어떤 SKU를 차감했는지 확실하지 않아 재고를 자동으로 늘리지 않았어요. 재고 화면에서 직접 확인해 주세요.');
+      const missingStock = [...new Set(stockWarn.filter(value => value !== '과거 출고 기록'))];
+      if (missingStock.length) warnings.push(`재고 ${missingStock.join(', ')}는 목록에서 찾지 못해 자동 복구하지 못했어요. 재고 화면에서 확인해 주세요.`);
       return sendJson(res, 200, {
         ok: true, db,
         warning: warnings.length ? warnings.join('\n') : null
