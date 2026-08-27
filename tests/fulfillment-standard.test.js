@@ -176,6 +176,10 @@ test('카페24 embedded inventories 값을 품목 표면 값보다 우선한다'
     use_inventory: 'F', quantity: 0,
     inventories: { use_inventory: 'T', quantity: 11, safety_inventory: 3, inventory_control_type: 'B' }
   }), { tracked: true, quantity: 11, safetyInventory: 3, controlType: 'B' });
+  assert.deepEqual(cafe24VariantInventory({
+    use_inventory: 'T', quantity: 9,
+    inventories: { use_inventory: 'T', quantity: null }
+  }), { tracked: true, quantity: null, safetyInventory: null, controlType: '' });
 });
 
 test('카페24에서 사라진 옵션은 이전 판매가능 수량을 남기지 않는다', () => {
