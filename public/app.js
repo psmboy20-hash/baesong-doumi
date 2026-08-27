@@ -1282,9 +1282,10 @@ function renderInventory() {
     : i.cafe24Qty <= 2 ? '<span class="chip processing">판매재고 부족</span>'
     : '<span class="chip done">판매 가능</span>';
   const rows = groups.map(g => {
-    const sum = groupTotal(g);
-    const cafeSum = groupCafeTotal(g);
-    const groupCafeRows = g.filter(i => i.variantCode && i.cafe24VariantActive !== false);
+    const fullGroup = allGroups.get(invParts(g[0]).name) || g;
+    const sum = groupTotal(fullGroup);
+    const cafeSum = groupCafeTotal(fullGroup);
+    const groupCafeRows = fullGroup.filter(i => i.variantCode && i.cafe24VariantActive !== false);
     const groupCafeComplete = c24SnapshotComplete(groupCafeRows);
     return g.map((i, idx) => {
       const p = findP(i);

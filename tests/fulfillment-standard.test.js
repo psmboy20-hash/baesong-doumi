@@ -166,6 +166,9 @@ test('카페24 재고관리 중인 옵션만 판매가능 수량으로 읽는다
   assert.deepEqual(cafe24VariantInventory({ use_inventory: 'T' }), {
     tracked: true, quantity: null, safetyInventory: null, controlType: ''
   });
+  assert.deepEqual(cafe24VariantInventory({ use_inventory: 'T', quantity: null }), {
+    tracked: true, quantity: null, safetyInventory: null, controlType: ''
+  });
 });
 
 test('카페24 embedded inventories 값을 품목 표면 값보다 우선한다', () => {
