@@ -1287,6 +1287,8 @@ function renderInventory() {
     const cafeSum = groupCafeTotal(fullGroup);
     const groupCafeRows = fullGroup.filter(i => i.variantCode && i.cafe24VariantActive !== false);
     const groupCafeComplete = c24SnapshotComplete(groupCafeRows);
+    const groupCafeManaged = groupCafeRows.some(i => i.cafe24StockTracked === true);
+    const groupCafeLabel = !groupCafeComplete ? '미확인' : groupCafeManaged ? `${cafeSum}개` : '관리 안 함';
     return g.map((i, idx) => {
       const p = findP(i);
       const display = invParts(i);
@@ -1296,7 +1298,7 @@ function renderInventory() {
           ${p && p.img ? prodImgTag(p.img).replace('class="pimg"', 'class="pimg inv-img"') : ''}
           <div>
             <div class="pname">${p ? `<span class="pname-link" onclick="window.open('${saleUrl(p.no)}','_blank')" title="판매 페이지 열기">${esc(display.name)}</span>` : esc(display.name)}</div>
-            <div class="popt">카페24 <b class="${cafeSum === 0 && groupCafeComplete ? 'inv-zero' : ''}">${groupCafeComplete ? `${cafeSum}개` : '미확인'}</b> · 실물 입력합계 <b>${sum}개</b></div>
+            <div class="popt">카페24 <b class="${cafeSum === 0 && groupCafeComplete && groupCafeManaged ? 'inv-zero' : ''}">${groupCafeLabel}</b> · 실물 입력합계 <b>${sum}개</b></div>
           </div>
         </div>
       </td>` : '';
@@ -1323,7 +1325,7 @@ function renderInventory() {
   const ftab = (key, label) => `<button class="big-btn ${filter === key ? '' : 'gray'}" style="padding:0.45rem 1rem;font-size:0.95rem" onclick="window._invFilter='${key}';renderInventory()">${label}</button>`;
   main().innerHTML = `
     <h1>📋 재고</h1>
-    <div class="sub"><b>카페24 판매가능</b>은 주문 시 자동으로 바뀌고, <b>실물재고</b>는 창고에서 실제로 센 수량이에요.${DB.productsStockAt ? ` <span class="muted">최근 확인 ${new Date(DB.productsStockAt).toLocaleString('ko-KR', { hour12: false })}</span>` : ''}</div>
+    <div class="sub"><b>카페24 판매가능</b>은 주문 시 자동으로 바뀌고(재고관리 안 함 제외), <b>실물재고</b>는 창고에서 실제로 센 수량이에요.${DB.productsStockAt ? ` <span class="muted">최근 확인 ${new Date(DB.productsStockAt).toLocaleString('ko-KR', { hour12: false })}</span>` : ''}</div>
     <div class="inv-stats">
       <div class="stat"><div class="n">${prodN}</div><div class="l">제품 종류</div></div>
       <div class="stat"><div class="n" style="color:var(--blue)">${hasCafeSnapshot ? cafeTotalQty : '-'}</div><div class="l">카페24 판매가능 (개)</div></div>
