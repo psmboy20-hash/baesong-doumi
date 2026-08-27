@@ -87,6 +87,28 @@ function shipmentGroups(items, itemOf) {
 function shipmentCount(items, itemOf) {
   return shipmentGroups(items, itemOf).length;
 }
+function shipmentProductKey(x) {
+  const product = String(x.product || '')
+    .replace(/\(P[A-Z0-9]+\)/gi, '')
+    .replace(/\s+/g, '').toLowerCase();
+  const color = String(x.color || '').replace(/[^a-z0-9가-힣]/gi, '').toLowerCase();
+  const size = String(x.size || '').replace(/\s+/g, '').toUpperCase();
+  return product + '|' + color + '|' + size;
+}
+function productQuantity(items, itemOf) {
+  const pick = itemOf || (x => x);
+  let total = 0;
+  for (const group of shipmentGroups(items, itemOf)) {
+    const products = new Map();
+    for (const entry of group) {
+      const item = pick(entry);
+      const key = shipmentProductKey(item);
+      products.set(key, Math.max(products.get(key) || 0, Number(item.qty) || 1));
+    }
+    total += [...products.values()].reduce((sum, qty) => sum + qty, 0);
+  }
+  return total;
+}
 function selectedShipmentCount(selected) {
   const items = selected.map(sel => {
     const list = sel.type === 'seeding' ? DB.seeding : DB.orders;
@@ -328,6 +350,7 @@ function renderHome() {
   const ym = _d.getFullYear() + '-' + String(_d.getMonth() + 1).padStart(2, '0');
   const sentThis = all.filter(x => x.status === '발송완료' && (x.sentDate || '').startsWith(ym));
   const sentThisCount = shipmentCount(sentThis);
+  const sentProductQty = productQuantity(sentThis);
   const seenNo = new Set();
   let cost = 0;
   for (const x of sentThis) {
@@ -358,7 +381,7 @@ function renderHome() {
         ${problem ? `<div class="flow-arrow" style="color:#e3e8f2">|</div>${flowTile('⚠️', '기사님이 못 가져감', problem, 'epost', true)}` : ''}
       </div>
       <div class="hint" style="margin:0.9rem 0 0; font-size:1.05rem">
-        📅 <b>이번 달(${Number(ym.slice(5))}월)</b>: 보낸 택배 <b>${sentThisCount}건</b>
+        📅 <b>이번 달(${Number(ym.slice(5))}월)</b>: 보낸 택배 <b>${sentThisCount}건</b> · 상품 <b>${sentProductQty}개</b>
         · 택배비 <b>${cost.toLocaleString()}원</b> <span class="muted" style="font-size:0.85rem">(우체국 앱 접수 기준)</span>
         · 배달완료 <b>${dlvThis}건</b>${retThis ? ` · 교환/반품 <b>${retThis}건</b>` : ''}
       </div>
@@ -385,7 +408,6 @@ function renderHome() {
 function dashGrid(all) {
   const ym = new Date().getFullYear() + '-' + String(new Date().getMonth() + 1).padStart(2, '0');
   // 채널 구분: 앞으로 29CM·무신사 등이 여기에 늘어난다
-  const chanOf = x => x._chan === 'seeding' ? '시딩' : (x.orderNo ? '카페24' : '직접 등록');
   const tagged = [
     ...DB.orders.map(x => ({ ...x, _chan: 'order' })),
     ...DB.seeding.map(x => ({ ...x, _chan: 'seeding' }))
@@ -395,13 +417,22 @@ function dashGrid(all) {
   const gooOk = SYNC_STATUS && SYNC_STATUS.google && SYNC_STATUS.google.ok;
   const epOk = SYNC_STATUS && SYNC_STATUS.epost && SYNC_STATUS.epost.connected;
   const chanDot = { '카페24': c24ok ? 'on' : 'off', '시딩': gooOk ? 'on' : 'off', '직접 등록': 'na' };
+  const channelOfGroup = group => {
+    if (group.some(x => x._chan === 'order' && x.orderNo)) return '카페24';
+    if (group.some(x => x._chan === 'seeding')) return '시딩';
+    return '직접 등록';
+  };
+  const waitingGroups = shipmentGroups(tagged.filter(x => x.status === '대기' || x.status === '접수중'));
+  const sentGroups = shipmentGroups(tagged.filter(x => x.status === '발송완료' && (x.sentDate || '').startsWith(ym)));
   const chanRows = chans.map(c => {
-    const mine = tagged.filter(x => chanOf(x) === c);
-    const wait = shipmentCount(mine.filter(x => x.status === '대기' || x.status === '접수중'));
-    const sent = shipmentCount(mine.filter(x => x.status === '발송완료' && (x.sentDate || '').startsWith(ym)));
+    const waiting = waitingGroups.filter(g => channelOfGroup(g) === c).flat();
+    const sentItems = sentGroups.filter(g => channelOfGroup(g) === c).flat();
+    const wait = shipmentCount(waiting);
+    const sent = shipmentCount(sentItems);
+    const sentQty = productQuantity(sentItems);
     return `<div class="chan-row">
       <span class="dot ${chanDot[c]}"></span><span class="cname">${c}</span>
-      <span class="cstat">${wait ? `<b style="color:#b0640f">보낼 것 ${wait}</b> · ` : ''}이달 보냄 <b>${sent}</b></span>
+      <span class="cstat">${wait ? `<b style="color:#b0640f">보낼 택배 ${wait}건</b> · ` : ''}이달 <b>택배 ${sent}건</b> · 상품 ${sentQty}개</span>
     </div>`;
   }).join('');
   // 7일 발송 추이
@@ -436,7 +467,7 @@ function dashGrid(all) {
       <div class="chan-row soon"><span class="dot na"></span><span class="cname">무신사</span><span class="cstat muted">연결 준비 중</span></div>
     </div>
     <div class="card">
-      <div class="dash-title">📈 최근 7일 발송</div>
+      <div class="dash-title">📈 최근 7일 택배 발송</div>
       <div class="vbar-wrap">${bars}</div>
     </div>
     <div class="card">
@@ -480,7 +511,9 @@ function renderSend() {
     gmap.get(key).push(p);
   }
   const groupsArr = [...gmap.values()];
-  const selCount = groupsArr.filter(g => g.every(p => p.x._sel !== false)).length;
+  const selectedGroups = groupsArr.filter(g => g.every(p => p.x._sel !== false));
+  const selCount = selectedGroups.length;
+  const selProductQty = productQuantity(selectedGroups.flat(), entry => entry.x);
   const c24 = SYNC_STATUS && SYNC_STATUS.cafe24;
   const goo = SYNC_STATUS && SYNC_STATUS.google;
   const gline = !goo || goo.ok == null ? ''
@@ -500,6 +533,7 @@ function renderSend() {
 
   const rows = groupsArr.map(g => {
     const first = g[0].x;
+    const groupProductQty = productQuantity(g, entry => entry.x);
     const spec = g.map(p => p.kind + ':' + p.x.id).join(',');
     const allSel = g.every(p => p.x._sel !== false);
     const kinds = [...new Set(g.map(p => p.x.exchange ? '🔁 교환' : p.kind === 'seeding' ? '🎁 시딩' : '🛒 주문'))].join('<br>');
@@ -517,7 +551,7 @@ function renderSend() {
     <tr class="${allSel ? 'checked-row' : ''}">
       <td><input type="checkbox" ${allSel ? 'checked' : ''} onchange="toggleSelGroup('${spec}',this.checked)"></td>
       <td style="white-space:nowrap">${kinds}</td>
-      <td><b>${esc(first.name)}</b>${first.insta ? `<br><span class="muted" style="font-size:0.85rem">${esc(first.insta)}</span>` : ''}${g.length > 1 ? `<br><span class="note-badge">📦 ${g.length}개 → 택배 1건</span>` : ''}</td>
+      <td><b>${esc(first.name)}</b>${first.insta ? `<br><span class="muted" style="font-size:0.85rem">${esc(first.insta)}</span>` : ''}<br><span class="note-badge">📦 택배 1건 · 상품 ${groupProductQty}개</span></td>
       <td>${esc(first.phone)}</td>
       <td style="max-width:420px">${esc(first.addr)}${noZip ? `
         <div style="margin-top:0.3rem;white-space:nowrap"><span class="note-badge">⚠️ 우편번호 없음</span>
@@ -564,6 +598,7 @@ function renderSend() {
           : `<button class="big-btn green" onclick="doExportAll()">📄 택배 ${selCount}건 우체국 엑셀 만들기</button>`}
         <button class="big-btn orange" onclick="window.open('/pick.html','_blank')">📋 오늘 쌀 목록 인쇄</button>
       </div>
+      <div class="hint" style="margin-top:0.9rem"><b>현재 선택:</b> 택배 <b>${selCount}건</b> · 포장할 상품 <b>${selProductQty}개</b></div>
       <div id="export-result"></div>` : `
       <div class="hint" style="font-size:1.1rem">지금은 보낼 것이 없어요. 새 주문·신청이 들어오면 여기에 자동으로 나타나요. 😊</div>`}
     </div>
