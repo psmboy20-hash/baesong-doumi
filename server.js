@@ -9,6 +9,12 @@ const https = require('https');
 const { exec } = require('child_process');
 const XLSX = require('xlsx');
 const seed = require('./lib/seed128');
+const {
+  fulfillmentKey,
+  inventorySku,
+  ensureOperationalFields,
+  applyCarrierDeliveryResult
+} = require('./lib/operations');
 
 const PORT = 8899;
 // ── 접속 코드 게이트 (클라우드 서버용) ───────────────────────────────
@@ -160,6 +166,7 @@ function loadDb() {
     db.settings = Object.assign(def.settings, db.settings || {});
     for (const k of ['seeding', 'orders', 'inventory', 'returns', 'inventoryHidden']) if (!Array.isArray(db[k])) db[k] = [];
     if (!db.nextId) db.nextId = 1;
+    ensureOperationalFields(db);
     return db;
   } catch (e) {
     return defaultDb();
@@ -1139,7 +1146,6 @@ function mergeOrders(db, parsed) {
 }
 
 // ---------- 우체국 엑셀 생성 ----------
-// 수령인 기준으로 묶기 (주문 여러 건 → 택배 1건)
 function buildParcelGroups(db, selected) {
   const groups = new Map();
   const pick = [];
@@ -1170,7 +1176,8 @@ function buildParcelGroups(db, selected) {
     pick.push({ type: sel.type, item });
   }
   for (const { type, item } of pick) {
-    const gk = normName(item.name) + '|' + phoneDigits(item.phone) + '|' + cleanAddr(item.addr).slice(0, 15);
+    const itemType = type === 'seeding' ? 'seeding' : 'order';
+    const gk = fulfillmentKey(itemType, item);
     if (!groups.has(gk)) groups.set(gk, { items: [], type, name: item.name, phone: item.phone, addr: item.addr, zip: item.zip, msgs: [] });
     const g = groups.get(gk);
     g.items.push({ type, item });
@@ -1711,6 +1718,44 @@ const server = http.createServer(async (req, res) => {
       item.resendOk = true;
       saveDb(db);
       return sendJson(res, 200, { ok: true, db });
+    }
+    if (url.pathname === '/api/packing/merge' && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req)).toString('utf8'));
+      const db = loadDb();
+      const picked = [];
+      for (const sel of (b.selected || [])) {
+        const type = sel.type === 'seeding' ? 'seeding' : 'order';
+        const list = type === 'seeding' ? db.seeding : db.orders;
+        const item = list.find(x => x.id === Number(sel.id));
+        if (item && (item.status === '대기' || item.status === '접수중')) picked.push({ type, item });
+      }
+      if (picked.length < 2) return sendJson(res, 200, { error: '묶을 출고를 두 개 이상 선택해 주세요.' });
+      const recipientKeys = new Set(picked.map(({ item }) =>
+        normName(item.name) + '|' + phoneDigits(item.phone) + '|' + cleanAddr(item.addr)
+      ));
+      if (recipientKeys.size !== 1) return sendJson(res, 200, { error: '받는 사람·연락처·주소가 모두 같은 것만 한 비닐로 묶을 수 있어요.' });
+      const before = new Set(picked.map(({ type, item }) => fulfillmentKey(type, item)));
+      if (before.size < 2) return sendJson(res, 200, { error: '이미 한 비닐로 묶여 있어요.' });
+      const packGroupId = 'PACK-' + Date.now().toString(36).toUpperCase();
+      for (const { item } of picked) item.packGroupId = packGroupId;
+      saveDb(db);
+      return sendJson(res, 200, { ok: true, packGroupId, count: picked.length, db });
+    }
+    if (url.pathname === '/api/packing/unmerge' && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req)).toString('utf8'));
+      const db = loadDb();
+      const packGroupId = String(b.packGroupId || '').trim();
+      if (!packGroupId) return sendJson(res, 200, { error: '합포장 번호가 없어요.' });
+      let count = 0;
+      for (const item of [...db.orders, ...db.seeding]) {
+        if (item.packGroupId === packGroupId && (item.status === '대기' || item.status === '접수중')) {
+          delete item.packGroupId;
+          count++;
+        }
+      }
+      if (!count) return sendJson(res, 200, { error: '풀 수 있는 합포장 건을 찾지 못했어요.' });
+      saveDb(db);
+      return sendJson(res, 200, { ok: true, count, db });
     }
     if (url.pathname === '/api/manual-ship' && req.method === 'POST') {
       // 앱 밖에서(우체국 창구, 다른 택배 등) 따로 보낸 건을 발송완료로 정리

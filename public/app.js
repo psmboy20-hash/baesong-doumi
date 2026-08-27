@@ -72,7 +72,16 @@ function shipmentKey(x) {
   if (x.invoice) return 'invoice|' + String(x.invoice).replace(/\D/g, '') + '|' + shipmentRecipientKey(x);
   if (x.status === '발송완료') return 'sent|' + String(x.sentDate || '') + '|' + shipmentRecipientKey(x);
   if (x.status === '취소됨') return 'canceled|' + String(x.orderNo || x.regDate || x.id || '') + '|' + shipmentRecipientKey(x);
-  return 'pending|' + shipmentRecipientKey(x);
+  if (x.packGroupId) return 'pending|pack|' + x.packGroupId;
+  if (x.orderNo) return 'pending|order|' + x.orderNo;
+  if (x.returnId) return 'pending|return|' + x.returnId;
+  return 'pending|' + (x.sourceChannel || 'direct') + '|' + x.id;
+}
+function pendingFulfillmentKey(kind, x) {
+  if (x.packGroupId) return 'pack|' + x.packGroupId;
+  if (kind === 'orders' && x.orderNo) return 'order|' + x.orderNo;
+  if (x.returnId) return 'return|' + x.returnId;
+  return (kind === 'seeding' ? 'seeding' : 'order') + '|' + x.id;
 }
 function shipmentGroups(items, itemOf) {
   const groups = new Map();
@@ -502,11 +511,9 @@ function renderSend() {
   ];
   // 엑셀로 접수 중인 건은 기본 체크 해제 (바로 접수와 겹쳐 두 번 보내는 것 방지)
   for (const p of pending) if (p.x.status === '접수중' && p.x._sel === undefined) p.x._sel = false;
-  // 같은 사람(이름+전화+주소) 묶음 — 화면 표시도, 선택 건수도 "택배 몇 건" 기준
   const gmap = new Map();
   for (const p of pending) {
-    const x = p.x;
-    const key = String(x.name || '').replace(/\s/g, '') + '|' + String(x.phone || '').replace(/\D/g, '') + '|' + String(x.addr || '').replace(/\s/g, '').slice(0, 15);
+    const key = pendingFulfillmentKey(p.kind, p.x);
     if (!gmap.has(key)) gmap.set(key, []);
     gmap.get(key).push(p);
   }
@@ -547,11 +554,18 @@ function renderSend() {
     // 접수 시도에서 "이미 보낸 것과 같은 내용"으로 막힌 건: 확인 후 한 번 더 보내기 허용
     const dupHere = g.filter(p => (window._dupIds || new Set()).has(p.kind + ':' + p.x.id) && !p.x.resendOk);
     const dupBadge = dupHere.length ? `<span class="note-badge" style="background:#fdecea;color:#c0392b">🚫 이미 보낸 것과 같음</span><br><button class="link-btn" style="font-size:0.85rem" onclick="resendOkGroup('${dupHere.map(p => p.kind + ':' + p.x.id).join(',')}','${jsq(first.name)}')">🔁 한 번 더 보내기</button><br>` : '';
+    const sameRecipient = groupsArr.filter(other => other !== g && shipmentRecipientKey(other[0].x) === shipmentRecipientKey(first));
+    const mergeSpec = [...g, ...sameRecipient.flat()].map(p => p.kind + ':' + p.x.id).join(',');
+    const packingAction = first.packGroupId
+      ? `<br><span class="note-badge">합포장 확정</span> <button class="link-btn" style="font-size:0.82rem" onclick="packUnmerge('${jsq(first.packGroupId)}','${jsq(first.name)}')">묶음 풀기</button>`
+      : sameRecipient.length
+        ? `<br><button class="link-btn" style="font-size:0.82rem" onclick="packMerge('${mergeSpec}','${jsq(first.name)}')">📦 같은 주소 ${sameRecipient.length + 1}건 한 비닐로 묶기</button>`
+        : '';
     return `
     <tr class="${allSel ? 'checked-row' : ''}">
       <td><input type="checkbox" ${allSel ? 'checked' : ''} onchange="toggleSelGroup('${spec}',this.checked)"></td>
       <td style="white-space:nowrap">${kinds}</td>
-      <td><b>${esc(first.name)}</b>${first.insta ? `<br><span class="muted" style="font-size:0.85rem">${esc(first.insta)}</span>` : ''}<br><span class="note-badge">📦 택배 1건 · 상품 ${groupProductQty}개</span></td>
+      <td><b>${esc(first.name)}</b>${first.insta ? `<br><span class="muted" style="font-size:0.85rem">${esc(first.insta)}</span>` : ''}<br><span class="note-badge">📦 택배 1건 · 상품 ${groupProductQty}개</span>${packingAction}</td>
       <td>${esc(first.phone)}</td>
       <td style="max-width:420px">${esc(first.addr)}${noZip ? `
         <div style="margin-top:0.3rem;white-space:nowrap"><span class="note-badge">⚠️ 우편번호 없음</span>
@@ -1337,6 +1351,28 @@ async function resendOkGroup(spec, name) {
   }
   renderSend();
   toast('✔️ 확인했어요. 이제 [우체국 바로 접수]를 누르면 한 번 더 보내져요.', 6000);
+}
+
+async function packMerge(spec, name) {
+  if (!confirm(`${name}님의 서로 다른 출고를 한 비닐에 같이 넣을까요?\n\n· 송장번호는 1개만 나옵니다\n· 제품은 모두 같은 비닐에 포장해야 합니다`)) return;
+  const selected = spec.split(',').filter(Boolean).map(s => {
+    const [kind, id] = s.split(':');
+    return { type: kind === 'seeding' ? 'seeding' : 'order', id: Number(id) };
+  });
+  const r = await api('/api/packing/merge', { method: 'POST', body: JSON.stringify({ selected }) });
+  if (r.error) { toast('⚠️ ' + r.error, 6000); return; }
+  DB = r.db;
+  renderSend();
+  toast(`✔️ 한 비닐로 묶었어요. 택배 1건에 상품 ${r.count}개가 들어갑니다.`, 6000);
+}
+
+async function packUnmerge(packGroupId, name) {
+  if (!confirm(`${name}님의 합포장을 풀까요?\n각 주문·신청별로 송장이 따로 나옵니다.`)) return;
+  const r = await api('/api/packing/unmerge', { method: 'POST', body: JSON.stringify({ packGroupId }) });
+  if (r.error) { toast('⚠️ ' + r.error, 6000); return; }
+  DB = r.db;
+  renderSend();
+  toast('✔️ 합포장을 풀었어요. 출고가 각각 따로 보입니다.', 5000);
 }
 
 // ── 입출고 내역 ──
