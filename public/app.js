@@ -1261,7 +1261,8 @@ function renderInventory() {
     if (!gmap.has(k)) { gmap.set(k, []); groups.push(gmap.get(k)); }
     gmap.get(k).push(i);
   }
-  const stChip = i => i.needsAllocation ? '<span class="chip processing">옵션별 배분 필요</span>'
+  const stChip = i => i.needsAllocation
+    ? `<span class="chip processing">${i.allocationTotal != null ? `배분 ${i.allocationTotal}/${i.allocationExpected}개` : '옵션별 배분 필요'}</span>`
     : i.needsCount ? '<span class="chip processing">수량 입력 필요</span>'
     : i.qty < 0 ? `<span class="chip wait">재고 ${Math.abs(i.qty)}개 부족</span>`
     : i.qty === 0 ? '<span class="chip wait">품절</span>'

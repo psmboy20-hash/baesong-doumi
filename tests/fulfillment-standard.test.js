@@ -14,7 +14,8 @@ const {
   parseLotteDeliveryStatus,
   cafe24ReturnKey,
   stockLedgerRef,
-  inventoryCountKnown
+  inventoryCountKnown,
+  variantAllocationState
 } = require('../lib/operations');
 
 test('같은 주문번호의 두 품목은 한 포장으로 묶는다', () => {
@@ -150,4 +151,14 @@ test('입출고 공개 장부 참조에는 고객 이름을 쓰지 않는다', (
 test('옵션 재고는 실수량 확인 전 출고 차감 대상으로 보지 않는다', () => {
   assert.equal(inventoryCountKnown({ qty: null, needsCount: true }), false);
   assert.equal(inventoryCountKnown({ qty: 0, needsCount: false }), true);
+});
+
+test('옵션별 재고 합계가 기존 총재고와 같을 때만 전환을 완료한다', () => {
+  const aggregate = { qty: 5 };
+  assert.deepEqual(variantAllocationState(aggregate, [{ qty: 2, needsCount: false }, { qty: 3, needsCount: false }]), {
+    complete: true, matches: true, expected: 5, total: 5
+  });
+  assert.deepEqual(variantAllocationState(aggregate, [{ qty: 2, needsCount: false }, { qty: 2, needsCount: false }]), {
+    complete: true, matches: false, expected: 5, total: 4
+  });
 });

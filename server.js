@@ -15,6 +15,7 @@ const {
   selectInvoiceParcelGroup,
   inventorySku,
   inventoryCountKnown,
+  variantAllocationState,
   getStockDeductions,
   recordStockDeduction,
   restoreStockDeductions,
@@ -1496,26 +1497,13 @@ function restoreShipmentStock(db, item, type, reason) {
     for (const row of result.rows) logStock(db, row.inv, row.qty, reason, stockLedgerRef(item, type));
     return result;
   }
-  let restored = 0;
-  const unresolved = [];
   if (item.stockDeducted) {
-    const restoredSkus = new Set();
-    for (const stockItem of splitShipmentItems(item)) {
-      const inv = findStockMatches(db, stockItem)[0];
-      if (!inv || restoredSkus.has(inv.sku)) continue;
-      const qty = Number(stockItem.qty) || 1;
-      inv.qty = (Number(inv.qty) || 0) + qty;
-      logStock(db, inv, qty, reason, stockLedgerRef(item, type));
-      restoredSkus.add(inv.sku);
-      restored += qty;
-    }
-    if (!restored) unresolved.push({ sku: 'LEGACY', qty: Number(item.qty) || 1 });
+    item.stockDeductionIncomplete = true;
+    item.stockDeductions = ['LEGACY'];
+    item.stockDeductionDetails = [{ sku: 'LEGACY', qty: Number(item.qty) || 1 }];
+    return { restored: 0, missingSkus: ['과거 출고 기록'] };
   }
-  item.stockDeducted = unresolved.length > 0;
-  item.stockDeductionIncomplete = unresolved.length > 0;
-  item.stockDeductions = unresolved.map(row => row.sku);
-  item.stockDeductionDetails = unresolved;
-  return { restored, missingSkus: unresolved.map(row => row.sku) };
+  return { restored: 0, missingSkus: [] };
 }
 
 // 발송 확정된 건들의 공통 후처리 (송장매칭·API접수 양쪽에서 사용)
@@ -1725,12 +1713,17 @@ const server = http.createServer((req, res) => {
       inv.needsCount = false;
       if (inv.variantCode && inv.productNo) {
         const variants = db.inventory.filter(i => String(i.productNo || '') === String(inv.productNo) && i.variantCode);
-        if (variants.length && variants.every(inventoryCountKnown)) {
-          for (const aggregate of db.inventory.filter(i =>
-            String(i.productNo || '') === String(inv.productNo) && i.needsAllocation && !i.variantCode)) {
+        for (const aggregate of db.inventory.filter(i =>
+          String(i.productNo || '') === String(inv.productNo) && i.needsAllocation && !i.variantCode)) {
+          const allocation = variantAllocationState(aggregate, variants);
+          aggregate.allocationExpected = allocation.expected;
+          aggregate.allocationTotal = allocation.total;
+          if (allocation.matches) {
             aggregate.qty = 0;
             aggregate.needsAllocation = false;
             aggregate.retiredAggregate = true;
+            delete aggregate.allocationExpected;
+            delete aggregate.allocationTotal;
           }
         }
       }
