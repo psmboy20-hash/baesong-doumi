@@ -167,6 +167,10 @@ test('옵션별 재고 합계가 기존 총재고와 같을 때만 전환을 완
     { qty: 3, color: 'Blue', needsCount: false },
     { qty: 3, color: 'Ivory', needsCount: false }
   ]), { complete: true, matches: true, expected: 5, total: 5 });
+  assert.deepEqual(variantAllocationState({ qty: 5, color: 'Blue' }, [
+    { qty: 2, color: 'Ivory', needsCount: false },
+    { qty: 3, color: 'Ivory', needsCount: false }
+  ]), { complete: false, matches: false, expected: 5, total: 0 });
 });
 
 test('과거 출고 취소 후 재발송은 재고를 다시 차감하지 않는다', () => {
