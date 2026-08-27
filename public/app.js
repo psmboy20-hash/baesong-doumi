@@ -56,6 +56,44 @@ function jsq(s) {
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
+function shipmentRecipientKey(x) {
+  const name = String(x.name || '').replace(/\s+/g, '').replace(/\(.*?\)/g, '').trim();
+  const addr = String(x.addr || '')
+    .replace(/\((\d{5})\)/g, '')
+    .replace(/\(우\)?\s*\d{5}\)?/g, '')
+    .replace(/우편번호[:\s]*\d{5}/g, '')
+    .replace(/\s+/g, ' ').trim();
+  return name + '|' +
+    String(x.phone || '').replace(/\D/g, '') + '|' +
+    addr.slice(0, 15);
+}
+function shipmentKey(x) {
+  if (x.epost && x.epost.orderNo) return 'epost|' + x.epost.orderNo;
+  if (x.invoice) return 'invoice|' + String(x.invoice).replace(/\D/g, '') + '|' + shipmentRecipientKey(x);
+  if (x.status === '발송완료') return 'sent|' + String(x.sentDate || '') + '|' + shipmentRecipientKey(x);
+  if (x.status === '취소됨') return 'canceled|' + String(x.orderNo || x.regDate || x.id || '') + '|' + shipmentRecipientKey(x);
+  return 'pending|' + shipmentRecipientKey(x);
+}
+function shipmentGroups(items, itemOf) {
+  const groups = new Map();
+  const pick = itemOf || (x => x);
+  for (const entry of items) {
+    const key = shipmentKey(pick(entry));
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(entry);
+  }
+  return [...groups.values()];
+}
+function shipmentCount(items, itemOf) {
+  return shipmentGroups(items, itemOf).length;
+}
+function selectedShipmentCount(selected) {
+  const items = selected.map(sel => {
+    const list = sel.type === 'seeding' ? DB.seeding : DB.orders;
+    return list.find(x => x.id === sel.id);
+  }).filter(Boolean);
+  return shipmentCount(items);
+}
 function chip(status) {
   const map = { '대기': ['wait', '보낼 준비'], '접수중': ['processing', '엑셀 접수 중 ⚠️'], '발송완료': ['done', '보냄 ✓'], '배달완료': ['done', '배달 끝 ✓✓'], '취소됨': ['wait', '취소됨 ✕'] };
   const [cls, label] = map[status] || ['wait', status];
@@ -276,24 +314,20 @@ function flowTile(icon, label, n, page, hot, sub) {
 function renderHome() {
   // 진행 흐름 보드: 물건이 지금 어느 단계에 몇 건 있는지
   const all = [...DB.orders, ...DB.seeding];
-  // 보낼 준비는 "택배 몇 건" 기준(같은 사람 묶음) — 물건 수가 다르면 (M개) 병기
   const toSendItems = all.filter(x => x.status === '대기' || x.status === '접수중');
-  const toSendKeys = new Set(toSendItems.map(x =>
-    String(x.name || '').replace(/\s/g, '') + '|' + String(x.phone || '').replace(/\D/g, '') + '|' + String(x.addr || '').replace(/\s/g, '').slice(0, 15)));
-  const toSend = toSendKeys.size === 0 ? 0
-    : toSendKeys.size === toSendItems.length ? toSendKeys.size
-    : `${toSendKeys.size}<span style="font-size:0.42em;font-weight:400;color:#8a93a5"> 건(${toSendItems.length}개)</span>`;
+  const toSend = shipmentCount(toSendItems);
   // 3일 넘게 안 움직인 건 — 앱 밖에서 이미 보냈을 가능성을 먼저 물어본다
-  const staleCount = toSendItems.filter(x => x.regDate && (Date.now() - new Date(x.regDate)) / 86400000 >= 3).length;
-  const waitPickup = all.filter(x => x.status === '발송완료' && !x.delivered && x.epost && ['00', '01', '02'].includes(x.epost.stus || '01')).length;
-  const problem = all.filter(x => x.status === '발송완료' && !x.delivered && x.epost && x.epost.stus === '04').length;
-  const delivered = all.filter(x => x.status === '발송완료' && x.delivered).length;
-  const moving = all.filter(x => x.status === '발송완료').length - waitPickup - delivered - problem;
+  const staleCount = shipmentCount(toSendItems.filter(x => x.regDate && (Date.now() - new Date(x.regDate)) / 86400000 >= 3));
+  const waitPickup = shipmentCount(all.filter(x => x.status === '발송완료' && !x.delivered && x.epost && ['00', '01', '02'].includes(x.epost.stus || '01')));
+  const problem = shipmentCount(all.filter(x => x.status === '발송완료' && !x.delivered && x.epost && x.epost.stus === '04'));
+  const delivered = shipmentCount(all.filter(x => x.status === '발송완료' && x.delivered));
+  const moving = shipmentCount(all.filter(x => x.status === '발송완료' && !x.delivered && !(x.epost && ['00', '01', '02', '04'].includes(x.epost.stus || '01'))));
   const retActive = (DB.returns || []).filter(x => x.status === '대기' || x.status === '회수중').length;
   // 이번 달 통계: 발송 건수 / 택배비(우체국 접수 요금, 묶음당 1회) / 배달완료
   const _d = new Date();
   const ym = _d.getFullYear() + '-' + String(_d.getMonth() + 1).padStart(2, '0');
   const sentThis = all.filter(x => x.status === '발송완료' && (x.sentDate || '').startsWith(ym));
+  const sentThisCount = shipmentCount(sentThis);
   const seenNo = new Set();
   let cost = 0;
   for (const x of sentThis) {
@@ -302,7 +336,7 @@ function renderHome() {
       cost += Number(x.epost.price) || 0;
     }
   }
-  const dlvThis = sentThis.filter(x => x.delivered).length;
+  const dlvThis = shipmentCount(sentThis.filter(x => x.delivered));
   const retThis = (DB.returns || []).filter(x => (x.regDate || '').startsWith(ym) && x.status !== '취소됨').length;
   const lowStock = DB.inventory.filter(i => i.qty <= 2).length;
   main().innerHTML = `
@@ -324,12 +358,12 @@ function renderHome() {
         ${problem ? `<div class="flow-arrow" style="color:#e3e8f2">|</div>${flowTile('⚠️', '기사님이 못 가져감', problem, 'epost', true)}` : ''}
       </div>
       <div class="hint" style="margin:0.9rem 0 0; font-size:1.05rem">
-        📅 <b>이번 달(${Number(ym.slice(5))}월)</b>: 보낸 택배 <b>${sentThis.length}건</b>
+        📅 <b>이번 달(${Number(ym.slice(5))}월)</b>: 보낸 택배 <b>${sentThisCount}건</b>
         · 택배비 <b>${cost.toLocaleString()}원</b> <span class="muted" style="font-size:0.85rem">(우체국 앱 접수 기준)</span>
         · 배달완료 <b>${dlvThis}건</b>${retThis ? ` · 교환/반품 <b>${retThis}건</b>` : ''}
       </div>
       ${staleCount ? `<div class="hint" style="margin:0.6rem 0 0;font-size:1.02rem;color:#b0640f">
-        ⏰ <b>${staleCount}개</b>가 3일 넘게 [보낼 준비]에 그대로 있어요 — 우체국 사이트나 창구에서 <b>직접 보내셨다면</b> 앱은 몰라요.
+        ⏰ <b>택배 ${staleCount}건</b>이 3일 넘게 [보낼 준비]에 그대로 있어요 — 우체국 사이트나 창구에서 <b>직접 보내셨다면</b> 앱은 몰라요.
         <button class="link-btn" onclick="go('send')">보내기에서 [따로 보냈어요] 누르기 →</button>
       </div>` : ''}
     </div>
@@ -363,8 +397,8 @@ function dashGrid(all) {
   const chanDot = { '카페24': c24ok ? 'on' : 'off', '시딩': gooOk ? 'on' : 'off', '직접 등록': 'na' };
   const chanRows = chans.map(c => {
     const mine = tagged.filter(x => chanOf(x) === c);
-    const wait = mine.filter(x => x.status === '대기' || x.status === '접수중').length;
-    const sent = mine.filter(x => x.status === '발송완료' && (x.sentDate || '').startsWith(ym)).length;
+    const wait = shipmentCount(mine.filter(x => x.status === '대기' || x.status === '접수중'));
+    const sent = shipmentCount(mine.filter(x => x.status === '발송완료' && (x.sentDate || '').startsWith(ym)));
     return `<div class="chan-row">
       <span class="dot ${chanDot[c]}"></span><span class="cname">${c}</span>
       <span class="cstat">${wait ? `<b style="color:#b0640f">보낼 것 ${wait}</b> · ` : ''}이달 보냄 <b>${sent}</b></span>
@@ -375,7 +409,7 @@ function dashGrid(all) {
     const d = new Date(Date.now() - (6 - k) * 86400000);
     return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
   });
-  const cnt = days.map(d => all.filter(x => x.status === '발송완료' && x.sentDate === d).length);
+  const cnt = days.map(d => shipmentCount(all.filter(x => x.status === '발송완료' && x.sentDate === d)));
   const mx = Math.max(...cnt, 1);
   const bars = days.map((d, k) => `
     <div class="vbar ${k === 6 ? 'today' : ''}">
@@ -683,16 +717,20 @@ function renderEpost() {
     const bp = b.x.epost.label && !b.x.printed ? 0 : 1;
     return ap - bp || (b.x.sentDate || '').localeCompare(a.x.sentDate || '');
   });
-  const rows = items.map(({ kind, icon, x }) => {
+  const parcels = shipmentGroups(items, entry => entry.x);
+  const rows = parcels.map(group => {
+    const { kind, x } = group[0];
+    const kinds = [...new Set(group.map(entry => entry.kind === 'seeding' ? '🎁 시딩' : '🛒 주문'))].join('<br>');
+    const products = group.map(entry => `<div>${productParts(entry.x).name}</div>`).join('');
+    const options = group.map(entry => `<div>${productParts(entry.x).opt || '<span class="muted">-</span>'}</div>`).join('');
     const [cls, nm] = x.delivered ? ['done', '배달완료 ✓✓'] : (EPOST_STUS[x.epost.stus] || ['processing', '확인 필요']);
     const cancelable = !x.delivered && ['00', '01', '02'].includes(x.epost.stus || '01');
-    const pp = productParts(x);
     return `
     <tr>
-      <td style="white-space:nowrap">${icon} ${kind === 'seeding' ? '시딩' : '주문'}</td>
+      <td style="white-space:nowrap">${kinds}</td>
       <td><b>${esc(x.name)}</b></td>
-      <td style="min-width:220px;max-width:440px">${pp.name}</td>
-      <td>${pp.opt || '<span class="muted">-</span>'}</td>
+      <td style="min-width:220px;max-width:440px">${products}</td>
+      <td>${options}</td>
       <td style="max-width:150px">${x.invoice ? invoiceCell(x.invoice) : '<span class="muted">-</span>'}</td>
       <td><span class="chip ${cls}">${nm}</span></td>
       <td style="white-space:nowrap">${esc(x.sentDate || '')}</td>
@@ -706,8 +744,8 @@ function renderEpost() {
       </td>
     </tr>`;
   }).join('');
-  const needP = items.filter(({ x }) => x.epost.label && !x.printed).map(({ kind, x }) => kind + ':' + x.id);
-  const printable = items.filter(({ x }) => x.epost.label).map(({ kind, x }) => kind + ':' + x.id);
+  const needP = parcels.filter(group => group[0].x.epost.label && group.some(entry => !entry.x.printed)).map(group => group[0].kind + ':' + group[0].x.id);
+  const printable = parcels.filter(group => group[0].x.epost.label).map(group => group[0].kind + ':' + group[0].x.id);
   main().innerHTML = `
     <h1>📦 우체국 접수</h1>
     <div class="sub">앱에서 우체국에 접수한 택배들이에요. 순서: <b>① 접수</b> → <b>② [🖨 인쇄]로 운송장 출력</b> → <b>③ 상자에 붙이면 기사님이 수거</b></div>
@@ -718,7 +756,7 @@ function renderEpost() {
       <button class="big-btn gray" onclick="epostSitePrint()">🖨 우체국 사이트에서 출력 (오즈뷰어)</button>
     </div>
     <div class="card">
-      ${items.length ? `
+      ${parcels.length ? `
       <div class="table-wrap" style="max-height:65vh">
         <table>
           <thead><tr><th>구분</th><th>이름</th><th>제품</th><th>옵션</th><th>송장번호</th><th>진행상태</th><th>접수일</th><th>인쇄·취소</th></tr></thead>
@@ -755,16 +793,22 @@ function printLabels(sel) {
     const [kind, id] = part.split(':');
     const list = kind === 'seeding' ? DB.seeding : DB.orders;
     const x = list.find(i => i.id === Number(id));
-    if (x) x.printed = true;
+    if (x) {
+      const key = shipmentKey(x);
+      for (const item of [...DB.orders, ...DB.seeding]) {
+        if (shipmentKey(item) === key) item.printed = true;
+      }
+    }
   }
   saveDb().then(() => render());
 }
 // 인쇄가 필요한(접수됐는데 아직 안 뽑은) 건 수
 function needPrintList() {
-  return [
+  const items = [
     ...DB.orders.filter(x => x.status === '발송완료' && x.epost && x.epost.label && !x.printed && !['03', '05'].includes(x.epost.stus)).map(x => ({ kind: 'order', x })),
     ...DB.seeding.filter(x => x.status === '발송완료' && x.epost && x.epost.label && !x.printed && !['03', '05'].includes(x.epost.stus)).map(x => ({ kind: 'seeding', x }))
   ];
+  return shipmentGroups(items, entry => entry.x).map(group => group[0]);
 }
 function updateNavBadge() {
   const n = DB ? needPrintList().length : 0;
@@ -1043,10 +1087,10 @@ function renderShipping() {
     f === 'moving' ? (x.status === '발송완료' && !x.delivered) :
     f === 'done' ? (x.status === '발송완료' && !!x.delivered) :
     f === 'canceled' ? x.status === '취소됨' : true;
-  const cnt = k => all.filter(x => (k === 'all' ? true : (
+  const cnt = k => shipmentCount(all.filter(x => (k === 'all' ? true : (
     k === 'pending' ? (x.status === '대기' || x.status === '접수중') :
     k === 'moving' ? (x.status === '발송완료' && !x.delivered) :
-    k === 'done' ? (x.status === '발송완료' && !!x.delivered) : x.status === '취소됨'))).length;
+    k === 'done' ? (x.status === '발송완료' && !!x.delivered) : x.status === '취소됨'))));
   const TABS = [['all', '전체'], ['pending', '보낼 준비'], ['moving', '가는 중'], ['done', '배달 끝'], ['canceled', '취소됨']];
   const tabs = TABS.map(([k, nm]) =>
     `<button class="big-btn ${f === k ? '' : 'gray'}" style="font-size:1rem;padding:0.5rem 1rem" onclick="go('shipping','${k}')">${nm} ${cnt(k)}</button>`).join('');
@@ -1513,7 +1557,8 @@ async function doExportAll() {
     ...DB.seeding.filter(sendable).map(x => ({ type: 'seeding', id: x.id }))
   ];
   if (!selected.length) { toast('선택된 사람이 없어요.'); return; }
-  if (!confirm(`${selected.length}건짜리 우체국 엑셀 파일을 만들까요?\n\n· 목록이 [엑셀 접수 중]으로 바뀌어요 (잘못 눌렀으면 [↩️ 엑셀 접수 취소]로 되돌려요)\n· 파일 폴더와 우체국 사이트가 자동으로 열려요`)) return;
+  const parcelCount = selectedShipmentCount(selected);
+  if (!confirm(`택배 ${parcelCount}건짜리 우체국 엑셀 파일을 만들까요?\n\n· 목록이 [엑셀 접수 중]으로 바뀌어요 (잘못 눌렀으면 [↩️ 엑셀 접수 취소]로 되돌려요)\n· 파일 폴더와 우체국 사이트가 자동으로 열려요`)) return;
   busy(true, '우체국 엑셀을 만드는 중…');
   const r = await api('/api/export/epost', { method: 'POST', body: JSON.stringify({ selected }) });
   busy(false);
@@ -1558,7 +1603,8 @@ async function doEpostRegister() {
     ...DB.seeding.filter(sendable).map(x => ({ type: 'seeding', id: x.id }))
   ];
   if (!selected.length) { toast('선택된 사람이 없어요.'); return; }
-  if (!confirm(`${selected.length}건을 우체국에 바로 접수할까요?\n(접수하면 송장번호가 발급되고 요금이 계산돼요)`)) return;
+  const parcelCount = selectedShipmentCount(selected);
+  if (!confirm(`택배 ${parcelCount}건을 우체국에 바로 접수할까요?\n(접수하면 송장번호가 발급되고 요금이 계산돼요)`)) return;
   busy(true, '우체국에 접수하는 중…');
   const r = await api('/api/epost/register', { method: 'POST', body: JSON.stringify({ selected }) });
   busy(false);
