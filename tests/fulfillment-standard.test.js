@@ -16,6 +16,7 @@ const {
   stockLedgerRef,
   inventoryCountKnown,
   cafe24VariantInventory,
+  markMissingCafe24Variants,
   variantAllocationState,
   shouldProcessStockDeduction
 } = require('../lib/operations');
@@ -162,6 +163,9 @@ test('카페24 재고관리 중인 옵션만 판매가능 수량으로 읽는다
   assert.deepEqual(cafe24VariantInventory({
     use_inventory: 'F', quantity: 0, inventory_control_type: 'A'
   }), { tracked: false, quantity: null, safetyInventory: null, controlType: 'A' });
+  assert.deepEqual(cafe24VariantInventory({ use_inventory: 'T' }), {
+    tracked: true, quantity: null, safetyInventory: null, controlType: ''
+  });
 });
 
 test('카페24 embedded inventories 값을 품목 표면 값보다 우선한다', () => {
@@ -169,6 +173,20 @@ test('카페24 embedded inventories 값을 품목 표면 값보다 우선한다'
     use_inventory: 'F', quantity: 0,
     inventories: { use_inventory: 'T', quantity: 11, safety_inventory: 3, inventory_control_type: 'B' }
   }), { tracked: true, quantity: 11, safetyInventory: 3, controlType: 'B' });
+});
+
+test('카페24에서 사라진 옵션은 이전 판매가능 수량을 남기지 않는다', () => {
+  const inventory = [
+    { variantCode: 'KEEP', cafe24VariantActive: true, cafe24StockTracked: true, cafe24Qty: 5 },
+    { variantCode: 'GONE', cafe24VariantActive: true, cafe24StockTracked: true, cafe24Qty: 9 }
+  ];
+  const changed = markMissingCafe24Variants(inventory, [{ variants: [{ variantCode: 'KEEP' }] }], '2026-08-27T00:00:00.000Z');
+  assert.equal(changed, 1);
+  assert.equal(inventory[0].cafe24Qty, 5);
+  assert.deepEqual(inventory[1], {
+    variantCode: 'GONE', cafe24VariantActive: false, cafe24StockTracked: false,
+    cafe24Qty: null, cafe24SafetyInventory: null, cafe24StockAt: '2026-08-27T00:00:00.000Z'
+  });
 });
 
 test('옵션별 재고 합계가 기존 총재고와 같을 때만 전환을 완료한다', () => {

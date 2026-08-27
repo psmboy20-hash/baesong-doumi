@@ -1243,17 +1243,18 @@ function renderInventory() {
     const source = aggregate.length ? aggregate : g.filter(i => !i.needsCount);
     return source.reduce((sum, i) => sum + (Number(i.qty) || 0), 0);
   };
-  const c24Known = i => i.cafe24StockTracked && Number.isFinite(Number(i.cafe24Qty));
-  const groupCafeTotal = g => g.filter(c24Known).reduce((sum, i) => sum + Number(i.cafe24Qty), 0);
+  const c24Known = i => i.cafe24StockTracked && i.cafe24Qty !== null && i.cafe24Qty !== undefined && Number.isFinite(Number(i.cafe24Qty));
+  const c24Sellable = i => c24Known(i) && i.cafe24VariantActive !== false && i.cafe24Display !== 'F' && i.cafe24Selling !== 'F';
+  const groupCafeTotal = g => g.filter(c24Sellable).reduce((sum, i) => sum + Number(i.cafe24Qty), 0);
   const totalQty = [...allGroups.values()].reduce((sum, g) => sum + groupTotal(g), 0);
-  const cafeTotalQty = activeInventory.filter(c24Known).reduce((sum, i) => sum + Number(i.cafe24Qty), 0);
-  const zeroN = activeInventory.filter(i => c24Known(i) && Number(i.cafe24Qty) === 0).length;
-  const lowN = activeInventory.filter(i => c24Known(i) && i.cafe24Qty > 0 && i.cafe24Qty <= 2).length;
+  const cafeTotalQty = activeInventory.filter(c24Sellable).reduce((sum, i) => sum + Number(i.cafe24Qty), 0);
+  const zeroN = activeInventory.filter(i => c24Sellable(i) && Number(i.cafe24Qty) === 0).length;
+  const lowN = activeInventory.filter(i => c24Sellable(i) && i.cafe24Qty > 0 && i.cafe24Qty <= 2).length;
   const unknownN = activeInventory.filter(i => i.needsCount || i.needsAllocation).length;
   const prodN = allGroups.size;
   let items = q ? activeInventory.filter(i => (i.name + ' ' + (i.color || '') + ' ' + (i.size || '')).includes(q)) : activeInventory;
-  if (filter === 'zero') items = items.filter(i => c24Known(i) && Number(i.cafe24Qty) === 0);
-  if (filter === 'low') items = items.filter(i => c24Known(i) && i.cafe24Qty > 0 && i.cafe24Qty <= 2);
+  if (filter === 'zero') items = items.filter(i => c24Sellable(i) && Number(i.cafe24Qty) === 0);
+  if (filter === 'low') items = items.filter(i => c24Sellable(i) && i.cafe24Qty > 0 && i.cafe24Qty <= 2);
   if (filter === 'unknown') items = items.filter(i => i.needsCount || i.needsAllocation);
   const findP = i => (DB.products || []).find(p => p.no === i.productNo) ||
     (DB.products || []).find(p => lettersOnly(p.name) === lettersOnly(i.name));
@@ -1264,8 +1265,12 @@ function renderInventory() {
     if (!gmap.has(k)) { gmap.set(k, []); groups.push(gmap.get(k)); }
     gmap.get(k).push(i);
   }
-  const stChip = i => !i.cafe24StockTracked
+  const stChip = i => i.cafe24VariantActive === false
+    ? '<span class="chip wait">카페24 옵션 삭제됨</span>'
+    : !i.cafe24StockTracked
     ? '<span class="chip processing">카페24 재고관리 안 함</span>'
+    : !c24Known(i) ? '<span class="chip processing">카페24 수량 미확인</span>'
+    : i.cafe24Display === 'F' || i.cafe24Selling === 'F' ? '<span class="chip processing">판매중지</span>'
     : i.cafe24Qty === 0 ? '<span class="chip wait">판매 품절</span>'
     : i.cafe24Qty <= 2 ? '<span class="chip processing">판매재고 부족</span>'
     : '<span class="chip done">판매 가능</span>';
@@ -1290,7 +1295,7 @@ function renderInventory() {
       ${prodCell}
       <td class="color">${esc(display.color) || '<span class="muted">-</span>'}<span class="sku-mini">${esc(i.sku || '')}</span></td>
       <td class="sz">${esc(i.size) || '<span class="muted" style="font-weight:400">-</span>'}</td>
-      <td class="qcell channel-stock"><span class="qty ${c24Known(i) && i.cafe24Qty <= 2 ? 'low' : ''}">${c24Known(i) ? i.cafe24Qty : '-'}</span></td>
+      <td class="qcell channel-stock"><span class="qty ${c24Sellable(i) && i.cafe24Qty <= 2 ? 'low' : ''}">${c24Known(i) ? i.cafe24Qty : '-'}</span></td>
       <td class="qcell">
         <button class="qty-btn sm" onclick="invAdj(${i.id},-1)">−</button>
         <span class="qty ${i.needsCount || i.qty <= 2 ? 'low' : ''}">${i.needsCount ? '?' : i.qty}</span>

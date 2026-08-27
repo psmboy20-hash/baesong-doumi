@@ -16,6 +16,7 @@ const {
   inventorySku,
   inventoryCountKnown,
   cafe24VariantInventory,
+  markMissingCafe24Variants,
   variantAllocationState,
   shouldProcessStockDeduction,
   getStockDeductions,
@@ -696,7 +697,7 @@ async function cafe24FetchProducts(db) {
 function syncInventoryFromProducts(db) {
   const lo = s => String(s || '').toLowerCase().replace(/[^a-z0-9가-힣]/g, '');
   const existing = new Set(db.inventory.map(i => lo(i.name)));
-  let added = 0;
+  let added = markMissingCafe24Variants(db.inventory, db.products, db.productsStockAt);
   for (const p of (db.products || [])) {
     if (!p.name) continue;
     if ((db.inventoryHidden || []).includes(p.no)) continue; // 사용자가 지운 제품은 다시 안 넣음
@@ -727,6 +728,9 @@ function syncInventoryFromProducts(db) {
           inv.needsCount = inv.qty === null || inv.qty === undefined;
           inv.cafe24Qty = v.cafe24Qty;
           inv.cafe24StockTracked = v.cafe24StockTracked;
+          inv.cafe24VariantActive = true;
+          inv.cafe24Display = v.display;
+          inv.cafe24Selling = v.selling;
           inv.cafe24SafetyInventory = v.cafe24SafetyInventory;
           inv.cafe24InventoryControlType = v.cafe24InventoryControlType;
           inv.cafe24StockAt = db.productsStockAt || '';
@@ -737,6 +741,7 @@ function syncInventoryFromProducts(db) {
           id: db.nextId++, name: p.name, color: v.color, size: v.size, qty: null,
           productNo: p.no, variantCode: v.variantCode, needsCount: true,
           cafe24Qty: v.cafe24Qty, cafe24StockTracked: v.cafe24StockTracked,
+          cafe24VariantActive: true, cafe24Display: v.display, cafe24Selling: v.selling,
           cafe24SafetyInventory: v.cafe24SafetyInventory,
           cafe24InventoryControlType: v.cafe24InventoryControlType,
           cafe24StockAt: db.productsStockAt || ''
@@ -1617,7 +1622,10 @@ function readBody(req) {
 }
 function sendJson(res, code, obj) {
   const body = JSON.stringify(obj);
-  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.writeHead(code, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store, max-age=0'
+  });
   res.end(body);
 }
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.ico': 'image/x-icon', '.svg': 'image/svg+xml' };
