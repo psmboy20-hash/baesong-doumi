@@ -32,7 +32,16 @@ const {
   selectStockMatches
 } = require('./lib/operations');
 const { writeJsonAtomic, appendAudit, createMutationQueue } = require('./lib/storage');
-const { clientJson, mergeClientDb, accessCodeRequiredForIp } = require('./lib/security');
+const {
+  clientJson,
+  mergeClientDb,
+  accessCodeRequiredForIp,
+  securityHeaders,
+  isSecureRequest,
+  readBodyLimited,
+  spreadsheetFormat,
+  spreadsheetReadOptions
+} = require('./lib/security');
 const {
   postalAddressCandidates,
   postalZipFromDocuments,
@@ -73,6 +82,7 @@ const {
 
 const PORT = 8899;
 const ZIP_LOOKUP_VERSION = 2;
+const TRUST_PROXY = process.env.HAM_TRUST_PROXY === '1';
 // ── 접속 코드 게이트 (클라우드 서버용) ───────────────────────────────
 const gateCrypto = require('crypto');
 let _accessCode = null;
@@ -119,12 +129,18 @@ async function gateCheck(req, res, url) {
     const f = gateFails.get(ip);
     if (f && f.until > Date.now()) { sendJson(res, 429, { error: '시도가 너무 많아요. 10분 뒤 다시 해주세요.' }); return true; }
     let body = {};
-    try { body = JSON.parse((await readBody(req)).toString('utf8') || '{}'); } catch (e) { /* 무시 */ }
+    try { body = JSON.parse((await readBody(req, 16 * 1024)).toString('utf8') || '{}'); }
+    catch (e) {
+      if (e.code === 'PAYLOAD_TOO_LARGE') {
+        sendJson(res, 413, { error: '접속 코드 요청이 너무 큽니다. 화면을 새로고침해 주세요.' });
+        return true;
+      }
+    }
     if (String(body.code || '').trim() === code) {
       gateFails.delete(ip);
       res.writeHead(200, {
         'Content-Type': 'application/json; charset=utf-8',
-        'Set-Cookie': 'hamKey=' + gateHash(code) + '; Max-Age=31536000; Path=/; HttpOnly; SameSite=Lax'
+        'Set-Cookie': 'hamKey=' + gateHash(code) + '; Max-Age=31536000; Path=/; HttpOnly; SameSite=Lax' + (isSecureRequest(req, TRUST_PROXY) ? '; Secure' : '')
       });
       res.end(JSON.stringify({ ok: true }));
       return true;
@@ -2043,13 +2059,8 @@ async function postProcessShipped(db, matchedItems) {
 }
 
 // ---------- HTTP ----------
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    req.on('data', c => chunks.push(c));
-    req.on('end', () => resolve(Buffer.concat(chunks)));
-    req.on('error', reject);
-  });
+function readBody(req, maxBytes = 2 * 1024 * 1024) {
+  return readBodyLimited(req, maxBytes);
 }
 function sendJson(res, code, obj) {
   const body = clientJson(obj);
@@ -2063,6 +2074,7 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 
 const mutationQueue = createMutationQueue();
 const server = http.createServer((req, res) => {
+  for (const [name, value] of Object.entries(securityHeaders(isSecureRequest(req, TRUST_PROXY)))) res.setHeader(name, value);
   const url = new URL(req.url, 'http://localhost');
   const handle = async () => {
     try {
@@ -2891,9 +2903,15 @@ const server = http.createServer((req, res) => {
       return sendJson(res, 200, { ok: true });
     }
     if (url.pathname === '/api/upload/cafe24' && req.method === 'POST') {
-      const buf = await readBody(req);
+      const buf = await readBody(req, 10 * 1024 * 1024);
+      let fileName = '';
+      try { fileName = decodeURIComponent(String(req.headers['x-file-name'] || '')); } catch (e) { fileName = ''; }
+      const format = spreadsheetFormat(buf, fileName);
+      if (!format) {
+        return sendJson(res, 400, { error: '엑셀(.xlsx, .xls) 또는 CSV(.csv) 파일만 올릴 수 있어요.' });
+      }
       let wb;
-      try { wb = XLSX.read(buf, { type: 'buffer' }); }
+      try { wb = XLSX.read(buf, spreadsheetReadOptions(buf, format)); }
       catch (e) { return sendJson(res, 200, { error: '엑셀 파일을 읽지 못했습니다. 파일이 맞는지 확인해 주세요.' }); }
       const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
       const parsed = parseOrderRows(rows);
@@ -2904,9 +2922,15 @@ const server = http.createServer((req, res) => {
       return sendJson(res, 200, { ok: true, added: r.added, updated: r.updated, total: parsed.items.length, db });
     }
     if (url.pathname === '/api/upload/invoice' && req.method === 'POST') {
-      const buf = await readBody(req);
+      const buf = await readBody(req, 10 * 1024 * 1024);
+      let fileName = '';
+      try { fileName = decodeURIComponent(String(req.headers['x-file-name'] || '')); } catch (e) { fileName = ''; }
+      const format = spreadsheetFormat(buf, fileName);
+      if (!format) {
+        return sendJson(res, 400, { error: '엑셀(.xlsx, .xls) 또는 CSV(.csv) 파일만 올릴 수 있어요.' });
+      }
       let wb;
-      try { wb = XLSX.read(buf, { type: 'buffer' }); }
+      try { wb = XLSX.read(buf, spreadsheetReadOptions(buf, format)); }
       catch (e) { return sendJson(res, 200, { error: '엑셀 파일을 읽지 못했습니다.' }); }
       const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
       const db = loadDb();
@@ -2937,6 +2961,12 @@ const server = http.createServer((req, res) => {
     res.writeHead(404); res.end('not found');
     } catch (e) {
       console.error(e);
+      if (e && e.code === 'PAYLOAD_TOO_LARGE') {
+        const message = url.pathname.startsWith('/api/upload/')
+          ? '엑셀 파일이 너무 큽니다. 10MB 이하 파일로 올려 주세요.'
+          : '한 번에 보낸 내용이 너무 큽니다. 화면을 새로고침한 뒤 다시 시도해 주세요.';
+        return sendJson(res, 413, { error: message });
+      }
       sendJson(res, 500, { error: '서버 오류: ' + e.message });
     }
   };

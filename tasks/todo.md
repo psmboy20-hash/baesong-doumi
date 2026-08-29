@@ -21,3 +21,33 @@
 - [ ] Task 7: 실화면 검수와 배포
   - Acceptance: PC와 모바일에서 핵심 수량·상태·버튼이 보인다.
   - Verify: 브라우저 QA + 클라우드 status
+
+# 운영 안전성 강화 1차
+
+- [x] Task 8: 요청 크기·파일 형식 제한과 보안 헤더
+  - Acceptance: 10MB 초과 요청은 413, 잘못된 엑셀은 파싱 전 거절, 보호 응답에 보안 헤더가 있다.
+  - Verify: `node --test tests/hardening.test.js`
+- [ ] Task 9: 우체국 접수 선저장과 불확실 결과 복구
+  - Acceptance: 접수 전 pending이 저장되고 같은 포장은 조회 전 재접수되지 않는다.
+  - Verify: operation fixture + 전체 테스트
+- [ ] Task 10: 다상품 라벨·가상번호·인쇄확인
+  - Acceptance: 동일 송장의 모든 상품이 나오고 실제 번호에는 가상번호 문구가 없으며 완료 확인 후에만 인쇄함이 된다.
+  - Verify: label fixture + 브라우저 인쇄 미리보기
+- [ ] Task 11: 클라우드 엑셀 직접 다운로드
+  - Acceptance: 어느 PC에서도 브라우저 다운로드 폴더에 XLSX가 저장된다.
+  - Verify: 로컬 HTTP 다운로드 + 실제 브라우저
+- [ ] Task 12: Cafe24 품목별 송장과 실패 재시도
+  - Acceptance: 실제 출고 품목만 배송처리되고 이미 같은 송장이 있으면 성공으로 대사한다.
+  - Verify: Cafe24 payload fixture
+- [ ] Task 13: 발송취소·시딩 웹훅 미확인 대사
+  - Acceptance: 외부 반영 실패가 조용히 사라지지 않고 재시도/수동조치가 표시된다.
+  - Verify: 실패 fixture + 대시보드
+- [ ] Task 14: HTTPS 공개 주소
+  - Acceptance: 새 HTTPS 주소에서 보안 쿠키로 접속하고 기존 주소 전환 전 검증한다.
+  - Verify: TLS·헤더·로그인 실접속
+- [ ] Task 15: 외부 백업·감시·복구훈련
+  - Acceptance: 서버 손실 시 별도 저장소 백업으로 복구 가능하고 장애 알림이 온다.
+  - Verify: 격리 복구 연습
+- [ ] Task 16: XLSX 런타임 교체
+  - Acceptance: 운영 경로에 알려진 High 취약점이 없고 기존 양식이 동일하게 읽고 써진다.
+  - Verify: `npm audit --omit=dev` + 양식 fixture

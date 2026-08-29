@@ -1945,10 +1945,18 @@ function pickFile(which) {
 }
 
 async function uploadFile(which, file) {
+  if (file.size > 10 * 1024 * 1024) {
+    toast('⚠️ 파일이 너무 커요. 10MB 이하 엑셀 또는 CSV 파일을 골라 주세요.', 7000);
+    return;
+  }
   busy(true, '파일을 읽는 중…');
   try {
     const buf = await file.arrayBuffer();
-    const r = await api('/api/upload/' + which, { method: 'POST', body: buf });
+    const r = await api('/api/upload/' + which, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', 'X-File-Name': encodeURIComponent(file.name) },
+      body: buf
+    });
     busy(false);
     if (r.error) { toast('⚠️ ' + r.error, 7000); return; }
     adoptDb(r.db);
