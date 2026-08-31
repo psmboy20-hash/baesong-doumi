@@ -17,6 +17,7 @@ const {
   inventoryCountKnown,
   availableStockDeduction,
   canFuzzyMergeOrders,
+  variantIdentityAmbiguous,
   returnRestockAllowed,
   sheetWriteSucceeded,
   cafe24VariantInventory,
@@ -197,7 +198,6 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 
 // 구글시트 주소는 설정(data/db.json)에 저장 - 코드에는 두지 않는다
 const SHEET_SEEDING = '02. 시딩 발송 리스트';
-const SHEET_ORDERS = '02.주문건 발송 리스트';
 function sheetIdOf(db) {
   const m = String(db.settings.sheetId || '').match(/[-\w]{25,}/);
   return m ? m[0] : '';
@@ -1029,7 +1029,8 @@ function syncInventoryFromProducts(db) {
       }
       for (const v of p.variants) {
         let inv = db.inventory.find(i => v.variantCode && i.variantCode === v.variantCode);
-        if (!inv) {
+        const ambiguousIdentity = variantIdentityAmbiguous(p.variants, v);
+        if (!inv && !ambiguousIdentity) {
           const exactCandidates = db.inventory.filter(i =>
             (!i.variantCode || String(i.variantCode) === String(v.variantCode)) &&
             String(i.productNo || '') === String(p.no) &&
@@ -1037,7 +1038,7 @@ function syncInventoryFromProducts(db) {
             String(i.size || '').trim().toUpperCase() === String(v.size || '').trim().toUpperCase());
           if (exactCandidates.length === 1) inv = exactCandidates[0];
         }
-        if (!inv) {
+        if (!inv && !ambiguousIdentity) {
           const sameSizeVariants = p.variants.filter(candidate =>
             String(candidate.size || '').trim().toUpperCase() === String(v.size || '').trim().toUpperCase());
           const variantColors = new Set(sameSizeVariants.map(candidate => lo(candidate.color)).filter(Boolean));
@@ -1203,7 +1204,7 @@ async function syncGoogle(db) {
   if (!sid) throw new Error('구글시트 주소가 없어요. 설정에서 시딩 구글시트 주소를 넣어 주세요.');
   const buf = await fetchUrl(`https://docs.google.com/spreadsheets/d/${sid}/export?format=xlsx`, 0);
   const wb = XLSX.read(buf, { type: 'buffer' });
-  let seedRes = { added: 0, updated: 0 }, ordRes = { added: 0, updated: 0 };
+  let seedRes = { added: 0, updated: 0 };
   const normalizeSheetName = value => String(value || '').replace(/\s/g, '').toLowerCase();
   const exactSeedName = wb.SheetNames.find(name => normalizeSheetName(name) === normalizeSheetName(SHEET_SEEDING));
   const seedCandidates = wb.SheetNames.filter(name => ['시딩', '발송'].every(word => normalizeSheetName(name).includes(word)));
@@ -1213,19 +1214,7 @@ async function syncGoogle(db) {
   const seedName = exactSeedName || seedCandidates[0];
   if (!seedName) throw new Error('구글시트에서 [시딩 발송 리스트] 탭을 찾지 못했습니다. 탭 이름을 확인해 주세요.');
   seedRes = mergeSeeding(db, parseSeedingSheet(wb.Sheets[seedName]));
-  const exactOrderName = wb.SheetNames.find(name => normalizeSheetName(name) === normalizeSheetName(SHEET_ORDERS));
-  const orderCandidates = wb.SheetNames.filter(name => ['주문', '발송'].every(word => normalizeSheetName(name).includes(word)));
-  if (!exactOrderName && orderCandidates.length > 1) {
-    throw new Error('주문 발송 탭이 여러 개라 자동으로 고를 수 없습니다. 주문 엑셀 탭 이름을 확인해 주세요.');
-  }
-  const orderName = exactOrderName || orderCandidates[0];
-  const ordWs = orderName ? wb.Sheets[orderName] : null;
-  if (ordWs) {
-    const parsed = parseOrderRows(XLSX.utils.sheet_to_json(ordWs, { header: 1, defval: '' }));
-    if (parsed.error) throw new Error('주문 발송 탭을 읽지 못했습니다: ' + parsed.error);
-    ordRes = mergeOrders(db, parsed.items);
-  }
-  return { seeding: seedRes, orders: ordRes };
+  return { seeding: seedRes, orders: { added: 0, updated: 0 } };
 }
 // 우체국 배달완료 자동 확인 (키 불필요, 회당 10건):
 // 조회 페이지의 hidden input #deliveryVal 값이 "배달완료"/"수취함투함"일 때만 완료 —

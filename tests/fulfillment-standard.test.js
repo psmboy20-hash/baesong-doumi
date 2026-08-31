@@ -17,6 +17,7 @@ const {
   inventoryCountKnown,
   availableStockDeduction,
   canFuzzyMergeOrders,
+  variantIdentityAmbiguous,
   returnRestockAllowed,
   sheetWriteSucceeded,
   cafe24VariantInventory,
@@ -189,6 +190,16 @@ test('다른 Cafe24 주문이나 품목은 이름과 옵션이 같아도 합치�
   assert.equal(canFuzzyMergeOrders({ orderNo: 'A' }, { orderNo: 'B' }), false);
   assert.equal(canFuzzyMergeOrders({ orderNo: 'A', orderItemCode: 'I1' }, { orderNo: 'A', orderItemCode: 'I2' }), false);
   assert.equal(canFuzzyMergeOrders({ orderNo: 'A', orderItemCode: 'I1' }, { orderNo: 'A', orderItemCode: 'I1' }), true);
+});
+
+test('카페24 옵션이 같은 컬러와 사이즈로 중복되면 기존 재고를 임의 배정하지 않는다', () => {
+  const variants = [
+    { variantCode: 'V1', color: '', size: 'S' },
+    { variantCode: 'V2', color: '', size: 'S' },
+    { variantCode: 'V3', color: '', size: 'M' }
+  ];
+  assert.equal(variantIdentityAmbiguous(variants, variants[0]), true);
+  assert.equal(variantIdentityAmbiguous(variants, variants[2]), false);
 });
 
 test('불량 회수품은 재고 복귀 요청이 있어도 입고하지 않는다', () => {
