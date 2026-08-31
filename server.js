@@ -1674,6 +1674,7 @@ function mergeOrders(db, parsed) {
           qty: ret.qty
         });
         if (ret.cafe24ClaimCode) clearClaimSyncIssue(ret, 'cafe24', 'lookup');
+        if (!missingCafe24ExchangeTargets(ret).length) clearClaimSyncIssue(ret, 'cafe24', 'exchange-target');
         ret.sourceId = ret.sourceId || ex && ex.id || null;
         ret.sourceProductNo = ret.sourceProductNo || p.productNo || null;
         ret.exchangeProductNo = ret.exchangeProductNo || p._exchangeProductNo || null;
