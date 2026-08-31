@@ -4,6 +4,7 @@ let PAGE = 'home';
 let SYNC_STATUS = null;
 const $ = sel => document.querySelector(sel);
 const main = () => $('#main');
+const shipmentLineItems = item => HamItemLines.splitShipmentItems(item);
 
 // ---------- 공통 ----------
 function toast(msg, ms) {
@@ -97,31 +98,14 @@ function shipmentGroups(items, itemOf) {
 function shipmentCount(items, itemOf) {
   return shipmentGroups(items, itemOf).length;
 }
-function shipmentProductKey(x) {
-  const product = String(x.product || '')
-    .replace(/\(P[A-Z0-9]+\)/gi, '')
-    .replace(/\s+/g, '').toLowerCase();
-  const color = String(x.color || '').replace(/[^a-z0-9가-힣]/gi, '').toLowerCase();
-  const size = String(x.size || '').replace(/\s+/g, '').toUpperCase();
-  return product + '|' + color + '|' + size;
-}
 function productQuantity(items, itemOf) {
   const pick = itemOf || (x => x);
   let total = 0;
   for (const group of shipmentGroups(items, itemOf)) {
-    const products = new Map();
     for (const entry of group) {
       const item = pick(entry);
-      const lines = String(item.product || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean);
-      if (lines.length > 1) {
-        const key = 'multi|' + (item.id != null ? item.id : shipmentProductKey(item));
-        products.set(key, Math.max(products.get(key) || 0, lines.length));
-        continue;
-      }
-      const key = shipmentProductKey(item);
-      products.set(key, Math.max(products.get(key) || 0, Number(item.qty) || 1));
+      total += shipmentLineItems(item).reduce((sum, line) => sum + (Number(line.qty) || 1), 0);
     }
-    total += [...products.values()].reduce((sum, qty) => sum + qty, 0);
   }
   return total;
 }
@@ -219,8 +203,7 @@ function imgPrevHide() {
 function prodImgTag(src) {
   return `<img src="${esc(src)}" class="pimg" onmouseenter="imgPrev(event,'${esc(src)}')" onmousemove="imgPrevMove(event)" onmouseleave="imgPrevHide()" onerror="this.style.display='none'">`;
 }
-// 제품 표시를 {name: 제품명(사진 포함), opt: "색상 / 사이즈"} 로 분리
-function productParts(x) {
+function singleProductParts(x) {
   const { color, size } = parseOption(x);
   const matches = matchProducts(x.product);
   const qty = Number(x.qty) || 1;
@@ -249,6 +232,15 @@ function productParts(x) {
     return `<div style="display:flex;align-items:center;height:36px;margin:0.1rem 0;white-space:nowrap">${parts.length ? '<b>' + esc(parts.join(', ')) + '</b>' : '<span class="muted">-</span>'}${qtyTag}</div>`;
   }).join('');
   return { name, opt };
+}
+function productParts(x) {
+  const lines = shipmentLineItems(x);
+  if (lines.length <= 1) return singleProductParts(lines[0] || x);
+  const rendered = lines.map(singleProductParts);
+  return {
+    name: rendered.map(row => row.name).join(''),
+    opt: rendered.map(row => row.opt || '<div style="height:36px" class="muted">-</div>').join('')
+  };
 }
 function productCell(x) {
   const { name, opt } = productParts(x);
@@ -284,6 +276,8 @@ function epostOperationUnresolved(x) {
 }
 function shipmentMemoHtml(x) {
   const lines = [];
+  const productNotes = HamItemLines.shipmentProductNotes(x);
+  if (productNotes.length) lines.push(`<div class="ship-note important"><b>포장</b> ${esc(productNotes.join(' / '))}</div>`);
   if (x.note) lines.push(`<div class="ship-note important"><b>비고</b> ${esc(x.note)}</div>`);
   if (x.request) lines.push(`<div class="ship-note"><b>요청</b> ${esc(x.request)}</div>`);
   if (x.msg) lines.push(`<div class="ship-note"><b>배송메모</b> ${esc(x.msg)}</div>`);

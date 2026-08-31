@@ -27,6 +27,7 @@ const {
   buildReturnRestockPlan,
   selectStockMatches
 } = require('../lib/operations');
+const { shipmentProductNotes } = require('../public/item-lines');
 
 test('같은 주문번호의 두 품목은 한 포장으로 묶는다', () => {
   const a = { id: 1, orderNo: '20260827-0001' };
@@ -74,6 +75,45 @@ test('같은 제품 2개 주문은 한 품목 수량 2개를 유지한다', () =
   const items = splitShipmentItems({ product: 'S#01_Clara Denim', color: 'Skyblue', size: 'S', qty: 2 });
   assert.equal(items.length, 1);
   assert.equal(items[0].qty, 2);
+});
+
+test('같은 상품의 서로 다른 사이즈는 각각 한 품목으로 분리한다', () => {
+  const items = splitShipmentItems({
+    product: 'B#05_Tessa Pigment Pants(Brown)\nB#05_Tessa Pigment Pants(Brown)',
+    size: 'S,M',
+    qty: 1
+  });
+  assert.deepEqual(items.map(item => ({ product: item.product, size: item.size, qty: item.qty })), [
+    { product: 'B#05_Tessa Pigment Pants(Brown)', size: 'S', qty: 1 },
+    { product: 'B#05_Tessa Pigment Pants(Brown)', size: 'M', qty: 1 }
+  ]);
+});
+
+test('제품명 끝 괄호와 별표로 입력한 사이즈도 품목별로 분리한다', () => {
+  const items = splitShipmentItems({
+    product: 'S#02_Audrey Denim(Washedblue)(M)\nW#02_June Washed Loose Denim(Midblue) *S사이즈\nB#05_Tessa Pigment Pants(Brown)(L)'
+  });
+  assert.deepEqual(items.map(item => [item.product, item.size]), [
+    ['S#02_Audrey Denim(Washedblue)', 'M'],
+    ['W#02_June Washed Loose Denim(Midblue)', 'S'],
+    ['B#05_Tessa Pigment Pants(Brown)', 'L']
+  ]);
+});
+
+test('제품 칸의 별표 안내는 상품 수량에서 빼고 포장 비고로 분리한다', () => {
+  const row = {
+    product: 'S#02_Audrey Denim(Washedblue)(M)\nB#05_Tessa Pigment Pants(Brown)(S)\n*각 사이즈 확인 필요'
+  };
+  assert.equal(splitShipmentItems(row).length, 2);
+  assert.deepEqual(shipmentProductNotes(row), ['각 사이즈 확인 필요']);
+});
+
+test('상품 한 줄에 사이즈를 여러 개 적어도 사이즈별 품목으로 분리한다', () => {
+  const items = splitShipmentItems({ product: 'B#05_Tessa Pigment Pants(Brown)', size: 'S,M' });
+  assert.deepEqual(items.map(item => [item.product, item.size, item.qty]), [
+    ['B#05_Tessa Pigment Pants(Brown)', 'S', 1],
+    ['B#05_Tessa Pigment Pants(Brown)', 'M', 1]
+  ]);
 });
 
 test('기존 장부에 출처 SKU RMA 번호를 보강한다', () => {

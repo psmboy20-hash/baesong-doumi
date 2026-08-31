@@ -786,11 +786,12 @@ async function epostInsertOrder(db, g, orderNo, testYn) {
   const addr = cleanAddr(g.addr);
   const addr1 = addr.slice(0, 140);
   const addr2 = addr.length > 140 ? addr.slice(140, 420) : '.';
-  const products = g.items.map(({ item }) => String(item.product || '').replace(/\s+/g, ' ').trim()).filter(Boolean).join(' / ');
-  const models = g.items.map(({ item }) =>
+  const parcelItems = g.items.flatMap(({ item }) => splitShipmentItems(item));
+  const products = parcelItems.map(item => String(item.product || '').replace(/\s+/g, ' ').trim()).filter(Boolean).join(' / ');
+  const models = parcelItems.map(item =>
     [item.color, item.size].filter(Boolean).join(' ') || String(item.option || '').trim()
   ).filter(Boolean).join(' / ');
-  const qty = g.items.reduce((a, { item }) => a + (Number(item.qty) || 1), 0);
+  const qty = parcelItems.reduce((a, item) => a + (Number(item.qty) || 1), 0);
   const phone = String(g.phone || '').replace(/\D/g, ''); // 숫자만 허용
   const isMobile = phone.startsWith('01');
   const params = {
@@ -1798,10 +1799,11 @@ function buildEpostRows(db, selected) {
   for (const g of groups.values()) {
     const zip = String(g.zip || '').trim() || extractZip(g.addr);
     // 상품명 = 제품 이름만, 상품모델 = 옵션(컬러/사이즈)
-    const products = g.items.map(({ item }) => String(item.product || '').replace(/\s+/g, ' ').trim()).filter(Boolean).join(' / ');
+    const parcelItems = g.items.flatMap(({ item }) => splitShipmentItems(item));
+    const products = parcelItems.map(item => String(item.product || '').replace(/\s+/g, ' ').trim()).filter(Boolean).join(' / ');
     let content = products || (st.defaultContent || '의류');
-    if (content.length > 100) content = (st.defaultContent || '의류') + ' ' + g.items.length + '종';
-    const models = g.items.map(({ item }) =>
+    if (content.length > 100) content = (st.defaultContent || '의류') + ' ' + parcelItems.length + '종';
+    const models = parcelItems.map(item =>
       [item.color, item.size].filter(Boolean).join(' ') || String(item.option || '').trim()
     ).filter(Boolean).join(' / ');
     const orderNos = [...new Set(g.items.map(({ type, item }) => parcelReference(type === 'seeding' ? 'seeding' : 'order', item)))].join(',');

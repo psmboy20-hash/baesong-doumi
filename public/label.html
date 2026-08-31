@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <title>운송장 인쇄</title>
 <script src="jsbarcode.min.js"></script>
+<script src="item-lines.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: "Malgun Gothic", sans-serif; background: #eee; }
@@ -346,17 +347,13 @@ async function main() {
   }
   const seen = new Set();
   LABELS = [];
-  // 제품이 여러 개면 한 줄에 하나씩 (시트 원문의 줄바꿈으로 나눔)
   const prodLines = it => {
-    const names = String(it.product || '').split(/\n+/).map(s => s.replace(/\s+/g, ' ').trim()).filter(Boolean);
-    const opt = [it.color, it.size].filter(Boolean).join(' ') || it.option || '';
-    const qty = it.qty || 1;
-    if (names.length <= 1) {
-      return [esc((names[0] || '').slice(0, 60)) + (opt ? ', ' + esc(opt) : '') + ', 수량:' + qty];
-    }
-    const out = names.map((n, i) => (i + 1) + '. ' + esc(n.slice(0, 55)));
-    out.push('(' + (opt ? esc(opt) + ' · ' : '') + '수량: 각 ' + qty + ')');
-    return out;
+    const rows = HamItemLines.splitShipmentItems(it);
+    return rows.map((row, index) => {
+      const opt = [row.color, row.size].filter(Boolean).join(' ') || row.option || '';
+      const prefix = rows.length > 1 ? (index + 1) + '. ' : '';
+      return prefix + esc(String(row.product || '').slice(0, 55)) + (opt ? ', ' + esc(opt) : '') + ', 수량:' + (Number(row.qty) || 1);
+    });
   };
   for (const { it } of items) {
     if (seen.has(it.epost.orderNo)) { LABELS[LABELS.length - 1].products.push(...prodLines(it)); continue; }

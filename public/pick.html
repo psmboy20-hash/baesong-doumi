@@ -26,6 +26,7 @@
 <h1>📋 오늘 쌀 목록</h1>
 <div class="sub" id="meta"></div>
 <div id="out">불러오는 중…</div>
+<script src="item-lines.js"></script>
 <script>
 const lettersOnly = s => String(s || '').toLowerCase().replace(/[^a-z가-힣]/g, '');
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -71,19 +72,21 @@ function optOf(x) {
   // 제품×옵션별 합산
   const agg = new Map();
   for (const x of items) {
-    const size = optOf(x);
-    const matches = matchProducts(db.products || [], x.product);
-    if (matches.length) {
-      for (const p of matches) {
-        const { base, color } = splitColor(p.name);
-        const key = p.no + '|' + size;
-        if (!agg.has(key)) agg.set(key, { img: p.img, name: base, opt: [color, size].filter(Boolean).join(', '), qty: 0 });
-        agg.get(key).qty += Number(x.qty) || 1;
+    for (const line of HamItemLines.splitShipmentItems(x)) {
+      const size = optOf(line);
+      const matches = matchProducts(db.products || [], line.product);
+      if (matches.length) {
+        for (const p of matches) {
+          const { base, color } = splitColor(p.name);
+          const key = p.no + '|' + size;
+          if (!agg.has(key)) agg.set(key, { img: p.img, name: base, opt: [color, size].filter(Boolean).join(', '), qty: 0 });
+          agg.get(key).qty += Number(line.qty) || 1;
+        }
+      } else {
+        const key = 'raw|' + lettersOnly(line.product) + '|' + size;
+        if (!agg.has(key)) agg.set(key, { img: '', name: String(line.product || '(제품명 없음)'), opt: size, qty: 0 });
+        agg.get(key).qty += Number(line.qty) || 1;
       }
-    } else {
-      const key = 'raw|' + lettersOnly(x.product) + '|' + size;
-      if (!agg.has(key)) agg.set(key, { img: '', name: String(x.product || '(제품명 없음)'), opt: size, qty: 0 });
-      agg.get(key).qty += Number(x.qty) || 1;
     }
   }
   const rows = [...agg.values()].sort((a, b) => a.name.localeCompare(b.name));
@@ -99,10 +102,14 @@ function optOf(x) {
     <h2>② 사람별 확인 (${items.length}명)</h2>
     <table><thead><tr><th></th><th>구분</th><th>이름</th><th>제품</th><th>포장·비고</th></tr></thead><tbody>`;
   for (const x of items) {
-    const size = optOf(x);
     const kind = x.sourceChannel === 'seeding' ? seedingLabel(x) : x.exchange ? '교환 재발송' : '주문';
-    const memo = [x.note ? `비고: ${x.note}` : '', x.request ? `요청: ${x.request}` : '', x.msg ? `배송메모: ${x.msg}` : ''].filter(Boolean).join('\n');
-    html += `<tr><td class="chk">☐</td><td><b>${esc(kind)}</b></td><td><b>${esc(x.name)}</b></td><td>${esc(x.product || '')}${size ? ` <b>(${esc(size)})</b>` : ''}</td><td class="muted" style="white-space:pre-line">${esc(memo || '-')}</td></tr>`;
+    const inlineNotes = HamItemLines.shipmentProductNotes(x);
+    const memo = [inlineNotes.length ? `포장: ${inlineNotes.join(' / ')}` : '', x.note ? `비고: ${x.note}` : '', x.request ? `요청: ${x.request}` : '', x.msg ? `배송메모: ${x.msg}` : ''].filter(Boolean).join('\n');
+    const products = HamItemLines.splitShipmentItems(x).map(line => {
+      const size = optOf(line);
+      return esc(line.product || '') + (size ? ` <b>(${esc(size)})</b>` : '');
+    }).join('<br>');
+    html += `<tr><td class="chk">☐</td><td><b>${esc(kind)}</b></td><td><b>${esc(x.name)}</b></td><td>${products}</td><td class="muted" style="white-space:pre-line">${esc(memo || '-')}</td></tr>`;
   }
   html += '</tbody></table>';
   document.getElementById('out').innerHTML = html;
