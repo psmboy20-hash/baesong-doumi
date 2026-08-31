@@ -15,6 +15,10 @@ const {
   selectInvoiceParcelGroup,
   inventorySku,
   inventoryCountKnown,
+  availableStockDeduction,
+  canFuzzyMergeOrders,
+  returnRestockAllowed,
+  sheetWriteSucceeded,
   cafe24VariantInventory,
   markMissingCafe24Variants,
   variantAllocationState,
@@ -48,6 +52,12 @@ const {
   postalLookupDue,
   zipForChangedAddress
 } = require('./lib/postal');
+const {
+  seedKey,
+  normalizeSeedingPacking,
+  stableSheetRowId,
+  mergeSeedingRows
+} = require('./lib/seeding');
 const {
   cafe24ClaimStage,
   statusForFlowState,
@@ -186,7 +196,7 @@ const AUDIT_PATH = path.join(DATA_DIR, 'audit.ndjson');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
 // 구글시트 주소는 설정(data/db.json)에 저장 - 코드에는 두지 않는다
-const SHEET_SEEDING = '01.시딩 발송 리스트';
+const SHEET_SEEDING = '02. 시딩 발송 리스트';
 const SHEET_ORDERS = '02.주문건 발송 리스트';
 function sheetIdOf(db) {
   const m = String(db.settings.sheetId || '').match(/[-\w]{25,}/);
@@ -336,14 +346,21 @@ function fetchUrl(url, redirects) {
 }
 
 // ---------- HTTPS JSON 요청 ----------
-function httpsJson(method, urlStr, headers, body) {
+function httpsJson(method, urlStr, headers, body, redirects) {
   return new Promise((resolve, reject) => {
+    if (Number(redirects || 0) > 6) return reject(new Error('HTTPS 리다이렉트가 너무 많습니다.'));
     const u = new URL(urlStr);
     const data = body == null ? null : (typeof body === 'string' ? body : JSON.stringify(body));
     const req = https.request({
       hostname: u.hostname, path: u.pathname + u.search, method,
       headers: Object.assign({}, headers, data ? { 'Content-Length': Buffer.byteLength(data) } : {})
     }, res => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        const preserveMethod = res.statusCode === 307 || res.statusCode === 308;
+        const nextUrl = new URL(res.headers.location, u).toString();
+        return resolve(httpsJson(preserveMethod ? method : 'GET', nextUrl, headers, preserveMethod ? body : null, Number(redirects || 0) + 1));
+      }
       const chunks = [];
       res.on('data', c => chunks.push(c));
       res.on('end', () => {
@@ -444,14 +461,16 @@ async function cafe24PostCarrierCode(db, token) {
 }
 
 // 카페24 주문에 송장번호 등록 + 배송중 처리
-async function cafe24RegisterShipment(db, orderNo, invoice) {
+async function cafe24RegisterShipment(db, orderNo, invoice, requestedItemCodes) {
   const token = await cafe24EnsureToken(db);
   const code = await cafe24PostCarrierCode(db, token);
   const od = await cafe24Fetch(db, token, `/api/v2/admin/orders/${orderNo}?embed=items`);
   if (od.status !== 200 || !od.json || !od.json.order) throw new Error('주문 조회 실패(' + od.status + ')');
   const items = (od.json.order.items || []).filter(it => !/^[CRE]/.test(String(it.order_status || '')));
-  const itemCodes = items.map(it => it.order_item_code).filter(Boolean);
-  if (!itemCodes.length) throw new Error('배송처리할 품목이 없어요');
+  const activeCodes = new Set(items.map(it => String(it.order_item_code || '')).filter(Boolean));
+  const itemCodes = [...new Set((requestedItemCodes || []).map(value => String(value || '').trim()).filter(Boolean))];
+  if (!itemCodes.length) throw new Error('선택한 상품의 카페24 품목코드가 없어 자동 배송처리를 멈췄어요.');
+  if (itemCodes.some(codeValue => !activeCodes.has(codeValue))) throw new Error('선택한 상품이 카페24의 현재 배송 가능 품목과 맞지 않아 자동 배송처리를 멈췄어요.');
   const tracking = String(invoice).replace(/\D/g, '');
   const body = {
     shop_no: 1,
@@ -650,8 +669,8 @@ async function cafe24WriteClaim(db, ret, action, values) {
   const key = claimOperationKey(ret, action, values);
   const old = ret.syncOps[action];
   if (old && old.key === key && old.state === 'success') return { ok: true, skipped: true, claimCode: ret.cafe24ClaimCode };
-  if (old && old.key === key && ['pending', 'unknown'].includes(old.state) && ['create', 'accept'].includes(action)) {
-    throw new Error('카페24 접수 결과를 확인 중이에요. 잠시 뒤 [지금 확인하기]를 눌러 주세요.');
+  if (old && old.key === key && ['pending', 'unknown'].includes(old.state)) {
+    throw new Error('카페24 처리 결과를 확인 중이에요. 상태 확인이 끝날 때까지 같은 작업을 다시 보내지 않습니다.');
   }
   ret.syncOps[action] = { key, state: 'pending', at: new Date().toISOString() };
   saveDb(db);
@@ -687,7 +706,7 @@ async function cafe24WriteClaim(db, ret, action, values) {
     saveDb(db);
     return { ok: true, claimCode: ret.cafe24ClaimCode || '' };
   } catch (error) {
-    const unknown = ['create', 'accept'].includes(action) && !error.responseReceived;
+    const unknown = !error.responseReceived;
     ret.syncOps[action] = { key, state: unknown ? 'unknown' : 'failed', at: new Date().toISOString(), error: error.message };
     setClaimSyncIssue(ret, 'cafe24', action, unknown
       ? '카페24 응답이 중간에 끊겨 접수 여부를 확인 중이에요. 중복 방지를 위해 다시 접수하지 않았습니다.'
@@ -1012,9 +1031,15 @@ function syncInventoryFromProducts(db) {
         let inv = db.inventory.find(i => v.variantCode && i.variantCode === v.variantCode);
         if (!inv) inv = db.inventory.find(i => String(i.productNo || '') === String(p.no) &&
           lo(i.color) === lo(v.color) && String(i.size || '').trim().toUpperCase() === String(v.size || '').trim().toUpperCase());
-        if (!inv) inv = db.inventory.find(i => lo(i.name) === lo(p.name) &&
-          String(i.size || '').trim().toUpperCase() === String(v.size || '').trim().toUpperCase() &&
-          (!i.color || lo(i.color) === lo(v.color)));
+        if (!inv) {
+          const sameSizeVariants = p.variants.filter(candidate =>
+            String(candidate.size || '').trim().toUpperCase() === String(v.size || '').trim().toUpperCase());
+          const variantColors = new Set(sameSizeVariants.map(candidate => lo(candidate.color)).filter(Boolean));
+          const candidates = db.inventory.filter(i => lo(i.name) === lo(p.name) &&
+            String(i.size || '').trim().toUpperCase() === String(v.size || '').trim().toUpperCase() &&
+            (!i.color || lo(i.color) === lo(v.color)));
+          if (candidates.length === 1 && (candidates[0].color || variantColors.size <= 1)) inv = candidates[0];
+        }
         if (inv) {
           inv.productNo = p.no;
           inv.variantCode = v.variantCode;
@@ -1173,9 +1198,18 @@ async function syncGoogle(db) {
   const buf = await fetchUrl(`https://docs.google.com/spreadsheets/d/${sid}/export?format=xlsx`, 0);
   const wb = XLSX.read(buf, { type: 'buffer' });
   let seedRes = { added: 0, updated: 0 }, ordRes = { added: 0, updated: 0 };
-  const seedWs = wb.Sheets[SHEET_SEEDING] || wb.Sheets[wb.SheetNames.find(n => n.includes('시딩'))];
-  if (seedWs) seedRes = mergeSeeding(db, parseSeedingSheet(seedWs));
-  const ordWs = wb.Sheets[SHEET_ORDERS] || wb.Sheets[wb.SheetNames.find(n => n.includes('주문'))];
+  const normalizeSheetName = value => String(value || '').replace(/\s/g, '').toLowerCase();
+  const exactSeedName = wb.SheetNames.find(name => normalizeSheetName(name) === normalizeSheetName(SHEET_SEEDING));
+  const seedCandidates = wb.SheetNames.filter(name => ['시딩', '발송'].every(word => normalizeSheetName(name).includes(word)));
+  if (!exactSeedName && seedCandidates.length > 1) {
+    throw new Error('시딩 발송 탭이 여러 개라 자동으로 고를 수 없습니다. 사용할 탭 이름을 [02. 시딩 발송 리스트]로 맞춰 주세요.');
+  }
+  const seedName = exactSeedName || seedCandidates[0];
+  if (!seedName) throw new Error('구글시트에서 [시딩 발송 리스트] 탭을 찾지 못했습니다. 탭 이름을 확인해 주세요.');
+  seedRes = mergeSeeding(db, parseSeedingSheet(wb.Sheets[seedName]));
+  const orderName = wb.SheetNames.find(name => normalizeSheetName(name) === normalizeSheetName(SHEET_ORDERS)) ||
+    wb.SheetNames.find(name => ['주문', '발송'].every(word => normalizeSheetName(name).includes(word)));
+  const ordWs = orderName ? wb.Sheets[orderName] : null;
   if (ordWs) {
     const parsed = parseOrderRows(XLSX.utils.sheet_to_json(ordWs, { header: 1, defval: '' }));
     if (!parsed.error) ordRes = mergeOrders(db, parsed.items);
@@ -1266,7 +1300,7 @@ async function syncAll() {
     const g = await syncGoogle(db);
     out.seeding = g.seeding; out.orders = g.orders;
     syncStatus.google = { ok: true, error: null, added: g.seeding.added + g.orders.added };
-    changed = true;
+    if ([g.seeding, g.orders].some(result => ['added', 'updated', 'canceled'].some(key => Number(result[key] || 0) > 0))) changed = true;
   } catch (e) {
     syncStatus.google = { ok: false, error: e.message, added: 0 };
   }
@@ -1317,6 +1351,21 @@ async function syncAll() {
         } else {
           ret.syncOps.accept.state = 'unknown';
           setClaimSyncIssue(ret, 'cafe24', 'accept', '카페24 승인 여부를 계속 확인 중이에요. 중복 승인을 막기 위해 자동 재승인하지 않습니다.');
+          changed = true;
+        }
+      }
+      for (const ret of db.returns.filter(row => row.sourceChannel === 'cafe24' && row.syncOps)) {
+        const stage = cafe24ClaimStage(ret.cafe24OrderStatus);
+        const resolved = {
+          complete: ['completed', 'refund_pending'].includes(stage),
+          cancel: stage === 'canceled',
+          collected: ['collected', 'processing', 'completed', 'refund_pending'].includes(stage)
+        };
+        for (const [action, ok] of Object.entries(resolved)) {
+          const op = ret.syncOps[action];
+          if (!ok || !op || !['pending', 'unknown'].includes(op.state)) continue;
+          op.state = 'success';
+          clearClaimSyncIssue(ret, 'cafe24', action);
           changed = true;
         }
       }
@@ -1385,6 +1434,7 @@ function parseSeedingSheet(ws) {
   const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
   if (!rows.length) return [];
   const H = rows[0];
+  const sourceIdCol = H.findIndex(value => ['column13', '시딩번호', '관리번호'].includes(String(value || '').replace(/\s/g, '').toLowerCase()));
   const col = {
     date: findCol(H, ['작성일']),
     pack: findCol(H, ['타임스탬프']), // 이 시트에선 '일반 패킹/시딩 패키지'가 들어있음
@@ -1403,6 +1453,9 @@ function parseSeedingSheet(ws) {
     stock: findCol(H, ['재고반영']),
     note: findCol(H, ['비고'])
   };
+  if (col.name < 0 || col.phone < 0 || col.addr < 0 || col.product < 0) {
+    throw new Error('시딩 시트에서 성명·연락처·주소·제품 열을 찾지 못했습니다. 시트 머리글을 확인해 주세요.');
+  }
   const out = [];
   for (let r = 1; r < rows.length; r++) {
     const row = rows[r];
@@ -1410,6 +1463,7 @@ function parseSeedingSheet(ws) {
     const phone = phoneDigits(col.phone >= 0 ? row[col.phone] : '');
     if (!name || phone.length < 9) continue; // 그룹 구분행 등 스킵
     out.push({
+      sourceRowId: stableSheetRowId(sourceIdCol >= 0 ? row[sourceIdCol] : ''),
       name: name.replace(/\s*-\s*엽서.*$/, '').trim(),
       insta: String(col.insta >= 0 ? row[col.insta] : '').trim(),
       phone: String(col.phone >= 0 ? row[col.phone] : '').trim(),
@@ -1418,7 +1472,7 @@ function parseSeedingSheet(ws) {
       product: String(col.product >= 0 ? row[col.product] : '').trim(),
       size: String(col.size >= 0 ? row[col.size] : '').trim(),
       seedType: String(col.type >= 0 ? row[col.type] : '').trim(),
-      packType: String(col.pack >= 0 ? row[col.pack] : '').trim(),
+      packType: normalizeSeedingPacking(col.pack >= 0 ? row[col.pack] : ''),
       email: String(col.email >= 0 ? row[col.email] : '').trim(),
       request: String(col.request >= 0 ? row[col.request] : '').trim(),
       sentDate: excelDate(col.sentDate >= 0 ? row[col.sentDate] : ''),
@@ -1484,7 +1538,6 @@ function parseOrderRows(rows) {
 }
 
 // ---------- 병합(중복 방지) ----------
-function seedKey(s) { return normName(s.name) + '|' + phoneDigits(s.phone); }
 // 옵션(색상/사이즈)까지 키에 포함 — 같은 주문에서 같은 제품을 옵션만 다르게 산 경우를 별개 건으로 취급
 function optKey(o) {
   return (String(o.color || '') + '|' + String(o.size || '') + '|' + String(o.option || ''))
@@ -1493,71 +1546,7 @@ function optKey(o) {
 function orderKey(o) { return (o.orderNo || '') + '|' + normName(o.name) + '|' + phoneDigits(o.phone) + '|' + String(o.product || '').replace(/\s/g, '').slice(0, 40) + '|' + optKey(o); }
 
 function mergeSeeding(db, parsed) {
-  // 같은 사람(이름+전화)이 여러 번 신청할 수 있음(재배송·2차 시딩 등) — 회차별로 순서대로 짝을 맞춤
-  const buckets = new Map(); // seedKey → 장부의 해당 사람 건들(순서대로)
-  for (const s of db.seeding) {
-    const k = seedKey(s);
-    if (!buckets.has(k)) buckets.set(k, []);
-    buckets.get(k).push(s);
-  }
-  const liveCount = new Map(); // seedKey → 시트에서 지금까지 몇 번째 행인지
-  let added = 0, updated = 0;
-  for (const p of parsed) {
-    const k = seedKey(p);
-    const idx = liveCount.get(k) || 0;
-    liveCount.set(k, idx + 1);
-    const ex = (buckets.get(k) || [])[idx];
-    if (ex) {
-      // 시트에 송장이 생겼으면 반영 (앱에서 취소한 무효 송장은 다시 붙이지 않음)
-      let ch = false;
-      if (p.invoice && !ex.invoice && p.invoice !== ex.canceledInvoice) {
-        ex.invoice = p.invoice; ex.status = '발송완료'; ex.sentDate = p.sentDate || ex.sentDate || today(); ch = true;
-      }
-      // 내용 갱신은 아직 안 보낸 건만 — 발송완료 기록을 재신청이 덮어쓰지 않게
-      if (ex.status === '대기' || ex.status === '접수중') {
-        const addressChanged = !!(p.addr && p.addr !== ex.addr);
-        if (addressChanged) {
-          const previousZip = ex.zip;
-          ex.addr = p.addr;
-          ex.zip = zipForChangedAddress(previousZip, p.zip);
-          clearZipLookupState(ex);
-          ch = true;
-        }
-        for (const f of ['insta', 'product', 'size', 'request', 'note']) {
-          if (p[f] && p[f] !== ex[f]) { ex[f] = p[f]; ch = true; }
-        }
-        if (!addressChanged && p.zip && p.zip !== ex.zip) { ex.zip = p.zip; ch = true; }
-      }
-      if (ch) updated++;
-    } else {
-      const item = Object.assign({}, p, {
-        id: db.nextId++,
-        status: p.invoice ? '발송완료' : '대기',
-        sourceChannel: 'seeding',
-        regDate: today()
-      });
-      db.seeding.push(item);
-      if (!buckets.has(k)) buckets.set(k, []);
-      buckets.get(k).push(item);
-      added++;
-    }
-  }
-  // 시트에서 지워진 행: 아직 안 보낸 건이면 취소 처리 (회차 기준 — 시트에 남은 회차 수를 넘는 건만)
-  // (시트를 통째로 못 읽은 경우 오작동 방지를 위해 parsed가 비어있으면 건너뜀)
-  let canceled = 0;
-  if (parsed.length === 0) return { added, updated, canceled };
-  for (const [k, items] of buckets) {
-    const live = liveCount.get(k) || 0;
-    items.forEach((s, i) => {
-      if (i >= live && (s.status === '대기' || s.status === '접수중')) {
-        s.status = '취소됨';
-        canceled++;
-      } else if (i < live && s.status === '취소됨' && !s.invoice && !s.manualCanceled) {
-        s.status = '대기'; // 행이 다시 생기면 복구 (앱에서 손으로 취소한 건은 제외)
-      }
-    });
-  }
-  return { added, updated, canceled };
+  return mergeSeedingRows(db, parsed, { zipForChangedAddress, clearZipLookupState, today });
 }
 
 // 출처가 달라도 같은 주문을 알아보기 위한 느슨한 키 (이름+전화 뒷8자리+제품명 앞부분)
@@ -1579,7 +1568,9 @@ function mergeOrders(db, parsed) {
   for (const p of parsed) {
     // 카페24에서 취소/반품/교환된 주문: 아직 안 보낸 건이면 취소 처리
     if (p._canceled) {
-      const ex = byItemCode.get(String(p.orderItemCode || '')) || map.get(orderKey(p)) || fuzzy.get(fuzzyOrderKey(p));
+      const fuzzyMatch = fuzzy.get(fuzzyOrderKey(p));
+      const ex = byItemCode.get(String(p.orderItemCode || '')) || map.get(orderKey(p)) ||
+        (fuzzyMatch && canFuzzyMergeOrders(fuzzyMatch, p) ? fuzzyMatch : null);
       if (ex && (ex.status === '대기' || ex.status === '접수중') && !p._retKind) {
         ex.status = '취소됨';
         canceled++;
@@ -1689,7 +1680,9 @@ function mergeOrders(db, parsed) {
     if (!p.sku && (p.variantCode || p.productNo)) p.sku = inventorySku(p);
     delete p._shipped;
     delete p._src;
-    const ex = map.get(orderKey(p)) || fuzzy.get(fuzzyOrderKey(p));
+    const fuzzyMatch = fuzzy.get(fuzzyOrderKey(p));
+    const ex = byItemCode.get(String(p.orderItemCode || '')) || map.get(orderKey(p)) ||
+      (fuzzyMatch && canFuzzyMergeOrders(fuzzyMatch, p) ? fuzzyMatch : null);
     if (ex) {
       let ch = false;
       if (p.invoice && !ex.invoice && p.invoice !== ex.canceledInvoice) { ex.invoice = p.invoice; ex.courier = p.courier || ex.courier; ch = true; }
@@ -1756,6 +1749,7 @@ function buildParcelGroups(db, selected) {
     const item = list.find(x => x.id === sel.id);
     // 이미 보낸 건은 서버에서도 걸러냄 (화면이 30초 묵은 상태에서 눌러도 이중 접수 방지)
     if (!(item && item.status !== '취소됨' && item.status !== '발송완료' && !item.epost)) continue;
+    if (item.epostOp && ['pending', 'unknown'].includes(item.epostOp.state)) continue;
     // 과거에 이미 보낸 것과 같은 내용이면 차단 — [한 번 더 보내기]로 확인한 건(resendOk)만 통과
     if (!item.resendOk) {
       let prev = null;
@@ -2019,12 +2013,23 @@ async function postProcessShipped(db, matchedItems) {
       planned.set(deductionKey, current);
     }
     for (const [sku, row] of planned) {
-      const n = Math.max(0, row.qty - (already.get(sku) || 0));
-      if (!n) continue;
-      row.inv.qty = (Number(row.inv.qty) || 0) - n;
-      results.stock.push({ sku, name: [row.inv.name, row.inv.color, row.inv.size].filter(Boolean).join(' '), minus: n, left: row.inv.qty });
-      logStock(db, row.inv, -n, '출고', stockLedgerRef(item, type));
-      recordStockDeduction(item, sku, n);
+      const deduction = availableStockDeduction(row.inv.qty, row.qty, already.get(sku));
+      if (deduction.shortage > 0) {
+        results.stockMissing.push({
+          name: item.name,
+          product: [row.inv.name, row.inv.color, row.inv.size].filter(Boolean).join(' '),
+          option: `재고 ${Math.max(0, Number(row.inv.qty) || 0)}개 · 출고 ${row.qty}개`,
+          reason: '재고 수량 부족'
+        });
+        row.inv.needsCount = true;
+        row.inv.stockIssue = '출고 수량이 현재 재고보다 많아 실사 필요';
+        missing = true;
+      }
+      if (!deduction.deducted) continue;
+      row.inv.qty = deduction.left;
+      results.stock.push({ sku, name: [row.inv.name, row.inv.color, row.inv.size].filter(Boolean).join(' '), minus: deduction.deducted, left: row.inv.qty });
+      logStock(db, row.inv, -deduction.deducted, '출고', stockLedgerRef(item, type));
+      recordStockDeduction(item, sku, deduction.deducted);
     }
     item.stockDeducted = getStockDeductions(item).length > 0;
     item.stockDeductionIncomplete = missing;
@@ -2033,16 +2038,24 @@ async function postProcessShipped(db, matchedItems) {
   // 2) 카페24에 송장번호 자동 등록 + 배송중 처리 (주문건만)
   results.cafe24 = [];
   if (cafe24Configured(db) && db.cafe24Token) {
-    const done = new Set();
+    const groupedOrders = new Map();
     for (const { type, item } of matchedItems) {
-      if (type !== 'order' || !item.orderNo || !item.invoice || item.cafe24Shipped || done.has(item.orderNo)) continue;
-      done.add(item.orderNo);
+      if (type !== 'order' || !item.orderNo || !item.invoice || item.cafe24Shipped) continue;
+      if (!groupedOrders.has(item.orderNo)) groupedOrders.set(item.orderNo, []);
+      groupedOrders.get(item.orderNo).push(item);
+    }
+    for (const [orderNo, items] of groupedOrders) {
+      const invoice = items[0].invoice;
+      const itemCodes = [...new Set(items.map(item => String(item.orderItemCode || '').trim()).filter(Boolean))];
       try {
-        await cafe24RegisterShipment(db, item.orderNo, item.invoice);
-        for (const o of db.orders) if (o.orderNo === item.orderNo) o.cafe24Shipped = true;
-        results.cafe24.push({ orderNo: item.orderNo, ok: true });
+        await cafe24RegisterShipment(db, orderNo, invoice, itemCodes);
+        const completedCodes = new Set(itemCodes);
+        for (const o of db.orders) {
+          if (o.orderNo === orderNo && completedCodes.has(String(o.orderItemCode || ''))) o.cafe24Shipped = true;
+        }
+        results.cafe24.push({ orderNo, ok: true, itemCount: itemCodes.length });
       } catch (e) {
-        results.cafe24.push({ orderNo: item.orderNo, ok: false, error: e.message });
+        results.cafe24.push({ orderNo, ok: false, error: e.message });
       }
     }
   }
@@ -2057,11 +2070,11 @@ async function postProcessShipped(db, matchedItems) {
     try {
       const r = await httpsJson('POST', wh, { 'Content-Type': 'application/json' },
         { token: db.settings.sheetWebhookToken || '', updates });
-      if (r.status === 200 || r.status === 302) { // Apps Script는 302로 응답하기도 함
+      if (sheetWriteSucceeded(r, updates.length)) {
         for (const u of matchedItems) if (u.type === 'seeding') u.item.sheetWritten = true;
         results.sheet = { ok: true, count: updates.length };
       } else {
-        results.sheet = { ok: false, error: '응답 코드 ' + r.status };
+        results.sheet = { ok: false, error: r.json && r.json.error || `시트 기록 확인 실패 (${r.status}, ${Number(r.json && r.json.written || 0)}/${updates.length}건)` };
       }
     } catch (e) { results.sheet = { ok: false, error: e.message }; }
   }
@@ -2326,12 +2339,56 @@ const server = http.createServer((req, res) => {
           return sendJson(res, 200, { error: '매장 컴퓨터가 켜져 있어요 — 주문(🛒) 접수는 매장 화면에서 해주세요. (시딩🎁은 여기서도 가능)' });
         }
       }
-      const { groups, dups } = buildParcelGroups(db, body.selected || []);
+      const selected = Array.isArray(body.selected) ? body.selected : [];
       const out = [];
+      const shippedItems = [];
+      const unresolvedGroups = new Map();
+      for (const sel of selected) {
+        const type = sel.type === 'seeding' ? 'seeding' : 'order';
+        const list = type === 'seeding' ? db.seeding : db.orders;
+        const item = list.find(row => row.id === Number(sel.id));
+        if (!item || !item.epostOp || !['pending', 'unknown'].includes(item.epostOp.state)) continue;
+        const operationKey = String(item.epostOp.orderNo || 'missing-' + type + '-' + item.id);
+        if (!unresolvedGroups.has(operationKey)) unresolvedGroups.set(operationKey, []);
+        unresolvedGroups.get(operationKey).push({ type, item });
+      }
+      for (const entries of unresolvedGroups.values()) {
+        const operation = entries[0].item.epostOp;
+        try {
+          if (!operation.orderNo || !operation.reqYmd) throw new Error('저장된 우체국 작업번호가 없어 자동 재접수를 막았습니다.');
+          const xml = await epostCall(db, 'api.GetResInfo.jparcel', {
+            custNo: db.epost.custNo, reqType: '1', orderNo: operation.orderNo, reqYmd: operation.reqYmd
+          });
+          const regiNo = xmlVal(xml, 'regiNo');
+          const stus = xmlVal(xml, 'treatStusCd');
+          if (!regiNo || regiNo === 'TESTREGINOAPI') throw new Error('우체국 접수 결과를 아직 확인하지 못했습니다.');
+          for (const { type, item } of entries) {
+            item.invoice = regiNo;
+            item.courier = '우체국';
+            item.status = '발송완료';
+            item.sentDate = today();
+            item.epost = {
+              orderNo: operation.orderNo,
+              reqNo: xmlVal(xml, 'reqNo'), resNo: xmlVal(xml, 'resNo'), reqYmd: operation.reqYmd,
+              stus: stus || '01', price: xmlVal(xml, 'price'), label: null
+            };
+            item.epostOp.state = 'success';
+            item.epostOp.resolvedAt = new Date().toISOString();
+            shippedItems.push({ type, item });
+          }
+          out.push({ name: entries[0].item.name, ok: true, regiNo, recovered: true });
+        } catch (error) {
+          for (const { item } of entries) {
+            item.epostOp.state = 'unknown';
+            item.epostOp.error = error.message;
+          }
+          out.push({ name: entries[0].item.name, ok: false, safeStop: true, error: error.message + ' 같은 건을 다시 접수하지 않았습니다. [우체국 접수]에서 상태를 확인해 주세요.' });
+        }
+      }
+      const { groups, dups } = buildParcelGroups(db, body.selected || []);
       for (const d of dups) {
         out.push({ name: d.name, ok: false, dup: true, error: `이미 같은 내용을 보냈어요 (${d.product}${d.prevInvoice ? ' · 송장 ' + d.prevInvoice : ''}). 정말 한 번 더 보내려면 목록의 [한 번 더 보내기]를 눌러 주세요.` });
       }
-      const shippedItems = [];
       let idx = 0;
       for (const g of groups.values()) {
         idx++;
@@ -2354,10 +2411,15 @@ const server = http.createServer((req, res) => {
           continue;
         }
         try {
+          if (body.testYn !== 'Y') {
+            const operation = { state: 'pending', orderNo, reqYmd: today().replace(/-/g, ''), at: new Date().toISOString() };
+            for (const { item } of g.items) item.epostOp = Object.assign({}, operation);
+            saveDb(db);
+          }
           const r = await epostInsertOrder(db, g, orderNo, body.testYn === 'Y' ? 'Y' : 'N');
           if (body.testYn !== 'Y' && !r.regiNo) {
-            // 오류코드는 없는데 송장번호도 없는 이상 응답 — 접수 성공으로 치면 안 됨
-            out.push({ name: g.name, ok: false, error: '우체국이 송장번호를 주지 않았어요. 잠시 뒤 다시 시도해 주세요.' });
+            for (const { item } of g.items) item.epostOp.state = 'unknown';
+            out.push({ name: g.name, ok: false, safeStop: true, error: '우체국이 송장번호를 주지 않아 결과 확인 상태로 잠갔어요. 같은 건을 다시 접수하지 않습니다.' });
             continue;
           }
           if (body.testYn !== 'Y' && r.regiNo) {
@@ -2367,13 +2429,22 @@ const server = http.createServer((req, res) => {
               item.status = '발송완료';
               item.sentDate = today();
               item.epost = { orderNo, reqNo: r.reqNo, resNo: r.resNo, reqYmd: today().replace(/-/g, ''), stus: '02', price: r.price, label: r.label };
+              item.epostOp.state = 'success';
+              item.epostOp.resolvedAt = new Date().toISOString();
               delete item.resendOk; // 한 번 더 보내기 허용은 1회용
               shippedItems.push({ type, item });
             }
           }
           out.push({ name: g.name, ok: true, regiNo: r.regiNo, price: r.price });
         } catch (e) {
-          out.push({ name: g.name, ok: false, error: e.message });
+          if (body.testYn !== 'Y') {
+            for (const { item } of g.items) {
+              if (!item.epostOp) continue;
+              item.epostOp.state = 'unknown';
+              item.epostOp.error = e.message;
+            }
+          }
+          out.push({ name: g.name, ok: false, safeStop: body.testYn !== 'Y', error: e.message + (body.testYn !== 'Y' ? ' 접수 결과가 불확실해 같은 건을 다시 보내지 않도록 잠갔어요.' : '') });
         }
       }
       let post = { stock: [], cafe24: [], sheet: null };
@@ -2455,11 +2526,57 @@ const server = http.createServer((req, res) => {
       // 우체국에 접수된 건들의 처리상태(예약/운송장출력/집하 등) 새로고침
       const db = loadDb();
       if (!epostConfigured(db) || !db.epost) return sendJson(res, 200, { error: '우체국 연결이 필요해요.' });
+      const recoveredItems = [];
+      const recoveredOperations = new Set();
+      const pendingOperations = new Map();
+      for (const [type, list] of [['order', db.orders], ['seeding', db.seeding]]) {
+        for (const item of list) {
+          if (!item.epostOp || !['pending', 'unknown'].includes(item.epostOp.state)) continue;
+          const key = String(item.epostOp.orderNo || 'missing-' + type + '-' + item.id);
+          if (!pendingOperations.has(key)) pendingOperations.set(key, []);
+          pendingOperations.get(key).push({ type, item });
+        }
+      }
+      const errors = [];
+      for (const entries of pendingOperations.values()) {
+        const operation = entries[0].item.epostOp;
+        try {
+          if (!operation.orderNo || !operation.reqYmd) throw new Error('저장된 우체국 작업번호가 없어 자동 재접수를 막았습니다.');
+          const xml = await epostCall(db, 'api.GetResInfo.jparcel', {
+            custNo: db.epost.custNo, reqType: '1', orderNo: operation.orderNo, reqYmd: operation.reqYmd
+          });
+          const regiNo = xmlVal(xml, 'regiNo');
+          if (!regiNo || regiNo === 'TESTREGINOAPI') throw new Error('우체국 접수 결과를 아직 확인하지 못했습니다.');
+          const stus = xmlVal(xml, 'treatStusCd') || '01';
+          for (const { type, item } of entries) {
+            item.invoice = regiNo;
+            item.courier = '우체국';
+            item.status = '발송완료';
+            item.sentDate = today();
+            item.epost = {
+              orderNo: operation.orderNo,
+              reqNo: xmlVal(xml, 'reqNo'), resNo: xmlVal(xml, 'resNo'), reqYmd: operation.reqYmd,
+              stus, price: xmlVal(xml, 'price'), label: null
+            };
+            item.epostOp.state = 'success';
+            item.epostOp.resolvedAt = new Date().toISOString();
+            delete item.epostOp.error;
+            recoveredItems.push({ type, item });
+          }
+          recoveredOperations.add(operation.orderNo);
+        } catch (error) {
+          for (const { item } of entries) {
+            item.epostOp.state = 'unknown';
+            item.epostOp.error = error.message;
+          }
+          errors.push(entries[0].item.name + ': ' + error.message);
+        }
+      }
       // 끝난 건(집하완료/취소)은 건너뛰어 호출 수를 줄임
       const targets = [...db.orders, ...db.seeding].filter(x => x.epost && x.epost.orderNo && !['03', '05'].includes(x.epost.stus));
-      const done = new Set();
+      const done = new Set(recoveredOperations);
       let refreshed = 0;
-      const errors = [];
+      refreshed += recoveredOperations.size;
       for (const item of targets) {
         if (done.has(item.epost.orderNo)) continue;
         done.add(item.epost.orderNo);
@@ -2487,8 +2604,14 @@ const server = http.createServer((req, res) => {
           errors.push(ret.name + '(회수): ' + error.message);
         }
       }
+      const post = recoveredItems.length
+        ? await postProcessShipped(db, recoveredItems)
+        : { stock: [], stockMissing: [], cafe24: [], sheet: null };
       saveDb(db);
-      return sendJson(res, 200, { ok: true, refreshed, errors: errors.slice(0, 5), db });
+      return sendJson(res, 200, {
+        ok: true, refreshed, recovered: recoveredOperations.size, errors: errors.slice(0, 5),
+        stock: post.stock, stockMissing: post.stockMissing, cafe24: post.cafe24, sheet: post.sheet, db
+      });
     }
     if (url.pathname === '/api/epost/cancel' && req.method === 'POST') {
       const body = JSON.parse((await readBody(req)).toString('utf8'));
@@ -2819,7 +2942,9 @@ const server = http.createServer((req, res) => {
       const b = JSON.parse((await readBody(req)).toString('utf8'));
       const db = loadDb();
       const ret = db.returns.find(x => x.id === b.id);
-      const prepared = prepareReturnCompletion(db, ret, b.restock !== false);
+      const inspection = b.inspection === 'damaged' ? 'damaged' : 'sellable';
+      const shouldRestock = returnRestockAllowed(inspection, b.restock);
+      const prepared = prepareReturnCompletion(db, ret, shouldRestock);
       return sendJson(res, 200, Object.assign({ ok: true }, prepared.safety));
     }
     if (url.pathname === '/api/return/complete' && req.method === 'POST') {
@@ -2827,7 +2952,9 @@ const server = http.createServer((req, res) => {
       const b = JSON.parse((await readBody(req)).toString('utf8'));
       const db = loadDb();
       const ret = db.returns.find(x => x.id === b.id);
-      const prepared = prepareReturnCompletion(db, ret, b.restock !== false);
+      const inspection = b.inspection === 'damaged' ? 'damaged' : 'sellable';
+      const shouldRestock = returnRestockAllowed(inspection, b.restock);
+      const prepared = prepareReturnCompletion(db, ret, shouldRestock);
       if (!prepared.safety.ready) {
         return sendJson(res, 200, Object.assign({ error: prepared.safety.message }, prepared.safety));
       }
@@ -2836,9 +2963,9 @@ const server = http.createServer((req, res) => {
       if (!ret.localCompleted) {
         const returnItems = prepared.returnItems;
         const restockPlan = prepared.restockPlan;
-        ret.inspection = b.inspection === 'damaged' ? 'damaged' : 'sellable';
+        ret.inspection = inspection;
         ret.inspectionAt = new Date().toISOString();
-        if (b.restock !== false) {
+        if (shouldRestock) {
           for (const row of restockPlan.rows) {
             row.inv.qty = (Number(row.inv.qty) || 0) + row.qty;
             out.stock.push({ name: [row.inv.name, row.inv.color, row.inv.size].filter(Boolean).join(' '), plus: row.qty, left: row.inv.qty });

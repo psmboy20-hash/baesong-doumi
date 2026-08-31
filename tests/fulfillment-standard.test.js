@@ -15,6 +15,10 @@ const {
   cafe24ReturnKey,
   stockLedgerRef,
   inventoryCountKnown,
+  availableStockDeduction,
+  canFuzzyMergeOrders,
+  returnRestockAllowed,
+  sheetWriteSucceeded,
   cafe24VariantInventory,
   markMissingCafe24Variants,
   variantAllocationState,
@@ -166,6 +170,37 @@ test('입출고 공개 장부 참조에는 고객 이름을 쓰지 않는다', (
 test('옵션 재고는 실수량 확인 전 출고 차감 대상으로 보지 않는다', () => {
   assert.equal(inventoryCountKnown({ qty: null, needsCount: true }), false);
   assert.equal(inventoryCountKnown({ qty: 0, needsCount: false }), true);
+});
+
+test('출고 수량이 현재 재고보다 많아도 재고는 0 아래로 내려가지 않는다', () => {
+  assert.deepEqual(availableStockDeduction(1, 3, 0), { deducted: 1, shortage: 2, left: 0 });
+  assert.deepEqual(availableStockDeduction(5, 3, 1), { deducted: 2, shortage: 0, left: 3 });
+});
+
+test('기존 음수 재고는 0으로 보호하고 실사 필요로 표시한다', () => {
+  const db = { orders: [], seeding: [], inventory: [{ id: 1, name: '테스트', qty: -1 }], returns: [], stockLog: [] };
+  assert.equal(ensureOperationalFields(db), true);
+  assert.equal(db.inventory[0].qty, 0);
+  assert.equal(db.inventory[0].needsCount, true);
+  assert.match(db.inventory[0].stockIssue, /실사/);
+});
+
+test('다른 Cafe24 주문이나 품목은 이름과 옵션이 같아도 합치지 않는다', () => {
+  assert.equal(canFuzzyMergeOrders({ orderNo: 'A' }, { orderNo: 'B' }), false);
+  assert.equal(canFuzzyMergeOrders({ orderNo: 'A', orderItemCode: 'I1' }, { orderNo: 'A', orderItemCode: 'I2' }), false);
+  assert.equal(canFuzzyMergeOrders({ orderNo: 'A', orderItemCode: 'I1' }, { orderNo: 'A', orderItemCode: 'I1' }), true);
+});
+
+test('불량 회수품은 재고 복귀 요청이 있어도 입고하지 않는다', () => {
+  assert.equal(returnRestockAllowed('damaged', true), false);
+  assert.equal(returnRestockAllowed('sellable', false), false);
+  assert.equal(returnRestockAllowed('sellable', true), true);
+});
+
+test('구글시트 기록은 성공 응답과 기록 건수가 모두 맞아야 완료로 인정한다', () => {
+  assert.equal(sheetWriteSucceeded({ status: 200, json: { ok: true, written: 2 } }, 2), true);
+  assert.equal(sheetWriteSucceeded({ status: 200, json: { ok: false, written: 2 } }, 2), false);
+  assert.equal(sheetWriteSucceeded({ status: 200, json: { ok: true, written: 1 } }, 2), false);
 });
 
 test('카페24 재고관리 중인 옵션만 판매가능 수량으로 읽는다', () => {

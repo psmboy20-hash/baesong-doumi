@@ -69,6 +69,7 @@ function shipmentRecipientKey(x) {
 }
 function shipmentKey(x) {
   if (x.epost && x.epost.orderNo) return 'epost|' + x.epost.orderNo;
+  if (x.epostOp && ['pending', 'unknown'].includes(x.epostOp.state) && x.epostOp.orderNo) return 'epost-op|' + x.epostOp.orderNo;
   if (x.invoice) return 'invoice|' + String(x.invoice).replace(/\D/g, '') + '|' + shipmentRecipientKey(x);
   if (x.status === '발송완료') return 'sent|' + String(x.sentDate || '') + '|' + shipmentRecipientKey(x);
   if (x.status === '취소됨') return 'canceled|' + String(x.orderNo || x.regDate || x.id || '') + '|' + shipmentRecipientKey(x);
@@ -275,9 +276,22 @@ function invoiceCell(inv, courier) {
   }
   return `<span class="muted" style="font-size:0.9rem">${esc(inv)}</span>`;
 }
+function seedingSourceLabel(x) {
+  return /패키지/.test(String(x && x.packType || '')) ? '🎁 패키지 시딩' : '🎁 시딩';
+}
+function epostOperationUnresolved(x) {
+  return !!(x && x.epostOp && ['pending', 'unknown'].includes(x.epostOp.state));
+}
+function shipmentMemoHtml(x) {
+  const lines = [];
+  if (x.note) lines.push(`<div class="ship-note important"><b>비고</b> ${esc(x.note)}</div>`);
+  if (x.request) lines.push(`<div class="ship-note"><b>요청</b> ${esc(x.request)}</div>`);
+  if (x.msg) lines.push(`<div class="ship-note"><b>배송메모</b> ${esc(x.msg)}</div>`);
+  return lines.join('');
+}
 function shipmentSourceLabel(x) {
   if (x.exchange || x.sourceChannel === 'exchange') return '🔁 교환 재발송';
-  if (x.sourceChannel === 'seeding' || x._kind === '시딩') return '🎁 시딩';
+  if (x.sourceChannel === 'seeding' || x._kind === '시딩') return seedingSourceLabel(x);
   if (x.sourceChannel === 'direct') return '✍ 직접 등록';
   return '🛒 주문';
 }
@@ -534,7 +548,9 @@ function renderSend() {
     ...DB.seeding.filter(notDone).map(x => ({ kind: 'seeding', icon: '🎁', x }))
   ];
   // 엑셀로 접수 중인 건은 기본 체크 해제 (바로 접수와 겹쳐 두 번 보내는 것 방지)
-  for (const p of pending) if (p.x.status === '접수중' && p.x._sel === undefined) p.x._sel = false;
+  for (const p of pending) {
+    if ((p.x.status === '접수중' || epostOperationUnresolved(p.x)) && p.x._sel === undefined) p.x._sel = false;
+  }
   const gmap = new Map();
   for (const p of pending) {
     const key = pendingFulfillmentKey(p.kind, p.x);
@@ -566,10 +582,12 @@ function renderSend() {
     const first = g[0].x;
     const groupProductQty = productQuantity(g, entry => entry.x);
     const spec = g.map(p => p.kind + ':' + p.x.id).join(',');
-    const allSel = g.every(p => p.x._sel !== false);
-    const kinds = [...new Set(g.map(p => p.x.exchange ? '🔁 교환' : p.kind === 'seeding' ? '🎁 시딩' : '🛒 주문'))].join('<br>');
+    const postalPending = g.some(p => epostOperationUnresolved(p.x));
+    const allSel = !postalPending && g.every(p => p.x._sel !== false);
+    const kinds = [...new Set(g.map(p => p.x.exchange ? '🔁 교환' : p.kind === 'seeding' ? seedingSourceLabel(p.x) : '🛒 주문'))].join('<br>');
     const names = g.map(p => `<div style="margin:0.1rem 0">${productParts(p.x).name}</div>`).join('');
     const opts = g.map(p => `<div style="margin:0.1rem 0">${productParts(p.x).opt || '<span class="muted">-</span>'}</div>`).join('');
+    const notes = g.map(p => shipmentMemoHtml(p.x)).filter(Boolean).join('');
     const noZip = !/^\d{5}$/.test(String(first.zip || '').trim()) && !matchZipInAddr(first.addr);
     const stusSet = [...new Set(g.map(p => p.x.status))];
     // 3일 넘게 그대로면: 앱 밖(우체국 창구·사이트)에서 이미 보냈는데 앱만 모르는 경우가 많다
@@ -587,7 +605,7 @@ function renderSend() {
         : '';
     return `
     <tr class="${allSel ? 'checked-row' : ''}">
-      <td><input type="checkbox" ${allSel ? 'checked' : ''} onchange="toggleSelGroup('${spec}',this.checked)"></td>
+      <td><input type="checkbox" ${allSel ? 'checked' : ''} ${postalPending ? 'disabled' : ''} onchange="toggleSelGroup('${spec}',this.checked)"></td>
       <td style="white-space:nowrap">${kinds}</td>
       <td><b>${esc(first.name)}</b>${first.insta ? `<br><span class="muted" style="font-size:0.85rem">${esc(first.insta)}</span>` : ''}<br><span class="note-badge">📦 택배 1건 · 상품 ${groupProductQty}개</span>${packingAction}</td>
       <td>${esc(first.phone)}</td>
@@ -600,7 +618,8 @@ function renderSend() {
           : `<div class="muted" style="margin-top:0.25rem;font-size:0.84rem">주소로 자동 검색 중…</div>`}` : ''}</td>
       <td style="min-width:240px;max-width:480px">${names}</td>
       <td>${opts}</td>
-      <td style="white-space:nowrap">${dupBadge}${staleBadge}${stusSet.map(s => chip(s)).join(' ')}<div class="btn-col" style="margin-top:0.3rem">${stusSet.includes('접수중') ? `<button class="link-btn" style="font-size:0.85rem" onclick="cancelExcelGroup('${spec}','${jsq(first.name)}')">↩️ 엑셀 접수 취소</button>` : ''}<button class="link-btn" style="font-size:0.85rem" onclick="manualShipGroup('${spec}','${jsq(first.name)}')">따로 보냈어요</button><button class="link-btn" style="font-size:0.85rem;color:var(--red)" onclick="cancelSendGroup('${spec}','${jsq(first.name)}')">안 보내요 ✕</button></div></td>
+      <td style="min-width:180px;max-width:300px">${notes || '<span class="muted">-</span>'}</td>
+      <td style="white-space:nowrap">${postalPending ? '<span class="chip processing">🛡 우체국 결과 확인 중</span><br><span class="muted" style="font-size:0.8rem">같은 건 재접수 금지</span><br><button class="link-btn" style="font-weight:800" onclick="epostRefresh()">🔄 접수 결과 확인</button>' : `${dupBadge}${staleBadge}${stusSet.map(s => chip(s)).join(' ')}<div class="btn-col" style="margin-top:0.3rem">${stusSet.includes('접수중') ? `<button class="link-btn" style="font-size:0.85rem" onclick="cancelExcelGroup('${spec}','${jsq(first.name)}')">↩️ 엑셀 접수 취소</button>` : ''}<button class="link-btn" style="font-size:0.85rem" onclick="manualShipGroup('${spec}','${jsq(first.name)}')">따로 보냈어요</button><button class="link-btn" style="font-size:0.85rem;color:var(--red)" onclick="cancelSendGroup('${spec}','${jsq(first.name)}')">안 보내요 ✕</button></div>`}</td>
     </tr>`;
   }).join('');
 
@@ -628,7 +647,7 @@ function renderSend() {
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>보내기</th><th>구분</th><th>이름</th><th>연락처</th><th>주소</th><th>제품</th><th>옵션</th><th>상태</th></tr></thead>
+          <thead><tr><th>보내기</th><th>구분</th><th>이름</th><th>연락처</th><th>주소</th><th>제품</th><th>옵션</th><th>포장·비고</th><th>상태</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
@@ -818,9 +837,10 @@ function renderEpost() {
   const parcels = shipmentGroups(items, entry => entry.x);
   const rows = parcels.map(group => {
     const { kind, x } = group[0];
-    const kinds = [...new Set(group.map(entry => entry.kind === 'seeding' ? '🎁 시딩' : '🛒 주문'))].join('<br>');
+    const kinds = [...new Set(group.map(entry => entry.kind === 'seeding' ? seedingSourceLabel(entry.x) : '🛒 주문'))].join('<br>');
     const products = group.map(entry => `<div>${productParts(entry.x).name}</div>`).join('');
     const options = group.map(entry => `<div>${productParts(entry.x).opt || '<span class="muted">-</span>'}</div>`).join('');
+    const notes = group.map(entry => shipmentMemoHtml(entry.x)).filter(Boolean).join('');
     const [cls, nm] = x.delivered ? ['done', '배달완료 ✓✓'] : (EPOST_STUS[x.epost.stus] || ['processing', '확인 필요']);
     const cancelable = !x.delivered && ['00', '01', '02'].includes(x.epost.stus || '01');
     return `
@@ -829,6 +849,7 @@ function renderEpost() {
       <td><b>${esc(x.name)}</b></td>
       <td style="min-width:220px;max-width:440px">${products}</td>
       <td>${options}</td>
+      <td style="min-width:180px;max-width:300px">${notes || '<span class="muted">-</span>'}</td>
       <td style="max-width:150px">${x.invoice ? invoiceCell(x.invoice) : '<span class="muted">-</span>'}</td>
       <td><span class="chip ${cls}">${nm}</span></td>
       <td style="white-space:nowrap">${esc(x.sentDate || '')}</td>
@@ -857,7 +878,7 @@ function renderEpost() {
       ${parcels.length ? `
       <div class="table-wrap" style="max-height:65vh">
         <table>
-          <thead><tr><th>구분</th><th>이름</th><th>제품</th><th>옵션</th><th>송장번호</th><th>진행상태</th><th>접수일</th><th>인쇄·취소</th></tr></thead>
+          <thead><tr><th>구분</th><th>이름</th><th>제품</th><th>옵션</th><th>포장·비고</th><th>송장번호</th><th>진행상태</th><th>접수일</th><th>인쇄·취소</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
@@ -925,7 +946,7 @@ async function epostRefresh() {
   if (r.error) { toast('⚠️ ' + r.error, 6000); return; }
   adoptDb(r.db);
   render();
-  toast(`✔️ ${r.refreshed}건 상태를 새로 확인했어요.` + (r.errors && r.errors.length ? ' (일부 실패)' : ''), 5000);
+  toast(`✔️ ${r.refreshed}건 상태를 새로 확인했어요.` + (r.recovered ? ` 불확실했던 접수 ${r.recovered}건도 찾았어요.` : '') + (r.errors && r.errors.length ? ' 일부는 아직 확인 중이에요.' : ''), 6000);
 }
 async function epostCancel(kind, id, name) {
   if (!confirm(`${name}님의 우체국 접수를 정말 취소할까요?\n\n· 발급된 송장번호는 무효가 돼요\n· 이 건은 [보내기] 목록으로 되돌아가요\n· 뺐던 재고도 다시 채워져요`)) return;
@@ -1257,7 +1278,7 @@ async function returnComplete(id, name, kind) {
   const ret = (DB.returns || []).find(x => x.id === id);
   if (ret && ret.localCompleted) {
     busy(true, '변경 전 안전 점검 중…');
-    const preflight = await api('/api/return/preflight', { method: 'POST', body: JSON.stringify({ id, restock: false }) });
+    const preflight = await api('/api/return/preflight', { method: 'POST', body: JSON.stringify({ id, restock: false, inspection: ret.inspection || 'sellable' }) });
     busy(false);
     if (preflight.error || !preflight.ready) { showReturnSafeStop(preflight); return; }
     if (!confirm(`${name}님 건의 실물·재고 처리는 이미 끝났어요.\n카페24 상태 반영만 다시 시도할까요?`)) return;
@@ -1274,7 +1295,7 @@ async function returnComplete(id, name, kind) {
   const sellable = confirm(`${name}님의 회수품을 검수해 주세요.\n\n정상 상품으로 다시 판매할 수 있나요?\n\n[확인] 정상 — 재고에 다시 넣기\n[취소] 불량/오염 — 재고에서 제외`);
   if (!sellable && !confirm(`불량/오염으로 처리할까요?\n\n· 재고에는 다시 넣지 않습니다${extra}`)) return;
   busy(true, '변경 전 안전 점검 중…');
-  const preflight = await api('/api/return/preflight', { method: 'POST', body: JSON.stringify({ id, restock: sellable }) });
+  const preflight = await api('/api/return/preflight', { method: 'POST', body: JSON.stringify({ id, restock: sellable, inspection: sellable ? 'sellable' : 'damaged' }) });
   busy(false);
   if (preflight.error || !preflight.ready) { showReturnSafeStop(preflight); return; }
   busy(true, '처리하는 중…');
@@ -1350,6 +1371,7 @@ function renderShipping() {
       : `아직 보낸 택배가 없어요.<br><button class="link-btn" onclick="go('send')">📮 보내기에서 첫 택배를 접수해 보세요</button>`;
   const rows = filtered.slice(0, 200).map(x => {
     const pp = productParts(x);
+    const memo = shipmentMemoHtml(x);
     return `
     <tr>
       <td style="white-space:nowrap">${shipmentSourceLabel(x)}</td>
@@ -1357,6 +1379,7 @@ function renderShipping() {
       <td><b>${esc(x.name)}</b></td>
       <td style="min-width:240px;max-width:480px">${pp.name}</td>
       <td>${pp.opt || '<span class="muted">-</span>'}</td>
+      <td style="min-width:180px;max-width:300px">${memo || '<span class="muted">-</span>'}</td>
       <td>${chip(x.delivered ? '배달완료' : x.status)}${!x.delivered && x.status === '발송완료' && x.deliveryCheckStatus === '확인필요' ? '<br><span class="note-badge">택배사 확인 필요</span>' : ''}</td>
       <td style="max-width:150px">${invoiceCell(x.invoice, x.courier)}</td>
       <td style="white-space:nowrap"><div class="btn-col">${x.status === '발송완료'
@@ -1373,8 +1396,8 @@ function renderShipping() {
     <div class="card">
       <div class="table-wrap" style="max-height:70vh">
         <table>
-          <thead><tr><th>구분</th><th>보낸 날</th><th>이름</th><th>제품</th><th>옵션</th><th>상태</th><th>송장번호</th><th>교환/반품</th></tr></thead>
-          <tbody>${rows || `<tr><td colspan="8" class="muted" style="font-size:1.05rem;padding:1.5rem">${emptyMsg}</td></tr>`}</tbody>
+          <thead><tr><th>구분</th><th>보낸 날</th><th>이름</th><th>제품</th><th>옵션</th><th>포장·비고</th><th>상태</th><th>송장번호</th><th>교환/반품</th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="9" class="muted" style="font-size:1.05rem;padding:1.5rem">${emptyMsg}</td></tr>`}</tbody>
         </table>
       </div>
       ${cutNote}

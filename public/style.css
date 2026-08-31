@@ -185,6 +185,12 @@ input[type="checkbox"] { width: 1.6rem; height: 1.6rem; accent-color: var(--gree
   font-size: 0.85rem; font-weight: 800; padding: 0.1rem 0.7rem;
   vertical-align: middle; white-space: nowrap;
 }
+.ship-note {
+  margin: 0.18rem 0; padding: 0.35rem 0.5rem; border-radius: 8px;
+  background: #f4f7fb; color: #39445a; font-size: 0.86rem; line-height: 1.35;
+  white-space: pre-line; overflow-wrap: anywhere;
+}
+.ship-note.important { background: #fff1db; color: #8a4b00; border: 1px solid #efbd76; }
 
 /* 도움말 말풍선 */
 .help-btn {

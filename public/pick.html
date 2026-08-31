@@ -28,6 +28,9 @@
 <div id="out">불러오는 중…</div>
 <script>
 const lettersOnly = s => String(s || '').toLowerCase().replace(/[^a-z가-힣]/g, '');
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const safeImg = s => /^https?:\/\//i.test(String(s || '').trim()) ? String(s).trim() : '';
+const seedingLabel = x => /패키지/.test(String(x && x.packType || '')) ? '패키지 시딩' : '시딩';
 function splitColor(name) {
   const m = String(name || '').match(/^(.*?)\s*\(([^()]+)\)\s*$/);
   return m ? { base: m[1], color: m[2] } : { base: String(name || ''), color: '' };
@@ -89,14 +92,17 @@ function optOf(x) {
     <h2>① 꺼낼 옷 (제품별 합계 — 총 ${totalQty}개)</h2>
     <table><thead><tr><th></th><th>사진</th><th>제품</th><th>옵션</th><th style="text-align:center">개수</th></tr></thead><tbody>`;
   for (const r of rows) {
-    html += `<tr><td class="chk">☐</td><td>${r.img ? `<img src="${r.img}">` : ''}</td><td><b>${r.name}</b></td><td class="opt">${r.opt || '-'}</td><td class="qty">${r.qty}</td></tr>`;
+    const imageUrl = safeImg(r.img);
+    html += `<tr><td class="chk">☐</td><td>${imageUrl ? `<img src="${esc(imageUrl)}">` : ''}</td><td><b>${esc(r.name)}</b></td><td class="opt">${esc(r.opt || '-')}</td><td class="qty">${r.qty}</td></tr>`;
   }
   html += `</tbody></table>
     <h2>② 사람별 확인 (${items.length}명)</h2>
-    <table><thead><tr><th></th><th>이름</th><th>제품</th><th>요청사항</th></tr></thead><tbody>`;
+    <table><thead><tr><th></th><th>구분</th><th>이름</th><th>제품</th><th>포장·비고</th></tr></thead><tbody>`;
   for (const x of items) {
     const size = optOf(x);
-    html += `<tr><td class="chk">☐</td><td><b>${x.name}</b></td><td>${x.product || ''}${size ? ` <b>(${size})</b>` : ''}</td><td class="muted">${x.msg || x.request || ''}</td></tr>`;
+    const kind = x.sourceChannel === 'seeding' ? seedingLabel(x) : x.exchange ? '교환 재발송' : '주문';
+    const memo = [x.note ? `비고: ${x.note}` : '', x.request ? `요청: ${x.request}` : '', x.msg ? `배송메모: ${x.msg}` : ''].filter(Boolean).join('\n');
+    html += `<tr><td class="chk">☐</td><td><b>${esc(kind)}</b></td><td><b>${esc(x.name)}</b></td><td>${esc(x.product || '')}${size ? ` <b>(${esc(size)})</b>` : ''}</td><td class="muted" style="white-space:pre-line">${esc(memo || '-')}</td></tr>`;
   }
   html += '</tbody></table>';
   document.getElementById('out').innerHTML = html;
