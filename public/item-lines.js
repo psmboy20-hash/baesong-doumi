@@ -39,7 +39,7 @@
   function splitShipmentItems(item) {
     const source = item || {};
     const rawLines = productTextParts(source).productLines;
-    if (!rawLines.length) return [];
+    if (!rawLines.length) return [Object.assign({}, source, { product: '', qty: Number(source.qty) || 1 })];
     const lines = rawLines.map(lineWithSize);
     const sizes = sizeList(source.size);
 

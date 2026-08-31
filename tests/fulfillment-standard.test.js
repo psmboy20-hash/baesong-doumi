@@ -108,6 +108,11 @@ test('제품 칸의 별표 안내는 상품 수량에서 빼고 포장 비고로
   assert.deepEqual(shipmentProductNotes(row), ['각 사이즈 확인 필요']);
 });
 
+test('상품명이 비어도 우체국 접수 수량은 최소 한 품목을 유지한다', () => {
+  const items = splitShipmentItems({ product: '', qty: 1 });
+  assert.deepEqual(items.map(item => [item.product, item.qty]), [['', 1]]);
+});
+
 test('상품 한 줄에 사이즈를 여러 개 적어도 사이즈별 품목으로 분리한다', () => {
   const items = splitShipmentItems({ product: 'B#05_Tessa Pigment Pants(Brown)', size: 'S,M' });
   assert.deepEqual(items.map(item => [item.product, item.size, item.qty]), [
