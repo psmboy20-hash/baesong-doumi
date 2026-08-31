@@ -48,18 +48,61 @@ test('새 자동 열이 없는 예전 시트는 저장된 옵션품번을 지우
   assert.equal(db.seeding[0].variantCode, 'V83');
 });
 
-test('새 자동 열이 있으면 레거시 제품값보다 정확한 카페24 옵션을 우선한다', () => {
+test('사람이 적는 제품명 컬러 사이즈가 자동 보조열보다 항상 우선한다', () => {
   const fields = seedingProductFields([
-    '예전 자유입력 제품', 'S', 'B#05_Tessa Pigment Pants | Brown | L',
+    '직접 적은 제품', '직접 컬러', '직접 사이즈', 'B#05_Tessa Pigment Pants | Brown | L',
     'B#05_Tessa Pigment Pants', 'Brown', 'L', '83', 'P00000DF000C'
   ], {
-    product: 0, size: 1, selectedOption: 2, masterProduct: 3, masterColor: 4,
-    masterSize: 5, masterProductNo: 6, variantCode: 7
+    product: 0, color: 1, size: 2, selectedOption: 3, masterProduct: 4, masterColor: 5,
+    masterSize: 6, masterProductNo: 7, variantCode: 8
   });
   assert.deepEqual(fields, {
-    product: 'B#05_Tessa Pigment Pants', size: 'L',
-    selectedOption: 'B#05_Tessa Pigment Pants | Brown | L', color: 'Brown',
+    product: '직접 적은 제품', color: '직접 컬러', size: '직접 사이즈',
+    selectedOption: '', productNo: null, variantCode: ''
+  });
+});
+
+test('K L M과 자동 보조열이 정확히 같을 때만 내부 옵션품번을 사용한다', () => {
+  const fields = seedingProductFields([
+    'B#05_Tessa Pigment Pants', 'Brown', 'L', 'B#05_Tessa Pigment Pants | Brown | L',
+    'B#05_Tessa Pigment Pants', 'Brown', 'L', '83', 'P00000DF000C'
+  ], {
+    product: 0, color: 1, size: 2, selectedOption: 3, masterProduct: 4, masterColor: 5,
+    masterSize: 6, masterProductNo: 7, variantCode: 8
+  });
+  assert.deepEqual(fields, {
+    product: 'B#05_Tessa Pigment Pants', color: 'Brown', size: 'L',
+    selectedOption: 'B#05_Tessa Pigment Pants | Brown | L',
     productNo: '83', variantCode: 'P00000DF000C'
+  });
+});
+
+test('K L M이 모두 빈 옛 행만 자동 보조열을 대신 사용한다', () => {
+  const fields = seedingProductFields([
+    '', '', '', 'B#05_Tessa Pigment Pants | Brown | L',
+    'B#05_Tessa Pigment Pants', 'Brown', 'L', '83', 'P00000DF000C'
+  ], {
+    product: 0, color: 1, size: 2, selectedOption: 3, masterProduct: 4, masterColor: 5,
+    masterSize: 6, masterProductNo: 7, variantCode: 8
+  });
+  assert.deepEqual(fields, {
+    product: 'B#05_Tessa Pigment Pants', color: 'Brown', size: 'L',
+    selectedOption: 'B#05_Tessa Pigment Pants | Brown | L',
+    productNo: '83', variantCode: 'P00000DF000C'
+  });
+});
+
+test('K L M이 빈 예전 선택행은 합쳐진 상품 옵션값에서 복구한다', () => {
+  const fields = seedingProductFields([
+    '', '', '', 'A#01_Annie Binding Sleeveless | 화이트 | Free', '', '', '', '', ''
+  ], {
+    product: 0, color: 1, size: 2, selectedOption: 3, masterProduct: 4, masterColor: 5,
+    masterSize: 6, masterProductNo: 7, variantCode: 8
+  });
+  assert.deepEqual(fields, {
+    product: 'A#01_Annie Binding Sleeveless', color: '화이트', size: 'Free',
+    selectedOption: 'A#01_Annie Binding Sleeveless | 화이트 | Free',
+    productNo: null, variantCode: ''
   });
 });
 
@@ -80,7 +123,7 @@ test('현재 시딩 시트 머리글과 완전한 자동 옵션 열은 정상 �
   const header = [
     'Column 13', '작성일', '타임스탬프', '시딩 형태', '이메일 주소', '개인정보 이용 동의',
     '본인 성명을 기입해주세요', '인스타그램 계정명 (아이디)을 입력해 주세요.', '연락처를 입력해 주세요.',
-    '상세주소를 작성해 주세요.', '제품명', '사이즈', '컬러', '협업 조건 동의', '콘텐츠 2차 활용 동의',
+    '상세주소를 작성해 주세요.', '제품명', '컬러', '사이즈', '협업 조건 동의', '콘텐츠 2차 활용 동의',
     '기타 요청사항 또는 전달 메세지', '발송일', '송장번호(우체국택배)', '재고반영(자사몰)',
     '2차 활용 동의', '피드/릴스 업로드', '사진/영상 공유', '비고', '상품·옵션 선택',
     '상품명(자동)', '컬러(자동)', '사이즈(자동)', '상품번호(자동)', '옵션품번(자동)'
