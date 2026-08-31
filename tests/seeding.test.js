@@ -88,6 +88,29 @@ test('시트를 빈 결과로 읽었을 때 기존 대기 시딩을 취소하지
   assert.equal(db.seeding[0].status, '대기');
 });
 
+test('시트에서 고른 카페24 상품·옵션 식별자를 대기 시딩에 그대로 보존한다', () => {
+  const db = {
+    nextId: 2,
+    seeding: [{
+      id: 1, sourceRowId: '31', name: '옵션테스트', phone: '01011112222', status: '대기',
+      product: '기존 제품', color: '', size: 'S', productNo: '', variantCode: ''
+    }]
+  };
+  const result = mergeSeedingRows(db, [{
+    sourceRowId: '31', name: '옵션테스트', phone: '01011112222', status: '대기',
+    product: 'B#05_Tessa Pigment Pants', color: 'Brown', size: 'L',
+    selectedOption: 'B#05_Tessa Pigment Pants | Brown | L',
+    productNo: '83', variantCode: 'P00000DF000C', packType: '일반 패킹'
+  }], helpers);
+
+  assert.equal(result.updated, 1);
+  assert.equal(db.seeding[0].product, 'B#05_Tessa Pigment Pants');
+  assert.equal(db.seeding[0].color, 'Brown');
+  assert.equal(db.seeding[0].size, 'L');
+  assert.equal(db.seeding[0].productNo, '83');
+  assert.equal(db.seeding[0].variantCode, 'P00000DF000C');
+});
+
 test('시트에서 실제로 사라진 대기 행만 취소한다', () => {
   const db = {
     nextId: 3,
