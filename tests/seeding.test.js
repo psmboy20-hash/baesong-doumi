@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const {
   normalizeSeedingPacking,
   findExactSeedingCol,
+  inspectSeedingSchema,
   seedingProductFields,
   mergeSeedingRows
 } = require('../lib/seeding');
@@ -60,6 +61,48 @@ test('새 자동 열이 있으면 레거시 제품값보다 정확한 카페24 �
     selectedOption: 'B#05_Tessa Pigment Pants | Brown | L', color: 'Brown',
     productNo: '83', variantCode: 'P00000DF000C'
   });
+});
+
+test('자동 열이 빈 기존 행은 제품명 컬러 사이즈를 사람이 적은 열에서 복구한다', () => {
+  const fields = seedingProductFields([
+    'S#01_Clara Denim', 'Skyblue', 'M', '', '', '', '', '', ''
+  ], {
+    product: 0, color: 1, size: 2, selectedOption: 3, masterProduct: 4,
+    masterColor: 5, masterSize: 6, masterProductNo: 7, variantCode: 8
+  });
+  assert.deepEqual(fields, {
+    product: 'S#01_Clara Denim', color: 'Skyblue', size: 'M',
+    selectedOption: '', productNo: null, variantCode: ''
+  });
+});
+
+test('현재 시딩 시트 머리글과 완전한 자동 옵션 열은 정상 구조로 판정한다', () => {
+  const header = [
+    'Column 13', '작성일', '타임스탬프', '시딩 형태', '이메일 주소', '개인정보 이용 동의',
+    '본인 성명을 기입해주세요', '인스타그램 계정명 (아이디)을 입력해 주세요.', '연락처를 입력해 주세요.',
+    '상세주소를 작성해 주세요.', '제품명', '사이즈', '컬러', '협업 조건 동의', '콘텐츠 2차 활용 동의',
+    '기타 요청사항 또는 전달 메세지', '발송일', '송장번호(우체국택배)', '재고반영(자사몰)',
+    '2차 활용 동의', '피드/릴스 업로드', '사진/영상 공유', '비고', '상품·옵션 선택',
+    '상품명(자동)', '컬러(자동)', '사이즈(자동)', '상품번호(자동)', '옵션품번(자동)'
+  ];
+  const col = {
+    pack: 3, name: 6, phone: 8, addr: 9, product: 10, note: 22,
+    selectedOption: 23, masterProduct: 24, masterColor: 25,
+    masterSize: 26, masterProductNo: 27, variantCode: 28
+  };
+  const result = inspectSeedingSchema(header, col, 0);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.missing, []);
+});
+
+test('자동 옵션 열 일부가 빠지면 장부를 건드리기 전에 구조 오류로 막는다', () => {
+  const result = inspectSeedingSchema(['Column 13', '시딩 형태', '성명', '연락처', '주소', '제품명', '비고', '상품·옵션 선택'], {
+    pack: 1, name: 2, phone: 3, addr: 4, product: 5, note: 6,
+    selectedOption: 7, masterProduct: -1, masterColor: -1,
+    masterSize: -1, masterProductNo: -1, variantCode: -1
+  }, 0);
+  assert.equal(result.ok, false);
+  assert.match(result.message, /상품명\(자동\)/);
 });
 
 test('시트 비고와 포장 구분은 발송 후 수정되거나 지워져도 최신값을 따른다', () => {

@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const https = require('https');
+const crypto = require('crypto');
 const { exec } = require('child_process');
 const XLSX = require('xlsx');
 const seed = require('./lib/seed128');
@@ -58,6 +59,7 @@ const {
   normalizeSeedingPacking,
   stableSheetRowId,
   findExactSeedingCol,
+  inspectSeedingSchema,
   seedingProductFields,
   mergeSeedingRows
 } = require('./lib/seeding');
@@ -237,6 +239,7 @@ function defaultDb() {
     orders: [],
     inventory: [],
     returns: [],
+    sheetSchema: null,
     cafe24Token: null,
     rev: 0,
     nextId: 1
@@ -1202,6 +1205,80 @@ const syncStatus = {
   google: { ok: null, error: null, added: 0 },
   cafe24: { configured: false, connected: false, ok: null, error: null, added: 0 }
 };
+
+async function writeSheetSchemaStatus(db, schema) {
+  const webhook = String(db.settings.sheetWebhookUrl || '').trim();
+  if (!webhook) return { ok: false, error: '구글시트 자동기록 주소가 설정되지 않았어요.' };
+  const headers = { 'Content-Type': 'application/json' };
+  const token = db.settings.sheetWebhookToken || '';
+  const capability = await httpsJson('POST', webhook, headers, { token, action: 'capabilities' });
+  if (!(capability.status >= 200 && capability.status < 300 && capability.json && capability.json.schemaStatus === true)) {
+    return { ok: false, error: '구글시트 자동기록 스크립트를 최신 버전으로 바꿔 주세요.' };
+  }
+  const response = await httpsJson('POST', webhook, headers, {
+    token,
+    action: 'schemaStatus',
+    status: schema.ok ? '정상' : '확인 필요',
+    level: schema.level,
+    checkedAt: schema.checkedAt,
+    sheetName: schema.sheetName,
+    headerCount: schema.headerCount,
+    message: schema.message,
+    missing: schema.missing,
+    duplicates: schema.duplicates
+  });
+  if (!(response.status >= 200 && response.status < 300 && response.json && response.json.ok && response.json.schemaStatus)) {
+    return { ok: false, error: response.json && response.json.error || `시트 경고 기록 실패 (${response.status})` };
+  }
+  return { ok: true };
+}
+
+async function updateSheetSchema(db, rawSchema, sheetName) {
+  const previous = db.sheetSchema || {};
+  const fingerprint = crypto.createHash('sha256').update(JSON.stringify(rawSchema.headers || [])).digest('hex');
+  const knownBefore = !!previous.fingerprint;
+  const headersChanged = knownBefore && previous.fingerprint !== fingerprint ||
+    previous.fingerprint === fingerprint && previous.level === 'warning';
+  const level = rawSchema.ok ? (headersChanged ? 'warning' : 'ok') : 'error';
+  const message = rawSchema.ok && headersChanged
+    ? '시트 열 구성이 바뀌었지만 배송에 필요한 연결 열은 모두 정상입니다.'
+    : rawSchema.message;
+  const schema = {
+    ok: rawSchema.ok,
+    level,
+    message,
+    checkedAt: '',
+    sheetName,
+    headerCount: rawSchema.headerCount,
+    missing: rawSchema.missing || [],
+    duplicates: rawSchema.duplicates || [],
+    fingerprint,
+    headersChanged
+  };
+  const stateChanged = previous.fingerprint !== fingerprint || previous.ok !== schema.ok || previous.level !== schema.level;
+  const lastAttempt = new Date(previous.notifyAttemptAt || 0).getTime();
+  const retryDue = previous.notifyOk !== true && (!Number.isFinite(lastAttempt) || Date.now() - lastAttempt >= 30 * 60 * 1000);
+  const checkedAt = stateChanged || retryDue ? new Date().toISOString() : previous.checkedAt || new Date().toISOString();
+  schema.checkedAt = checkedAt;
+  if (stateChanged || retryDue) {
+    schema.notifyAttemptAt = checkedAt;
+    try {
+      const result = await writeSheetSchemaStatus(db, schema);
+      schema.notifyOk = result.ok;
+      schema.notifyError = result.error || '';
+    } catch (error) {
+      schema.notifyOk = false;
+      schema.notifyError = error.message;
+    }
+  } else {
+    schema.notifyAttemptAt = previous.notifyAttemptAt || '';
+    schema.notifyOk = previous.notifyOk === true;
+    schema.notifyError = previous.notifyError || '';
+  }
+  db.sheetSchema = schema;
+  return JSON.stringify(previous) !== JSON.stringify(schema);
+}
+
 async function syncGoogle(db) {
   const sid = sheetIdOf(db);
   if (!sid) throw new Error('구글시트 주소가 없어요. 설정에서 시딩 구글시트 주소를 넣어 주세요.');
@@ -1216,8 +1293,17 @@ async function syncGoogle(db) {
   }
   const seedName = exactSeedName || seedCandidates[0];
   if (!seedName) throw new Error('구글시트에서 [시딩 발송 리스트] 탭을 찾지 못했습니다. 탭 이름을 확인해 주세요.');
-  seedRes = mergeSeeding(db, parseSeedingSheet(wb.Sheets[seedName]));
-  return { seeding: seedRes, orders: { added: 0, updated: 0 } };
+  const schema = {};
+  let parsed;
+  try {
+    parsed = parseSeedingSheet(wb.Sheets[seedName], schema);
+  } catch (error) {
+    if (schema.headers) await updateSheetSchema(db, Object.assign(schema, { ok: false, message: error.message }), seedName);
+    throw error;
+  }
+  const sheetSchemaChanged = await updateSheetSchema(db, schema, seedName);
+  seedRes = mergeSeeding(db, parsed);
+  return { seeding: seedRes, orders: { added: 0, updated: 0 }, sheetSchemaChanged };
 }
 // 우체국 배달완료 자동 확인 (키 불필요, 회당 10건):
 // 조회 페이지의 hidden input #deliveryVal 값이 "배달완료"/"수취함투함"일 때만 완료 —
@@ -1298,14 +1384,18 @@ async function syncAll() {
   // 카페24만 건너뜀 (두 PC가 동시에 붙으면 토큰이 서로 뺏겨 매장 연결이 풀림)
   syncStatus.lastRun = new Date().toISOString();
   let changed = false;
-  const out = { seeding: { added: 0, updated: 0 }, orders: { added: 0, updated: 0 }, cafe24: { added: 0, updated: 0 } };
+  const emptyResult = () => ({ added: 0, updated: 0, canceled: 0, existing: 0, ordersAdded: 0, ordersExisting: 0 });
+  const out = { seeding: emptyResult(), orders: emptyResult(), cafe24: emptyResult() };
+  const beforeGoogleSchema = JSON.stringify(db.sheetSchema || null);
   try {
     const g = await syncGoogle(db);
     out.seeding = g.seeding; out.orders = g.orders;
-    syncStatus.google = { ok: true, error: null, added: g.seeding.added + g.orders.added };
+    syncStatus.google = { ok: true, error: null, added: g.seeding.added + g.orders.added, schema: db.sheetSchema };
+    if (g.sheetSchemaChanged) changed = true;
     if ([g.seeding, g.orders].some(result => ['added', 'updated', 'canceled'].some(key => Number(result[key] || 0) > 0))) changed = true;
   } catch (e) {
-    syncStatus.google = { ok: false, error: e.message, added: 0 };
+    syncStatus.google = { ok: false, error: e.message, added: 0, schema: db.sheetSchema };
+    if (JSON.stringify(db.sheetSchema || null) !== beforeGoogleSchema) changed = true;
   }
   syncStatus.cafe24.configured = cafe24Configured(db);
   syncStatus.cafe24.connected = !!db.cafe24Token;
@@ -1435,14 +1525,14 @@ async function syncAll() {
 }
 
 // ---------- 시딩 시트 파싱 ----------
-function parseSeedingSheet(ws) {
+function parseSeedingSheet(ws, schemaOut) {
   const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
   if (!rows.length) return [];
   const H = rows[0];
   const sourceIdCol = H.findIndex(value => ['column13', '시딩번호', '관리번호'].includes(String(value || '').replace(/\s/g, '').toLowerCase()));
   const col = {
     date: findCol(H, ['작성일']),
-    pack: findCol(H, ['타임스탬프']), // 이 시트에선 '일반 패킹/시딩 패키지'가 들어있음
+    pack: findCol(H, ['시딩형태', '타임스탬프']),
     type: findCol(H, ['시딩형태']),
     email: findCol(H, ['이메일']),
     name: findCol(H, ['성명']),
@@ -1450,8 +1540,9 @@ function parseSeedingSheet(ws) {
     phone: findCol(H, ['연락처']),
     addr: findCol(H, ['상세주소', '주소']),
     zip: findCol(H, ['우편번호']),
-    product: findCol(H, ['희망제품', '제품정보']),
-    size: findCol(H, ['희망사이즈', '사이즈선택']),
+    product: findExactSeedingCol(H, ['제품명', '희망제품', '제품정보']),
+    color: findExactSeedingCol(H, ['컬러', '색상']),
+    size: findExactSeedingCol(H, ['사이즈', '희망사이즈', '사이즈선택']),
     selectedOption: findExactSeedingCol(H, ['상품옵션선택', '상품·옵션선택']),
     masterProduct: findExactSeedingCol(H, ['상품명자동', '상품명(자동)']),
     masterColor: findExactSeedingCol(H, ['컬러자동', '컬러(자동)']),
@@ -1464,9 +1555,9 @@ function parseSeedingSheet(ws) {
     stock: findCol(H, ['재고반영']),
     note: findCol(H, ['비고'])
   };
-  if (sourceIdCol < 0 || col.pack < 0 || col.note < 0 || col.name < 0 || col.phone < 0 || col.addr < 0 || (col.product < 0 && col.masterProduct < 0)) {
-    throw new Error('시딩 시트에서 고유번호·포장구분·비고·성명·연락처·주소·제품 열을 모두 찾지 못했습니다. 시트 머리글을 확인해 주세요.');
-  }
+  const schema = inspectSeedingSchema(H, col, sourceIdCol);
+  if (schemaOut && typeof schemaOut === 'object') Object.assign(schemaOut, schema);
+  if (!schema.ok) throw new Error(schema.message + ' 시트 머리글을 확인해 주세요.');
   const out = [];
   const sourceIds = new Set();
   for (let r = 1; r < rows.length; r++) {
