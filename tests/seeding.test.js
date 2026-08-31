@@ -2,6 +2,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   normalizeSeedingPacking,
+  findExactSeedingCol,
+  seedingProductFields,
   mergeSeedingRows
 } = require('../lib/seeding');
 
@@ -16,6 +18,48 @@ test('일반 패킹과 패키지 시딩을 작업자가 보는 두 이름으로 
   assert.equal(normalizeSeedingPacking('일반패킹'), '시딩');
   assert.equal(normalizeSeedingPacking(''), '시딩');
   assert.equal(normalizeSeedingPacking('시딩 패키지'), '패키지 시딩');
+});
+
+test('자동 상품 열은 이름이 비슷한 백업 열이 아니라 정확한 머리글만 고른다', () => {
+  const header = ['상품명(자동) 백업', '상품명(자동)', '옵션품번(자동) 메모', '옵션품번(자동)'];
+  assert.equal(findExactSeedingCol(header, ['상품명자동', '상품명(자동)']), 1);
+  assert.equal(findExactSeedingCol(header, ['옵션품번자동', '옵션품번(자동)']), 3);
+});
+
+test('새 자동 열이 없는 예전 시트는 저장된 옵션품번을 지우지 않는다', () => {
+  const db = {
+    nextId: 2,
+    seeding: [{
+      id: 1, sourceRowId: '20', name: '기존', phone: '01011112222', status: '대기',
+      product: '기존 제품', color: 'Brown', size: 'L', productNo: '83', variantCode: 'V83'
+    }]
+  };
+  const fields = seedingProductFields(['기존 제품', 'L'], {
+    product: 0, size: 1, selectedOption: -1, masterProduct: -1, masterColor: -1,
+    masterSize: -1, masterProductNo: -1, variantCode: -1
+  });
+  mergeSeedingRows(db, [Object.assign({
+    sourceRowId: '20', name: '기존', phone: '01011112222', packType: '일반 패킹'
+  }, fields)], helpers);
+
+  assert.equal(db.seeding[0].color, 'Brown');
+  assert.equal(db.seeding[0].productNo, '83');
+  assert.equal(db.seeding[0].variantCode, 'V83');
+});
+
+test('새 자동 열이 있으면 레거시 제품값보다 정확한 카페24 옵션을 우선한다', () => {
+  const fields = seedingProductFields([
+    '예전 자유입력 제품', 'S', 'B#05_Tessa Pigment Pants | Brown | L',
+    'B#05_Tessa Pigment Pants', 'Brown', 'L', '83', 'P00000DF000C'
+  ], {
+    product: 0, size: 1, selectedOption: 2, masterProduct: 3, masterColor: 4,
+    masterSize: 5, masterProductNo: 6, variantCode: 7
+  });
+  assert.deepEqual(fields, {
+    product: 'B#05_Tessa Pigment Pants', size: 'L',
+    selectedOption: 'B#05_Tessa Pigment Pants | Brown | L', color: 'Brown',
+    productNo: '83', variantCode: 'P00000DF000C'
+  });
 });
 
 test('시트 비고와 포장 구분은 발송 후 수정되거나 지워져도 최신값을 따른다', () => {

@@ -57,6 +57,8 @@ const {
   seedKey,
   normalizeSeedingPacking,
   stableSheetRowId,
+  findExactSeedingCol,
+  seedingProductFields,
   mergeSeedingRows
 } = require('./lib/seeding');
 const {
@@ -1450,12 +1452,12 @@ function parseSeedingSheet(ws) {
     zip: findCol(H, ['우편번호']),
     product: findCol(H, ['희망제품', '제품정보']),
     size: findCol(H, ['희망사이즈', '사이즈선택']),
-    selectedOption: findCol(H, ['상품옵션선택', '상품·옵션선택']),
-    masterProduct: findCol(H, ['상품명자동', '상품명(자동)']),
-    masterColor: findCol(H, ['컬러자동', '컬러(자동)']),
-    masterSize: findCol(H, ['사이즈자동', '사이즈(자동)']),
-    masterProductNo: findCol(H, ['상품번호자동', '상품번호(자동)']),
-    variantCode: findCol(H, ['옵션품번자동', '옵션품번(자동)', '옵션품번']),
+    selectedOption: findExactSeedingCol(H, ['상품옵션선택', '상품·옵션선택']),
+    masterProduct: findExactSeedingCol(H, ['상품명자동', '상품명(자동)']),
+    masterColor: findExactSeedingCol(H, ['컬러자동', '컬러(자동)']),
+    masterSize: findExactSeedingCol(H, ['사이즈자동', '사이즈(자동)']),
+    masterProductNo: findExactSeedingCol(H, ['상품번호자동', '상품번호(자동)']),
+    variantCode: findExactSeedingCol(H, ['옵션품번자동', '옵션품번(자동)', '옵션품번']),
     request: findCol(H, ['기타요청', '전달메세지', '전달메시지']),
     sentDate: findCol(H, ['발송일']),
     invoice: findCol(H, ['송장번호']),
@@ -1476,25 +1478,13 @@ function parseSeedingSheet(ws) {
     if (!sourceRowId) throw new Error(`시딩 시트 ${r + 1}행의 고유번호가 비어 있어 동기화를 중지했습니다.`);
     if (sourceIds.has(sourceRowId)) throw new Error(`시딩 시트 고유번호 ${sourceRowId}가 두 번 있어 동기화를 중지했습니다.`);
     sourceIds.add(sourceRowId);
-    const selectedOption = String(col.selectedOption >= 0 ? row[col.selectedOption] : '').trim();
-    const masterProduct = String(col.masterProduct >= 0 ? row[col.masterProduct] : '').trim();
-    const masterColor = String(col.masterColor >= 0 ? row[col.masterColor] : '').trim();
-    const masterSize = String(col.masterSize >= 0 ? row[col.masterSize] : '').trim();
-    const masterProductNo = String(col.masterProductNo >= 0 ? row[col.masterProductNo] : '').trim();
-    const variantCode = String(col.variantCode >= 0 ? row[col.variantCode] : '').trim();
-    out.push({
+    out.push(Object.assign({
       sourceRowId,
       name: name.replace(/\s*-\s*엽서.*$/, '').trim(),
       insta: String(col.insta >= 0 ? row[col.insta] : '').trim(),
       phone: String(col.phone >= 0 ? row[col.phone] : '').trim(),
       addr: String(col.addr >= 0 ? row[col.addr] : '').trim(),
       zip: String(col.zip >= 0 ? row[col.zip] : '').replace(/\D/g, '').slice(0, 5),
-      product: masterProduct || String(col.product >= 0 ? row[col.product] : '').trim(),
-      color: masterColor,
-      size: masterSize || String(col.size >= 0 ? row[col.size] : '').trim(),
-      selectedOption,
-      productNo: masterProductNo || null,
-      variantCode,
       seedType: String(col.type >= 0 ? row[col.type] : '').trim(),
       packType: normalizeSeedingPacking(col.pack >= 0 ? row[col.pack] : ''),
       email: String(col.email >= 0 ? row[col.email] : '').trim(),
@@ -1502,7 +1492,7 @@ function parseSeedingSheet(ws) {
       sentDate: excelDate(col.sentDate >= 0 ? row[col.sentDate] : ''),
       invoice: String(col.invoice >= 0 ? row[col.invoice] : '').trim(),
       note: String(col.note >= 0 ? row[col.note] : '').trim()
-    });
+    }, seedingProductFields(row, col)));
   }
   return out;
 }
