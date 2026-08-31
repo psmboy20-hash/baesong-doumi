@@ -972,7 +972,8 @@ function rmaCells(x) {
   };
 }
 function renderReturns() {
-  const items = [...(DB.returns || [])].sort((a, b) => (b.regDate || '').localeCompare(a.regDate || '') || b.id - a.id);
+  const items = (DB.returns || []).filter(x => !x.duplicateOf)
+    .sort((a, b) => (b.regDate || '').localeCompare(a.regDate || '') || b.id - a.id);
   const epostOn = SYNC_STATUS && SYNC_STATUS.epost && SYNC_STATUS.epost.connected;
   const rows = items.map(x => {
     const [cls, nm] = RMA_FLOW[x.flowState] || ['wait', x.status || '확인 필요'];
