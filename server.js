@@ -1029,13 +1029,19 @@ function syncInventoryFromProducts(db) {
       }
       for (const v of p.variants) {
         let inv = db.inventory.find(i => v.variantCode && i.variantCode === v.variantCode);
-        if (!inv) inv = db.inventory.find(i => String(i.productNo || '') === String(p.no) &&
-          lo(i.color) === lo(v.color) && String(i.size || '').trim().toUpperCase() === String(v.size || '').trim().toUpperCase());
+        if (!inv) {
+          const exactCandidates = db.inventory.filter(i =>
+            (!i.variantCode || String(i.variantCode) === String(v.variantCode)) &&
+            String(i.productNo || '') === String(p.no) &&
+            lo(i.color) === lo(v.color) &&
+            String(i.size || '').trim().toUpperCase() === String(v.size || '').trim().toUpperCase());
+          if (exactCandidates.length === 1) inv = exactCandidates[0];
+        }
         if (!inv) {
           const sameSizeVariants = p.variants.filter(candidate =>
             String(candidate.size || '').trim().toUpperCase() === String(v.size || '').trim().toUpperCase());
           const variantColors = new Set(sameSizeVariants.map(candidate => lo(candidate.color)).filter(Boolean));
-          const candidates = db.inventory.filter(i => lo(i.name) === lo(p.name) &&
+          const candidates = db.inventory.filter(i => (!i.variantCode || String(i.variantCode) === String(v.variantCode)) && lo(i.name) === lo(p.name) &&
             String(i.size || '').trim().toUpperCase() === String(v.size || '').trim().toUpperCase() &&
             (!i.color || lo(i.color) === lo(v.color)));
           if (candidates.length === 1 && (candidates[0].color || variantColors.size <= 1)) inv = candidates[0];
@@ -1207,12 +1213,17 @@ async function syncGoogle(db) {
   const seedName = exactSeedName || seedCandidates[0];
   if (!seedName) throw new Error('구글시트에서 [시딩 발송 리스트] 탭을 찾지 못했습니다. 탭 이름을 확인해 주세요.');
   seedRes = mergeSeeding(db, parseSeedingSheet(wb.Sheets[seedName]));
-  const orderName = wb.SheetNames.find(name => normalizeSheetName(name) === normalizeSheetName(SHEET_ORDERS)) ||
-    wb.SheetNames.find(name => ['주문', '발송'].every(word => normalizeSheetName(name).includes(word)));
+  const exactOrderName = wb.SheetNames.find(name => normalizeSheetName(name) === normalizeSheetName(SHEET_ORDERS));
+  const orderCandidates = wb.SheetNames.filter(name => ['주문', '발송'].every(word => normalizeSheetName(name).includes(word)));
+  if (!exactOrderName && orderCandidates.length > 1) {
+    throw new Error('주문 발송 탭이 여러 개라 자동으로 고를 수 없습니다. 주문 엑셀 탭 이름을 확인해 주세요.');
+  }
+  const orderName = exactOrderName || orderCandidates[0];
   const ordWs = orderName ? wb.Sheets[orderName] : null;
   if (ordWs) {
     const parsed = parseOrderRows(XLSX.utils.sheet_to_json(ordWs, { header: 1, defval: '' }));
-    if (!parsed.error) ordRes = mergeOrders(db, parsed.items);
+    if (parsed.error) throw new Error('주문 발송 탭을 읽지 못했습니다: ' + parsed.error);
+    ordRes = mergeOrders(db, parsed.items);
   }
   return { seeding: seedRes, orders: ordRes };
 }
@@ -1359,7 +1370,9 @@ async function syncAll() {
         const resolved = {
           complete: ['completed', 'refund_pending'].includes(stage),
           cancel: stage === 'canceled',
-          collected: ['collected', 'processing', 'completed', 'refund_pending'].includes(stage)
+          collected: ['collected', 'processing', 'completed', 'refund_pending'].includes(stage),
+          invoice: !!ret.cafe24ReturnInvoice &&
+            String(ret.cafe24ReturnInvoice).replace(/\D/g, '') === String(ret.invoice || '').replace(/\D/g, '')
         };
         for (const [action, ok] of Object.entries(resolved)) {
           const op = ret.syncOps[action];
@@ -1453,17 +1466,22 @@ function parseSeedingSheet(ws) {
     stock: findCol(H, ['재고반영']),
     note: findCol(H, ['비고'])
   };
-  if (col.name < 0 || col.phone < 0 || col.addr < 0 || col.product < 0) {
-    throw new Error('시딩 시트에서 성명·연락처·주소·제품 열을 찾지 못했습니다. 시트 머리글을 확인해 주세요.');
+  if (sourceIdCol < 0 || col.pack < 0 || col.note < 0 || col.name < 0 || col.phone < 0 || col.addr < 0 || col.product < 0) {
+    throw new Error('시딩 시트에서 고유번호·포장구분·비고·성명·연락처·주소·제품 열을 모두 찾지 못했습니다. 시트 머리글을 확인해 주세요.');
   }
   const out = [];
+  const sourceIds = new Set();
   for (let r = 1; r < rows.length; r++) {
     const row = rows[r];
     const name = String(col.name >= 0 ? row[col.name] : '').trim();
     const phone = phoneDigits(col.phone >= 0 ? row[col.phone] : '');
     if (!name || phone.length < 9) continue; // 그룹 구분행 등 스킵
+    const sourceRowId = stableSheetRowId(row[sourceIdCol]);
+    if (!sourceRowId) throw new Error(`시딩 시트 ${r + 1}행의 고유번호가 비어 있어 동기화를 중지했습니다.`);
+    if (sourceIds.has(sourceRowId)) throw new Error(`시딩 시트 고유번호 ${sourceRowId}가 두 번 있어 동기화를 중지했습니다.`);
+    sourceIds.add(sourceRowId);
     out.push({
-      sourceRowId: stableSheetRowId(sourceIdCol >= 0 ? row[sourceIdCol] : ''),
+      sourceRowId,
       name: name.replace(/\s*-\s*엽서.*$/, '').trim(),
       insta: String(col.insta >= 0 ? row[col.insta] : '').trim(),
       phone: String(col.phone >= 0 ? row[col.phone] : '').trim(),
@@ -1543,7 +1561,7 @@ function optKey(o) {
   return (String(o.color || '') + '|' + String(o.size || '') + '|' + String(o.option || ''))
     .toLowerCase().replace(/\s/g, '').slice(0, 40);
 }
-function orderKey(o) { return (o.orderNo || '') + '|' + normName(o.name) + '|' + phoneDigits(o.phone) + '|' + String(o.product || '').replace(/\s/g, '').slice(0, 40) + '|' + optKey(o); }
+function orderKey(o) { return (o.orderNo || '') + '|' + String(o.orderItemCode || '') + '|' + normName(o.name) + '|' + phoneDigits(o.phone) + '|' + String(o.product || '').replace(/\s/g, '').slice(0, 40) + '|' + optKey(o); }
 
 function mergeSeeding(db, parsed) {
   return mergeSeedingRows(db, parsed, { zipForChangedAddress, clearZipLookupState, today });
@@ -1569,7 +1587,8 @@ function mergeOrders(db, parsed) {
     // 카페24에서 취소/반품/교환된 주문: 아직 안 보낸 건이면 취소 처리
     if (p._canceled) {
       const fuzzyMatch = fuzzy.get(fuzzyOrderKey(p));
-      const ex = byItemCode.get(String(p.orderItemCode || '')) || map.get(orderKey(p)) ||
+      const keyedMatch = map.get(orderKey(p));
+      const ex = byItemCode.get(String(p.orderItemCode || '')) || (keyedMatch && canFuzzyMergeOrders(keyedMatch, p) ? keyedMatch : null) ||
         (fuzzyMatch && canFuzzyMergeOrders(fuzzyMatch, p) ? fuzzyMatch : null);
       if (ex && (ex.status === '대기' || ex.status === '접수중') && !p._retKind) {
         ex.status = '취소됨';
@@ -1681,7 +1700,8 @@ function mergeOrders(db, parsed) {
     delete p._shipped;
     delete p._src;
     const fuzzyMatch = fuzzy.get(fuzzyOrderKey(p));
-    const ex = byItemCode.get(String(p.orderItemCode || '')) || map.get(orderKey(p)) ||
+    const keyedMatch = map.get(orderKey(p));
+    const ex = byItemCode.get(String(p.orderItemCode || '')) || (keyedMatch && canFuzzyMergeOrders(keyedMatch, p) ? keyedMatch : null) ||
       (fuzzyMatch && canFuzzyMergeOrders(fuzzyMatch, p) ? fuzzyMatch : null);
     if (ex) {
       let ch = false;
@@ -2063,11 +2083,24 @@ async function postProcessShipped(db, matchedItems) {
   // 3) 구글시트에 송장 자동 기록 (시딩건만, 웹훅 설정 시)
   results.sheet = null;
   const wh = (db.settings.sheetWebhookUrl || '').trim();
-  const updates = matchedItems
-    .filter(x => x.type === 'seeding' && !x.item.sheetWritten)
-    .map(x => ({ name: x.item.name, phone: x.item.phone, invoice: x.item.invoice, sentDate: x.item.sentDate }));
+  const seedWrites = matchedItems.filter(x => x.type === 'seeding' && !x.item.sheetWritten);
+  const updates = seedWrites.map(x => ({
+    sourceRowId: x.item.sourceRowId || '', name: x.item.name, phone: x.item.phone,
+    invoice: x.item.invoice, sentDate: x.item.sentDate
+  }));
   if (wh && updates.length) {
     try {
+      const recipientCounts = new Map();
+      for (const item of db.seeding) recipientCounts.set(seedKey(item), (recipientCounts.get(seedKey(item)) || 0) + 1);
+      const needsSourceMatch = seedWrites.some(x => (recipientCounts.get(seedKey(x.item)) || 0) > 1);
+      if (needsSourceMatch) {
+        const capability = await httpsJson('POST', wh, { 'Content-Type': 'application/json' },
+          { token: db.settings.sheetWebhookToken || '', action: 'capabilities' });
+        if (!(capability.status >= 200 && capability.status < 300 && capability.json && capability.json.sourceRowId === true)) {
+          results.sheet = { ok: false, error: '같은 사람이 여러 번 신청해 시트 행을 안전하게 고를 수 없습니다. 구글시트 자동기록 스크립트를 최신 버전으로 바꿔 주세요.' };
+          return results;
+        }
+      }
       const r = await httpsJson('POST', wh, { 'Content-Type': 'application/json' },
         { token: db.settings.sheetWebhookToken || '', updates });
       if (sheetWriteSucceeded(r, updates.length)) {

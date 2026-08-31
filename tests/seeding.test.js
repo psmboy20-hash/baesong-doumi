@@ -57,6 +57,30 @@ test('같은 사람의 시트 행 순서가 바뀌어도 고유 행 번호로 �
   assert.equal(db.seeding.find(x => x.sourceRowId === '102').packType, '시딩');
 });
 
+test('기존 장부에 고유번호가 없어도 제품과 주소로 찾아 행 순서와 섞지 않는다', () => {
+  const db = {
+    nextId: 3,
+    seeding: [
+      { id: 1, name: '같은사람', phone: '01011112222', product: '제품 A', addr: '주소 A', status: '대기' },
+      { id: 2, name: '같은사람', phone: '01011112222', product: '제품 B', addr: '주소 B', status: '대기' }
+    ]
+  };
+  mergeSeedingRows(db, [
+    { sourceRowId: '102', name: '같은사람', phone: '01011112222', product: '제품 B', addr: '주소 B', packType: '일반 패킹' },
+    { sourceRowId: '101', name: '같은사람', phone: '01011112222', product: '제품 A', addr: '주소 A', packType: '시딩 패키지' }
+  ], helpers);
+  assert.equal(db.seeding.find(x => x.id === 1).sourceRowId, '101');
+  assert.equal(db.seeding.find(x => x.id === 1).product, '제품 A');
+  assert.equal(db.seeding.find(x => x.id === 2).sourceRowId, '102');
+  assert.equal(db.seeding.find(x => x.id === 2).product, '제품 B');
+});
+
+test('시트 행 고유번호가 없으면 기존 장부를 건드리지 않고 중지한다', () => {
+  const db = { nextId: 2, seeding: [{ id: 1, name: '기존', phone: '01011112222', product: '제품 A', status: '대기' }] };
+  assert.throws(() => mergeSeedingRows(db, [{ name: '기존', phone: '01011112222', product: '제품 B' }], helpers), /고유번호/);
+  assert.equal(db.seeding[0].product, '제품 A');
+});
+
 test('시트를 빈 결과로 읽었을 때 기존 대기 시딩을 취소하지 않는다', () => {
   const db = { nextId: 2, seeding: [{ id: 1, name: '대기', phone: '01011112222', status: '대기' }] };
   const result = mergeSeedingRows(db, [], helpers);

@@ -157,6 +157,13 @@ test('회수 송장과 완료 요청은 PG 결제를 자동 취소하지 않는�
   assert.equal(done.request.recover_inventory, 'F');
 });
 
+test('카페24에서 다시 읽은 회수 송장번호는 불확실한 쓰기 결과를 확인할 수 있게 남긴다', () => {
+  const ret = { flowState: 'pickup_booked', invoice: '6890123456789' };
+  applyCafe24ClaimSnapshot(ret, { orderStatus: 'B40', invoice: '6890123456789' }, '2026-08-31T00:00:00.000Z');
+  assert.equal(ret.cafe24ReturnInvoice, '6890123456789');
+  assert.equal(ret.invoice, '6890123456789');
+});
+
 test('카페24에서 이미 신청된 claim 승인도 POST 접수 계약을 쓴다', () => {
   const accepted = buildCafe24ClaimCreate({ kind: '교환', orderItemCode: 'ITEM4', exchangeVariantCode: 'V4' });
   assert.equal(accepted.request.status, 'accepted');
