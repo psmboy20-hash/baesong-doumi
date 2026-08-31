@@ -223,6 +223,16 @@ test('교환 대상 품목은 origin_order_item_code로 정확히 연결한다',
   ], 'ITEM-A'), {});
 });
 
+test('카페24 실제 응답의 original_item_no 배열은 원상품 번호와 상품번호로 교환품을 연결한다', () => {
+  const rows = [
+    { original_item_no: [4, 5], product_no: 98, variant_code: 'TARGET-A' },
+    { original_item_no: [4, 5], product_no: 62, variant_code: 'TARGET-B' }
+  ];
+  assert.equal(findExchangeTarget(rows, 'ITEM-A', false, { item_no: 4, product_no: 98 }).variant_code, 'TARGET-A');
+  assert.equal(findExchangeTarget(rows, 'ITEM-B', false, { item_no: 5, product_no: 62 }).variant_code, 'TARGET-B');
+  assert.deepEqual(findExchangeTarget(rows, 'ITEM-C', false, { item_no: 4, product_no: 77 }), {});
+});
+
 test('단일 교환 target fallback은 현재 품목 자체가 유일한 claim 품목일 때만 허용한다', () => {
   const current = { order_item_code: 'ITEM-A', claim_code: 'E1', order_status: 'E10' };
   assert.equal(allowSingleExchangeFallback([current], current), true);

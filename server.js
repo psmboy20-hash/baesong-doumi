@@ -555,7 +555,7 @@ async function cafe24FetchOrders(db) {
           const detail = retKind ? cafe24ClaimDetail(o, it, retKind) : {};
           const pickup = detail.pickup || {};
           const exchangedRows = retKind === '교환' && Array.isArray(detail.exchanged_items) ? detail.exchanged_items : [];
-          const exchanged = findExchangeTarget(exchangedRows, it.order_item_code, allowSingleExchangeFallback(o.items, it));
+          const exchanged = findExchangeTarget(exchangedRows, it.order_item_code, allowSingleExchangeFallback(o.items, it), it);
           const exchangeOption = cafe24OptionParts(exchanged.option_value || exchanged.options || '');
           parsed.push({
             orderNo: o.order_id || '', name: pickup.name || name, phone: pickup.cellphone || pickup.phone || phone,
@@ -2819,7 +2819,7 @@ const server = http.createServer((req, res) => {
         const names = missingTargets.map(row => row.product || row.orderItemCode || '상품 정보 없음').join(', ');
         setClaimSyncIssue(ret, 'cafe24', 'exchange-target', '교환 목표 옵션 확인 필요: ' + names);
         saveDb(db);
-        return sendJson(res, 200, { error: '카페24 교환 목표 상품·옵션을 정확히 확인하지 못해 재발송과 완료를 멈췄어요: ' + names + '. [지금 확인하기]로 다시 동기화한 뒤 처리해 주세요.', db });
+        return sendJson(res, 200, { error: '카페24 교환 목표 상품·옵션을 정확히 확인하지 못해 재발송과 완료를 멈췄어요: ' + names + '. [전체 연동 다시 확인]을 누른 뒤 처리해 주세요.', db });
       }
       clearClaimSyncIssue(ret, 'cafe24', 'exchange-target');
       const out = { stock: [], resend: null };

@@ -1026,6 +1026,7 @@ function renderReturns() {
     <div class="sub"><b>카페24 접수 → 우체국 회수 → 물건 도착·재고 → 교환 재발송/반품 완료</b>를 RMA 번호 하나로 이어서 보여줘요.<br>여기서 회수·도착·취소를 처리하면 카페24와 우체국에도 필요한 상태가 같이 반영되고, 양쪽에서 바뀐 상태도 5분마다 들어옵니다.</div>
     <div style="display:flex; gap:0.8rem; flex-wrap:wrap; margin-bottom:1.2rem">
       <button class="big-btn green" onclick="returnForm()">➕ 교환/반품 등록</button>
+      <button class="big-btn" onclick="doSync()">🔄 전체 연동 다시 확인</button>
       <button class="big-btn" onclick="epostRefresh()">🔄 회수 진행상태 새로고침</button>
     </div>
     <div id="ret-form"></div>
