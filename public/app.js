@@ -957,6 +957,29 @@ const RMA_FLOW = {
 function rmaLineItems(x) {
   return Array.isArray(x.items) && x.items.length ? x.items : [x];
 }
+function rmaCompletionBlock(x) {
+  if (x.duplicateOf) return '이미 다른 교환·반품 기록에 합쳐진 중복 건이에요.';
+  if (x.sourceChannel === 'cafe24' &&
+      (!String(x.originalOrderNo || '').trim() || !String(x.cafe24ClaimCode || '').trim() ||
+       rmaLineItems(x).some(row => !String(row.orderItemCode || '').trim()))) {
+    return '카페24 원주문·접수번호·품목 연결을 아직 모두 확인하지 못했어요.';
+  }
+  if (x.kind === '교환' && x.sourceChannel === 'cafe24' &&
+      rmaLineItems(x).some(row => !String(row.exchangeVariantCode || '').trim())) {
+    return '카페24 교환 목표 상품·옵션을 아직 확인하지 못했어요.';
+  }
+  return '';
+}
+function showReturnSafeStop(result) {
+  const box = $('#ret-result');
+  if (!box) return;
+  box.innerHTML = `<div class="result-box warn">
+    <div class="big">🛡 안전 중지 — 아무것도 변경하지 않았어요</div>
+    ${esc(result.message || result.error || '정보를 정확히 확인하지 못해 실행을 멈췄어요.')}<br>
+    <span style="font-weight:400">· 우체국 접수 없음 · 재고 변경 없음 · 재발송 생성 없음<br>${esc(result.nextAction || '전체 연동을 다시 확인해 주세요.')}</span>
+  </div>`;
+  box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
 function rmaCells(x) {
   const lines = rmaLineItems(x);
   return {
@@ -981,7 +1004,10 @@ function renderReturns() {
     const cafe24Line = x.sourceChannel === 'cafe24'
       ? `<span class="muted" style="font-size:0.78rem">카페24 ${esc(x.cafe24OrderStatus || '연결 중')}</span>` : '';
     const issues = (x.syncIssues || []).map(row => row.message).filter(Boolean);
-    const issueLine = issues.length ? `<div class="warn-text" style="max-width:210px">⚠️ ${esc(issues[issues.length - 1])}</div>` : '';
+    const completionBlock = rmaCompletionBlock(x);
+    const issueLine = completionBlock
+      ? `<div class="warn-text" style="max-width:230px"><b>🛡 안전 중지</b><br>${esc(completionBlock)}<br><span class="muted">발송·재고 변경 없음</span></div>`
+      : issues.length ? `<div class="warn-text" style="max-width:210px">⚠️ ${esc(issues[issues.length - 1])}</div>` : '';
     const cells = rmaCells(x);
     let btns = '';
     const cancelUnresolved = x.flowState !== 'canceled' && x.syncOps && x.syncOps.cancel && ['pending', 'unknown', 'failed'].includes(x.syncOps.cancel.state);
@@ -997,13 +1023,20 @@ function renderReturns() {
             : ` <button class="link-btn" style="color:var(--red)" onclick="returnCancel(${x.id},'entry','${jsq(x.name)}')">전체 취소</button>`)
           : ` <button class="link-btn" style="color:var(--red)" onclick="returnCancel(${x.id},'delete','${jsq(x.name)}')">🗑 지우기</button>`);
     } else if (['pickup_booked', 'collected'].includes(x.flowState)) {
-      btns = `<button class="link-btn" onclick="returnComplete(${x.id},'${jsq(x.name)}','${jsq(x.kind)}')">📦 물건 도착 확인</button>
+      const completeButton = completionBlock
+        ? `<button class="link-btn" onclick="doSync()">🔄 연동 다시 확인</button><span class="muted">완료 버튼 잠김</span>`
+        : `<button class="link-btn" onclick="returnComplete(${x.id},'${jsq(x.name)}','${jsq(x.kind)}')">📦 물건 도착 확인</button>`;
+      btns = `${completeButton}
         ${x.epost && ['00', '01', '02', '04'].includes(x.epost.stus || '01') ? `<button class="link-btn" onclick="returnCancel(${x.id},'pickup','${jsq(x.name)}')">회수만 취소</button>` : ''}
         <button class="link-btn" style="color:var(--red)" onclick="returnCancel(${x.id},'entry','${jsq(x.name)}')">전체 취소</button>`;
     } else if (x.stockReviewNeeded) {
-      btns = `<button class="link-btn" onclick="returnComplete(${x.id},'${jsq(x.name)}','${jsq(x.kind)}')">📦 재고·재발송 확인</button>`;
+      btns = completionBlock
+        ? `<button class="link-btn" onclick="doSync()">🔄 연동 다시 확인</button><span class="muted">재고·재발송 잠김</span>`
+        : `<button class="link-btn" onclick="returnComplete(${x.id},'${jsq(x.name)}','${jsq(x.kind)}')">📦 재고·재발송 확인</button>`;
     } else if (issues.length && x.localCompleted) {
-      btns = `<button class="link-btn" onclick="returnComplete(${x.id},'${jsq(x.name)}','${jsq(x.kind)}')">🔄 카페24 다시 반영</button>`;
+      btns = completionBlock
+        ? `<button class="link-btn" onclick="doSync()">🔄 연동 다시 확인</button><span class="muted">카페24 반영 잠김</span>`
+        : `<button class="link-btn" onclick="returnComplete(${x.id},'${jsq(x.name)}','${jsq(x.kind)}')">🔄 카페24 다시 반영</button>`;
     } else if (x.flowState === 'canceled' && x.sourceChannel !== 'cafe24') {
       btns = `<button class="link-btn" onclick="returnReopen(${x.id},'${jsq(x.name)}')">↩️ 다시 신청하기</button>
         <button class="link-btn" style="color:var(--red)" onclick="returnCancel(${x.id},'delete','${jsq(x.name)}')">🗑 지우기</button>`;
@@ -1223,11 +1256,15 @@ async function returnPickup(id, name) {
 async function returnComplete(id, name, kind) {
   const ret = (DB.returns || []).find(x => x.id === id);
   if (ret && ret.localCompleted) {
+    busy(true, '변경 전 안전 점검 중…');
+    const preflight = await api('/api/return/preflight', { method: 'POST', body: JSON.stringify({ id, restock: false }) });
+    busy(false);
+    if (preflight.error || !preflight.ready) { showReturnSafeStop(preflight); return; }
     if (!confirm(`${name}님 건의 실물·재고 처리는 이미 끝났어요.\n카페24 상태 반영만 다시 시도할까요?`)) return;
     busy(true, '카페24에 다시 반영하는 중…');
     const retry = await api('/api/return/complete', { method: 'POST', body: JSON.stringify({ id, restock: false, inspection: ret.inspection || 'sellable' }) });
     busy(false);
-    if (retry.error) { toast('⚠️ ' + retry.error, 7000); return; }
+    if (retry.error) { if (retry.safeStop) showReturnSafeStop(retry); else toast('⚠️ ' + retry.error, 7000); return; }
     adoptDb(retry.db);
     render();
     toast(retry.warning ? '⚠️ ' + retry.warning : '✔️ 카페24 상태까지 다시 맞췄어요.', 8000);
@@ -1236,10 +1273,14 @@ async function returnComplete(id, name, kind) {
   const extra = kind === '교환' ? '\n· 교환이라서 [📮 보내기]에 재발송 건이 새로 생겨요' : '';
   const sellable = confirm(`${name}님의 회수품을 검수해 주세요.\n\n정상 상품으로 다시 판매할 수 있나요?\n\n[확인] 정상 — 재고에 다시 넣기\n[취소] 불량/오염 — 재고에서 제외`);
   if (!sellable && !confirm(`불량/오염으로 처리할까요?\n\n· 재고에는 다시 넣지 않습니다${extra}`)) return;
+  busy(true, '변경 전 안전 점검 중…');
+  const preflight = await api('/api/return/preflight', { method: 'POST', body: JSON.stringify({ id, restock: sellable }) });
+  busy(false);
+  if (preflight.error || !preflight.ready) { showReturnSafeStop(preflight); return; }
   busy(true, '처리하는 중…');
   const r = await api('/api/return/complete', { method: 'POST', body: JSON.stringify({ id, restock: sellable, inspection: sellable ? 'sellable' : 'damaged' }) });
   busy(false);
-  if (r.error) { toast('⚠️ ' + r.error, 6000); return; }
+  if (r.error) { if (r.safeStop) showReturnSafeStop(r); else toast('⚠️ ' + r.error, 6000); return; }
   adoptDb(r.db);
   render();
   let msg = '✔️ 완료했어요.';

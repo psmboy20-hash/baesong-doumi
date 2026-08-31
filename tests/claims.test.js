@@ -27,7 +27,8 @@ const {
   shouldCancelRecoveredPickup,
   claimCancelUnresolved,
   hasValidClaimLines,
-  hasValidExchangeTargets
+  hasValidExchangeTargets,
+  returnCompletionSafety
 } = require('../lib/claims');
 
 test('카페24 교환 반품 상태를 하나의 RMA 단계로 바꾼다', () => {
@@ -332,6 +333,27 @@ test('Cafe24 교환은 모든 품목의 목표 variant가 있어야 완료할 �
     ]
   });
   assert.equal(payload.request.items[1].exchange_variant_code, '');
+});
+
+test('교환 반품 완료 전 안전 점검은 불확실한 발송과 재고 변경을 막는다', () => {
+  const ready = {
+    flowState: 'pickup_booked', sourceChannel: 'cafe24', kind: '교환',
+    originalOrderNo: 'ORDER-1', cafe24ClaimCode: 'E1',
+    items: [{ orderItemCode: 'ITEM-1', product: 'Clara', exchangeVariantCode: 'TARGET-A' }]
+  };
+  assert.equal(returnCompletionSafety(ready, { restock: true, stockMissing: [] }).ready, true);
+  const noTarget = returnCompletionSafety({ ...ready, items: [{ ...ready.items[0], exchangeVariantCode: '' }] });
+  assert.equal(noTarget.code, 'MISSING_EXCHANGE_TARGET');
+  assert.equal(noTarget.changed, false);
+  const noStock = returnCompletionSafety(ready, { restock: true, stockMissing: [{ product: 'Clara', option: 'Skyblue, M' }] });
+  assert.equal(noStock.code, 'MISSING_STOCK');
+  assert.equal(returnCompletionSafety(ready, { restock: false, stockMissing: [{ product: 'Clara' }] }).ready, true);
+  assert.equal(returnCompletionSafety({ ...ready, duplicateOf: 3 }).code, 'DUPLICATE');
+  assert.equal(returnCompletionSafety({ ...ready, flowState: 'requested' }).code, 'NOT_COLLECTED');
+  assert.equal(returnCompletionSafety({ ...ready, cafe24ClaimCode: '' }).code, 'MISSING_CAFE24_LINK');
+  assert.equal(returnCompletionSafety({ ...ready, originalOrderNo: '' }).code, 'MISSING_CAFE24_LINK');
+  assert.equal(returnCompletionSafety({ ...ready, items: [{ ...ready.items[0], orderItemCode: '' }] }).code, 'MISSING_CAFE24_LINK');
+  assert.equal(returnCompletionSafety({ ...ready, localCompleted: true, flowState: 'completed', syncIssues: [] }).code, 'ALREADY_COMPLETED');
 });
 
 test('claim code 응답 모양과 작업키를 안정적으로 처리한다', () => {

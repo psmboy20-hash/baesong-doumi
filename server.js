@@ -77,7 +77,8 @@ const {
   shouldCancelRecoveredPickup,
   claimCancelUnresolved,
   resolveClaimCodeFromItems,
-  missingCafe24ExchangeTargets
+  missingCafe24ExchangeTargets,
+  returnCompletionSafety
 } = require('./lib/claims');
 
 const PORT = 8899;
@@ -1951,6 +1952,15 @@ function findStockMatches(db, item) {
   return selectStockMatches(db.inventory, item, stockMatches);
 }
 
+function prepareReturnCompletion(db, ret, restock) {
+  const returnItems = ret ? returnLineItems(ret) : [];
+  const restockPlan = !ret || ret.localCompleted || restock === false
+    ? { rows: [], missing: [] }
+    : buildReturnRestockPlan(returnItems, item => findStockMatches(db, item));
+  const safety = returnCompletionSafety(ret, { restock, stockMissing: restockPlan.missing });
+  return { returnItems, restockPlan, safety };
+}
+
 // 재고 변동 장부: 입고/출고/복구가 일어날 때마다 한 줄씩 남긴다 (입출고 내역 화면·마스터 API용)
 function logStock(db, inv, delta, reason, ref) {
   if (!db.stockLog) db.stockLog = [];
@@ -2805,37 +2815,27 @@ const server = http.createServer((req, res) => {
       audit('return.cancel', { ref: ret.rmaNo, type: b.scope || 'entry', rev: db.rev });
       return sendJson(res, 200, { ok: true, db });
     }
+    if (url.pathname === '/api/return/preflight' && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req)).toString('utf8'));
+      const db = loadDb();
+      const ret = db.returns.find(x => x.id === b.id);
+      const prepared = prepareReturnCompletion(db, ret, b.restock !== false);
+      return sendJson(res, 200, Object.assign({ ok: true }, prepared.safety));
+    }
     if (url.pathname === '/api/return/complete' && req.method === 'POST') {
       // 물건 도착 확인: 재고 복귀 + (교환이면) 재발송 건 자동 생성
       const b = JSON.parse((await readBody(req)).toString('utf8'));
       const db = loadDb();
       const ret = db.returns.find(x => x.id === b.id);
-      if (!ret) return sendJson(res, 200, { error: '해당 건을 찾지 못했어요.' });
-      if (!canCompleteRma(ret)) return sendJson(res, 200, { error: '회수가 끝난 건만 물건 도착 처리할 수 있어요. 취소됐거나 아직 회수 전인 건은 완료로 바꾸지 않았습니다.', db });
-      if (ret.localCompleted && ['completed', 'refund_pending'].includes(ret.flowState) && !ret.syncIssues.length) {
-        return sendJson(res, 200, { error: '이미 처리된 건이에요.' });
-      }
-      const missingTargets = missingCafe24ExchangeTargets(ret);
-      if (missingTargets.length) {
-        const names = missingTargets.map(row => row.product || row.orderItemCode || '상품 정보 없음').join(', ');
-        setClaimSyncIssue(ret, 'cafe24', 'exchange-target', '교환 목표 옵션 확인 필요: ' + names);
-        saveDb(db);
-        return sendJson(res, 200, { error: '카페24 교환 목표 상품·옵션을 정확히 확인하지 못해 재발송과 완료를 멈췄어요: ' + names + '. [전체 연동 다시 확인]을 누른 뒤 처리해 주세요.', db });
+      const prepared = prepareReturnCompletion(db, ret, b.restock !== false);
+      if (!prepared.safety.ready) {
+        return sendJson(res, 200, Object.assign({ error: prepared.safety.message }, prepared.safety));
       }
       clearClaimSyncIssue(ret, 'cafe24', 'exchange-target');
       const out = { stock: [], resend: null };
       if (!ret.localCompleted) {
-        const returnItems = returnLineItems(ret);
-        const restockPlan = b.restock === false
-          ? { rows: [], missing: [] }
-          : buildReturnRestockPlan(returnItems, item => findStockMatches(db, item));
-        if (restockPlan.missing.length) {
-          const missing = restockPlan.missing.map(row => [row.product, row.option].filter(Boolean).join(' / ')).join(', ');
-          ret.stockReviewNeeded = true;
-          setClaimSyncIssue(ret, 'inventory', 'restock', '재고 품목 매칭 필요: ' + missing);
-          saveDb(db);
-          return sendJson(res, 200, { error: '재고에서 정확한 상품·컬러·사이즈를 찾지 못해 입고 완료로 넘기지 않았어요: ' + missing + '. [재고]에서 옵션을 확인한 뒤 다시 눌러 주세요.', db });
-        }
+        const returnItems = prepared.returnItems;
+        const restockPlan = prepared.restockPlan;
         ret.inspection = b.inspection === 'damaged' ? 'damaged' : 'sellable';
         ret.inspectionAt = new Date().toISOString();
         if (b.restock !== false) {
