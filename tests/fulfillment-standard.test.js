@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   epostOrderMissing,
+  releaseMissingEpostOperations,
   fulfillmentKey,
   inventorySku,
   ensureOperationalFields,
@@ -34,6 +35,26 @@ test('우체국 ERR-225는 미접수 확정으로 판단해 안전하게 재시�
   assert.equal(epostOrderMissing(new Error('ERR-225: 신청정보가 존재하지 않습니다.')), true);
   assert.equal(epostOrderMissing(new Error('ERR-322: 전화번호 형식 오류')), false);
   assert.equal(epostOrderMissing(new Error('우체국 접수 결과를 아직 확인하지 못했습니다.')), false);
+
+  const missing = { epostOp: { state: 'unknown', orderNo: 'HAM-1' } };
+  const other = { epostOp: { state: 'unknown', orderNo: 'HAM-2' } };
+  assert.equal(releaseMissingEpostOperations([{ item: missing }], new Error('ERR-225: 신청정보가 존재하지 않습니다.'), '2026-09-01T00:00:00.000Z'), true);
+  assert.equal(missing.epostOp.state, 'not_found');
+  assert.equal(missing.epostOp.resolvedAt, '2026-09-01T00:00:00.000Z');
+  assert.match(missing.epostOp.error, /다시 접수/);
+  assert.equal(releaseMissingEpostOperations([{ item: other }], new Error('ERR-322: 전화번호 형식 오류')), false);
+  assert.equal(other.epostOp.state, 'unknown');
+});
+
+test('저장돼 있던 ERR-225 잠금만 시작할 때 풀고 다른 우체국 오류는 유지한다', () => {
+  const db = {
+    orders: [{ id: 1, epostOp: { state: 'unknown', error: 'ERR-322: 전화번호 형식 오류' } }],
+    seeding: [{ id: 2, epostOp: { state: 'unknown', error: 'ERR-225: 신청정보가 존재하지 않습니다.' } }],
+    inventory: [], returns: [], stockLog: []
+  };
+  assert.equal(ensureOperationalFields(db), true);
+  assert.equal(db.orders[0].epostOp.state, 'unknown');
+  assert.equal(db.seeding[0].epostOp.state, 'not_found');
 });
 
 test('같은 주문번호의 두 품목은 한 포장으로 묶는다', () => {

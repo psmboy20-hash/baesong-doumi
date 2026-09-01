@@ -11,7 +11,7 @@ const { exec } = require('child_process');
 const XLSX = require('xlsx');
 const seed = require('./lib/seed128');
 const {
-  epostOrderMissing,
+  releaseMissingEpostOperations,
   fulfillmentKey,
   parcelReference,
   selectInvoiceParcelGroup,
@@ -2500,15 +2500,7 @@ const server = http.createServer((req, res) => {
           }
           out.push({ name: entries[0].item.name, ok: true, regiNo, recovered: true });
         } catch (error) {
-          if (epostOrderMissing(error)) {
-            const resolvedAt = new Date().toISOString();
-            for (const { item } of entries) {
-              item.epostOp.state = 'not_found';
-              item.epostOp.resolvedAt = resolvedAt;
-              item.epostOp.error = '우체국에 접수된 기록이 없어 다시 접수할 수 있어요.';
-            }
-            continue;
-          }
+          if (releaseMissingEpostOperations(entries, error)) continue;
           for (const { item } of entries) {
             item.epostOp.state = 'unknown';
             item.epostOp.error = error.message;
@@ -2697,13 +2689,7 @@ const server = http.createServer((req, res) => {
           }
           recoveredOperations.add(operation.orderNo);
         } catch (error) {
-          if (epostOrderMissing(error)) {
-            const resolvedAt = new Date().toISOString();
-            for (const { item } of entries) {
-              item.epostOp.state = 'not_found';
-              item.epostOp.resolvedAt = resolvedAt;
-              item.epostOp.error = '우체국에 접수된 기록이 없어 다시 접수할 수 있어요.';
-            }
+          if (releaseMissingEpostOperations(entries, error)) {
             released++;
             continue;
           }
