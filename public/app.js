@@ -831,6 +831,7 @@ function renderEpost() {
   const parcels = shipmentGroups(items, entry => entry.x);
   const rows = parcels.map(group => {
     const { kind, x } = group[0];
+    const printSpec = group.map(entry => entry.kind + ':' + entry.x.id).join(',');
     const kinds = [...new Set(group.map(entry => entry.kind === 'seeding' ? seedingSourceLabel(entry.x) : '🛒 주문'))].join('<br>');
     const products = group.map(entry => `<div>${productParts(entry.x).name}</div>`).join('');
     const options = group.map(entry => `<div>${productParts(entry.x).opt || '<span class="muted">-</span>'}</div>`).join('');
@@ -850,15 +851,16 @@ function renderEpost() {
       <td style="white-space:nowrap">
         ${x.epost.label
           ? (x.printed
-            ? `<span class="chip done" style="font-size:0.85rem">🖨 인쇄함 ✓</span> <button class="link-btn" style="font-size:0.9rem" onclick="printLabels('${kind}:${x.id}')">다시 인쇄</button>`
-            : `<button class="link-btn" style="font-weight:800" onclick="printLabels('${kind}:${x.id}')">🖨 운송장 인쇄</button>`)
+            ? `<span class="chip done" style="font-size:0.85rem">🖨 인쇄함 ✓</span> <button class="link-btn" style="font-size:0.9rem" onclick="printLabels('${printSpec}')">다시 인쇄</button>`
+            : `<button class="link-btn" style="font-weight:800" onclick="printLabels('${printSpec}')">🖨 운송장 인쇄</button>`)
           : `<button class="link-btn" onclick="epostSitePrint()" title="이 건은 우체국 사이트에서 출력">🖨 사이트에서</button>`}
         ${cancelable ? `<button class="link-btn" style="color:var(--red)" onclick="epostCancel('${kind}',${x.id},'${jsq(x.name)}')">취소</button>` : ''}
       </td>
     </tr>`;
   }).join('');
-  const needP = parcels.filter(group => group[0].x.epost.label && group.some(entry => !entry.x.printed)).map(group => group[0].kind + ':' + group[0].x.id);
-  const printable = parcels.filter(group => group[0].x.epost.label).map(group => group[0].kind + ':' + group[0].x.id);
+  const parcelSpec = group => group.map(entry => entry.kind + ':' + entry.x.id).join(',');
+  const needP = parcels.filter(group => group[0].x.epost.label && group.some(entry => !entry.x.printed)).map(parcelSpec);
+  const printable = parcels.filter(group => group[0].x.epost.label).map(parcelSpec);
   main().innerHTML = `
     <h1>📦 우체국 접수</h1>
     <div class="sub">앱에서 우체국에 접수한 택배들이에요. 순서: <b>① 접수</b> → <b>② [🖨 인쇄]로 운송장 출력</b> → <b>③ 상자에 붙이면 기사님이 수거</b></div>
@@ -1875,11 +1877,17 @@ async function doSync() {
 }
 
 async function doExportAll() {
-  const sendable = x => x.status !== '발송완료' && x.status !== '취소됨' && x._sel !== false;
-  const selected = [
-    ...DB.orders.filter(sendable).map(x => ({ type: 'order', id: x.id })),
-    ...DB.seeding.filter(sendable).map(x => ({ type: 'seeding', id: x.id }))
+  const sendable = x => x.status !== '발송완료' && x.status !== '취소됨' &&
+    x.status !== '접수중' && !epostOperationUnresolved(x) && x._sel !== false;
+  const candidates = [
+    ...DB.orders.filter(x => x.status !== '발송완료' && x.status !== '취소됨').map(x => ({ type: 'order', kind: 'orders', x })),
+    ...DB.seeding.filter(x => x.status !== '발송완료' && x.status !== '취소됨').map(x => ({ type: 'seeding', kind: 'seeding', x }))
   ];
+  const selected = HamItemLines.fullySelectedEntries(
+    candidates,
+    entry => pendingFulfillmentKey(entry.kind, entry.x),
+    entry => sendable(entry.x)
+  ).map(entry => ({ type: entry.type, id: entry.x.id }));
   if (!selected.length) { toast('선택된 사람이 없어요.'); return; }
   const parcelCount = selectedShipmentCount(selected);
   if (!confirm(`택배 ${parcelCount}건짜리 우체국 엑셀 파일을 만들까요?\n\n· 목록이 [엑셀 접수 중]으로 바뀌어요 (잘못 눌렀으면 [↩️ 엑셀 접수 취소]로 되돌려요)\n· 파일 폴더와 우체국 사이트가 자동으로 열려요`)) return;
@@ -1923,10 +1931,15 @@ async function manualShip(kind, id, name) {
 async function doEpostRegister() {
   // '접수중'(엑셀로 이미 접수)은 제외 — 같은 사람에게 두 번 보내는 것 방지
   const sendable = x => x.status !== '발송완료' && x.status !== '취소됨' && x.status !== '접수중' && x._sel !== false;
-  const selected = [
-    ...DB.orders.filter(sendable).map(x => ({ type: 'order', id: x.id })),
-    ...DB.seeding.filter(sendable).map(x => ({ type: 'seeding', id: x.id }))
+  const candidates = [
+    ...DB.orders.filter(x => x.status !== '발송완료' && x.status !== '취소됨').map(x => ({ type: 'order', kind: 'orders', x })),
+    ...DB.seeding.filter(x => x.status !== '발송완료' && x.status !== '취소됨').map(x => ({ type: 'seeding', kind: 'seeding', x }))
   ];
+  const selected = HamItemLines.fullySelectedEntries(
+    candidates,
+    entry => pendingFulfillmentKey(entry.kind, entry.x),
+    entry => sendable(entry.x)
+  ).map(entry => ({ type: entry.type, id: entry.x.id }));
   if (!selected.length) { toast('선택된 사람이 없어요.'); return; }
   const parcelCount = selectedShipmentCount(selected);
   if (!confirm(`택배 ${parcelCount}건을 우체국에 바로 접수할까요?\n(접수하면 송장번호가 발급되고 요금이 계산돼요)`)) return;

@@ -13,6 +13,8 @@ const seed = require('./lib/seed128');
 const {
   releaseMissingEpostOperations,
   fulfillmentKey,
+  expandSelectedFulfillments,
+  fulfillmentGroupConflicts,
   parcelReference,
   selectInvoiceParcelGroup,
   inventorySku,
@@ -35,6 +37,7 @@ const {
   ensureOperationalFields,
   applyCarrierDeliveryResult,
   splitShipmentItems,
+  parcelContent,
   buildReturnRestockPlan,
   selectStockMatches
 } = require('./lib/operations');
@@ -792,12 +795,7 @@ async function epostInsertOrder(db, g, orderNo, testYn) {
   const addr = cleanAddr(g.addr);
   const addr1 = addr.slice(0, 140);
   const addr2 = addr.length > 140 ? addr.slice(140, 420) : '.';
-  const parcelItems = g.items.flatMap(({ item }) => splitShipmentItems(item));
-  const products = parcelItems.map(item => String(item.product || '').replace(/\s+/g, ' ').trim()).filter(Boolean).join(' / ');
-  const models = parcelItems.map(item =>
-    [item.color, item.size].filter(Boolean).join(' ') || String(item.option || '').trim()
-  ).filter(Boolean).join(' / ');
-  const qty = parcelItems.reduce((a, item) => a + (Number(item.qty) || 1), 0);
+  const content = parcelContent(g.items.map(({ item }) => item));
   const phone = String(g.phone || '').replace(/\D/g, ''); // 숫자만 허용
   const isMobile = phone.startsWith('01');
   const params = {
@@ -814,9 +812,9 @@ async function epostInsertOrder(db, g, orderNo, testYn) {
     recAddr1: addr1,
     recAddr2: addr2,
     contCd: s.epostContCd || '025',
-    goodsNm: (products || s.defaultContent || '의류').slice(0, 390),
-    goodsMdl: models.slice(0, 390),
-    qty: String(qty),
+    goodsNm: (content.products || s.defaultContent || '의류').slice(0, 390),
+    goodsMdl: content.models.slice(0, 390),
+    qty: String(content.qty),
     delivMsg: g.msgs.filter(Boolean).join(' / ').slice(0, 190),
     printYn: 'Y',      // 운송장을 앱에서 직접 인쇄 (자체 출력)
     printAreaCdYn: 'Y' // 인쇄용 집배코드 받기
@@ -1851,10 +1849,14 @@ function buildParcelGroups(db, selected) {
   const groups = new Map();
   const pick = [];
   const dups = [];
+  const conflicts = fulfillmentGroupConflicts(db, selected);
+  const blockedKeys = new Set(conflicts.map(row => row.key));
   const normP = s => String(s || '').toLowerCase().replace(/[^a-z0-9가-힣]/g, '');
   for (const sel of selected) {
     const list = sel.type === 'seeding' ? db.seeding : db.orders;
     const item = list.find(x => x.id === sel.id);
+    const itemType = sel.type === 'seeding' ? 'seeding' : 'order';
+    if (item && blockedKeys.has(fulfillmentKey(itemType, item))) continue;
     // 이미 보낸 건은 서버에서도 걸러냄 (화면이 30초 묵은 상태에서 눌러도 이중 접수 방지)
     if (!(item && item.status !== '취소됨' && item.status !== '발송완료' && !item.epost)) continue;
     if (item.epostOp && ['pending', 'unknown'].includes(item.epostOp.state)) continue;
@@ -1886,24 +1888,20 @@ function buildParcelGroups(db, selected) {
     if (item.msg) g.msgs.push(item.msg);
     if (type === 'seeding' && item.request) g.msgs.push(String(item.request).trim());
   }
-  return { groups, pick, dups };
+  return { groups, pick, dups, conflicts };
 }
 
 function buildEpostRows(db, selected) {
   // selected: [{type:'seeding'|'order', id}]
   const st = db.settings;
-  const { groups, pick } = buildParcelGroups(db, selected);
+  const { groups, pick, conflicts } = buildParcelGroups(db, selected);
   const rows = [];
   for (const g of groups.values()) {
     const zip = String(g.zip || '').trim() || extractZip(g.addr);
     // 상품명 = 제품 이름만, 상품모델 = 옵션(컬러/사이즈)
-    const parcelItems = g.items.flatMap(({ item }) => splitShipmentItems(item));
-    const products = parcelItems.map(item => String(item.product || '').replace(/\s+/g, ' ').trim()).filter(Boolean).join(' / ');
-    let content = products || (st.defaultContent || '의류');
-    if (content.length > 100) content = (st.defaultContent || '의류') + ' ' + parcelItems.length + '종';
-    const models = parcelItems.map(item =>
-      [item.color, item.size].filter(Boolean).join(' ') || String(item.option || '').trim()
-    ).filter(Boolean).join(' / ');
+    const parcel = parcelContent(g.items.map(({ item }) => item));
+    let content = parcel.products || (st.defaultContent || '의류');
+    if (content.length > 100) content = (st.defaultContent || '의류') + ' ' + parcel.rows.length + '종';
     const orderNos = [...new Set(g.items.map(({ type, item }) => parcelReference(type === 'seeding' ? 'seeding' : 'order', item)))].join(',');
     const msg = g.msgs.filter(Boolean).join(' / ').slice(0, 50);
     // 열 이름(공백 제거)별 값 - 양식이 바뀌어도 settings.epostColumns만 고치면 됨
@@ -1914,7 +1912,7 @@ function buildEpostRows(db, selected) {
       '수취인주소': cleanAddr(g.addr), '받는분주소': cleanAddr(g.addr), '주소': cleanAddr(g.addr),
       '수취인전화번호': g.phone, '받는분전화번호': g.phone, '전화번호': g.phone, '받는분기타연락처': '',
       '상품명': content, '내용품명': content, '내용품': content,
-      '상품모델': models,
+      '상품모델': parcel.models,
       '배송메세지': msg, '배송메시지': msg,
       '수량': 1, '신청건수': 1,
       '보내는분성명': st.senderName || '', '보내는분전화번호': st.senderPhone || '',
@@ -1927,11 +1925,12 @@ function buildEpostRows(db, selected) {
     }
     rows.push(row);
   }
-  return { rows, count: pick.length, parcels: rows.length, picked: pick };
+  return { rows, count: pick.length, parcels: rows.length, picked: pick, conflicts };
 }
 
 function exportEpost(db, selected) {
-  const { rows, count, parcels, picked } = buildEpostRows(db, selected);
+  const { rows, count, parcels, picked, conflicts } = buildEpostRows(db, selected);
+  if (conflicts.length) return { error: conflicts[0].name + ': ' + conflicts[0].reason };
   if (!rows.length) return { error: '내보낼 항목이 없습니다.' };
   const cols = db.settings.epostColumns;
   const aoa = [cols].concat(rows.map(r => cols.map(c => r[c] != null ? r[c] : '')));
@@ -2461,7 +2460,8 @@ const server = http.createServer((req, res) => {
           return sendJson(res, 200, { error: '매장 컴퓨터가 켜져 있어요 — 주문(🛒) 접수는 매장 화면에서 해주세요. (시딩🎁은 여기서도 가능)' });
         }
       }
-      const selected = Array.isArray(body.selected) ? body.selected : [];
+      const selected = expandSelectedFulfillments(db, Array.isArray(body.selected) ? body.selected : []);
+      body.selected = selected;
       const out = [];
       const shippedItems = [];
       const unresolvedGroups = new Map();
@@ -2508,7 +2508,10 @@ const server = http.createServer((req, res) => {
           out.push({ name: entries[0].item.name, ok: false, safeStop: true, error: error.message + ' 같은 건을 다시 접수하지 않았습니다. [우체국 접수]에서 상태를 확인해 주세요.' });
         }
       }
-      const { groups, dups } = buildParcelGroups(db, body.selected || []);
+      const { groups, dups, conflicts } = buildParcelGroups(db, body.selected || []);
+      for (const conflict of conflicts) {
+        out.push({ name: conflict.name, ok: false, safeStop: true, error: conflict.reason });
+      }
       for (const d of dups) {
         out.push({ name: d.name, ok: false, dup: true, error: `이미 같은 내용을 보냈어요 (${d.product}${d.prevInvoice ? ' · 송장 ' + d.prevInvoice : ''}). 정말 한 번 더 보내려면 목록의 [한 번 더 보내기]를 눌러 주세요.` });
       }
@@ -3198,7 +3201,8 @@ const server = http.createServer((req, res) => {
     if (url.pathname === '/api/export/epost' && req.method === 'POST') {
       const body = JSON.parse((await readBody(req)).toString('utf8'));
       const db = loadDb();
-      const r = exportEpost(db, body.selected || []);
+      const selected = expandSelectedFulfillments(db, Array.isArray(body.selected) ? body.selected : []);
+      const r = exportEpost(db, selected);
       if (r.error) return sendJson(res, 200, r);
       saveDb(db);
       return sendJson(res, 200, Object.assign({ ok: true, db }, r));

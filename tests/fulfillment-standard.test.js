@@ -4,10 +4,13 @@ const {
   epostOrderMissing,
   releaseMissingEpostOperations,
   fulfillmentKey,
+  expandSelectedFulfillments,
+  fulfillmentGroupConflicts,
   inventorySku,
   ensureOperationalFields,
   applyCarrierDeliveryResult,
   splitShipmentItems,
+  parcelContent,
   parcelReference,
   selectInvoiceParcelGroup,
   recordStockDeduction,
@@ -29,7 +32,7 @@ const {
   buildReturnRestockPlan,
   selectStockMatches
 } = require('../lib/operations');
-const { shipmentProductNotes } = require('../public/item-lines');
+const { expandSelectedEpostItems, fullySelectedEntries, shipmentProductNotes } = require('../public/item-lines');
 
 test('우체국 ERR-225는 미접수 확정으로 판단해 안전하게 재시도할 수 있다', () => {
   assert.equal(epostOrderMissing(new Error('ERR-225: 신청정보가 존재하지 않습니다.')), true);
@@ -61,6 +64,79 @@ test('같은 주문번호의 두 품목은 한 포장으로 묶는다', () => {
   const a = { id: 1, orderNo: '20260827-0001' };
   const b = { id: 2, orderNo: '20260827-0001' };
   assert.equal(fulfillmentKey('order', a), fulfillmentKey('order', b));
+});
+
+test('합포 송장은 모든 상품명 옵션 수량을 우체국 내용품으로 만든다', () => {
+  const content = parcelContent([
+    { product: 'Clara Denim', color: 'Skyblue', size: 'S', qty: 1 },
+    { product: 'Tessa Pants', color: 'Brown', size: 'M', qty: 1 },
+    { product: 'June Denim', color: 'Midblue', size: 'L', qty: 2 }
+  ]);
+  assert.equal(content.products, 'Clara Denim / Tessa Pants / June Denim');
+  assert.equal(content.models, 'Skyblue S / Brown M / Midblue L');
+  assert.equal(content.qty, 4);
+  assert.equal(content.rows.length, 3);
+});
+
+test('합포 송장 인쇄는 첫 행만 선택해도 같은 우체국 주문의 상품을 전부 불러온다', () => {
+  const db = {
+    orders: [
+      { id: 1, product: 'Clara', epost: { orderNo: 'HAM-ONE' } },
+      { id: 2, product: 'Tessa', epost: { orderNo: 'HAM-ONE' } },
+      { id: 3, product: 'June', epost: { orderNo: 'HAM-TWO' } }
+    ],
+    seeding: []
+  };
+  const rows = expandSelectedEpostItems(db, [{ type: 'order', id: 1 }]);
+  assert.deepEqual(rows.map(row => row.it.product), ['Clara', 'Tessa']);
+});
+
+test('같은 주문의 일부 행만 선택된 상태면 화면은 접수 목록을 만들지 않는다', () => {
+  const entries = [
+    { x: { id: 1, orderNo: 'ORDER-1', _sel: false } },
+    { x: { id: 2, orderNo: 'ORDER-1' } }
+  ];
+  const selected = fullySelectedEntries(entries, entry => entry.x.orderNo, entry => entry.x._sel !== false);
+  assert.deepEqual(selected, []);
+});
+
+test('서버는 같은 주문의 한 행만 받아도 모든 상품 행을 한 포장으로 확장한다', () => {
+  const db = {
+    orders: [
+      { id: 1, orderNo: 'ORDER-1', product: 'Clara' },
+      { id: 2, orderNo: 'ORDER-1', product: 'Tessa' },
+      { id: 3, orderNo: 'ORDER-2', product: 'June' }
+    ],
+    seeding: []
+  };
+  assert.deepEqual(expandSelectedFulfillments(db, [{ type: 'order', id: 1 }]), [
+    { type: 'order', id: 1 },
+    { type: 'order', id: 2 }
+  ]);
+});
+
+test('같은 주문에서 일부 상품만 이미 발송됐으면 남은 상품의 두 번째 접수를 막는다', () => {
+  const db = {
+    orders: [
+      { id: 1, orderNo: 'ORDER-1', name: '고객', product: 'Clara', status: '발송완료', invoice: '123' },
+      { id: 2, orderNo: 'ORDER-1', name: '고객', product: 'Tessa', status: '대기' }
+    ],
+    seeding: []
+  };
+  const conflicts = fulfillmentGroupConflicts(db, [{ type: 'order', id: 2 }]);
+  assert.equal(conflicts.length, 1);
+  assert.match(conflicts[0].reason, /일부 상품만 이미 발송/);
+});
+
+test('같은 주문의 취소 상품과 정상 대기 상품은 정상 상품만 발송할 수 있다', () => {
+  const db = {
+    orders: [
+      { id: 1, orderNo: 'ORDER-1', product: 'Clara', status: '취소됨' },
+      { id: 2, orderNo: 'ORDER-1', product: 'Tessa', status: '대기' }
+    ],
+    seeding: []
+  };
+  assert.deepEqual(fulfillmentGroupConflicts(db, [{ type: 'order', id: 2 }]), []);
 });
 
 test('같은 주소여도 다른 주문은 자동 합포장하지 않는다', () => {

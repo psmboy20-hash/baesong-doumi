@@ -338,13 +338,11 @@ async function main() {
   const params = new URLSearchParams(location.search);
   const sel = (params.get('sel') || '').split(',').filter(Boolean);
   DBREF = await (await fetch('/api/db')).json();
-  const items = [];
-  for (const s of sel) {
-    const [type, idStr] = s.split(':');
-    const list = type === 'seeding' ? DBREF.seeding : DBREF.orders;
-    const it = list.find(x => x.id === Number(idStr));
-    if (it && it.epost) items.push({ type, it });
-  }
+  const selections = sel.map(value => {
+    const [type, id] = value.split(':');
+    return { type: type === 'seeding' ? 'seeding' : 'order', id: Number(id) };
+  });
+  const items = HamItemLines.expandSelectedEpostItems(DBREF, selections);
   const seen = new Set();
   LABELS = [];
   const prodLines = it => {

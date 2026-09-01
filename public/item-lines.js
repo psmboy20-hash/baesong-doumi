@@ -65,9 +65,60 @@
     });
   }
 
+  function parcelContent(items) {
+    const rows = (items || []).flatMap(splitShipmentItems);
+    return {
+      rows,
+      products: rows.map(row => String(row.product || '').replace(/\s+/g, ' ').trim()).filter(Boolean).join(' / '),
+      models: rows.map(row =>
+        [row.color, row.size].filter(Boolean).join(' ') || String(row.option || '').trim()
+      ).filter(Boolean).join(' / '),
+      qty: rows.reduce((sum, row) => sum + (Number(row.qty) || 1), 0)
+    };
+  }
+
+  function expandSelectedEpostItems(db, selections) {
+    const all = [
+      ...(db && db.orders || []).map(it => ({ type: 'order', it })),
+      ...(db && db.seeding || []).map(it => ({ type: 'seeding', it }))
+    ];
+    const byId = new Map(all.map(entry => [entry.type + ':' + entry.it.id, entry]));
+    const added = new Set();
+    const expandedOrders = new Set();
+    const out = [];
+    const add = entry => {
+      const id = entry.type + ':' + entry.it.id;
+      if (added.has(id)) return;
+      added.add(id);
+      out.push(entry);
+    };
+    for (const selection of (selections || [])) {
+      const entry = byId.get(selection.type + ':' + Number(selection.id));
+      if (!entry || !entry.it.epost) continue;
+      const orderNo = String(entry.it.epost.orderNo || '').trim();
+      if (!orderNo) { add(entry); continue; }
+      if (expandedOrders.has(orderNo)) continue;
+      expandedOrders.add(orderNo);
+      for (const candidate of all) {
+        if (candidate.it.epost && String(candidate.it.epost.orderNo || '').trim() === orderNo) add(candidate);
+      }
+    }
+    return out;
+  }
+
+  function fullySelectedEntries(entries, keyOf, isSelected) {
+    const groups = new Map();
+    for (const entry of (entries || [])) {
+      const key = keyOf(entry);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(entry);
+    }
+    return [...groups.values()].filter(group => group.every(isSelected)).flat();
+  }
+
   function shipmentProductNotes(item) {
     return productTextParts(item).noteLines;
   }
 
-  return { splitShipmentItems, shipmentProductNotes };
+  return { splitShipmentItems, parcelContent, expandSelectedEpostItems, fullySelectedEntries, shipmentProductNotes };
 });
