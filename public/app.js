@@ -72,15 +72,18 @@ function shipmentKey(x) {
   if (x.epost && x.epost.orderNo) return 'epost|' + x.epost.orderNo;
   if (x.epostOp && ['pending', 'unknown'].includes(x.epostOp.state) && x.epostOp.orderNo) return 'epost-op|' + x.epostOp.orderNo;
   if (x.invoice) return 'invoice|' + String(x.invoice).replace(/\D/g, '') + '|' + shipmentRecipientKey(x);
-  if (x.status === '발송완료') return 'sent|' + String(x.sentDate || '') + '|' + shipmentRecipientKey(x);
+  const sentKey = HamItemLines.sentShipmentKey(x, shipmentRecipientKey(x));
+  if (sentKey) return sentKey;
   if (x.status === '취소됨') return 'canceled|' + String(x.orderNo || x.regDate || x.id || '') + '|' + shipmentRecipientKey(x);
   if (x.packGroupId) return 'pending|pack|' + x.packGroupId;
+  if (x.orderNo && x.parcelSplitId) return 'pending|split|' + x.orderNo + '|' + x.parcelSplitId;
   if (x.orderNo) return 'pending|order|' + x.orderNo;
   if (x.returnId) return 'pending|return|' + x.returnId;
   return 'pending|' + (x.sourceChannel || 'direct') + '|' + x.id;
 }
 function pendingFulfillmentKey(kind, x) {
   if (x.packGroupId) return 'pack|' + x.packGroupId;
+  if (kind === 'orders' && x.orderNo && x.parcelSplitId) return 'split|' + x.orderNo + '|' + x.parcelSplitId;
   if (kind === 'orders' && x.orderNo) return 'order|' + x.orderNo;
   if (x.returnId) return 'return|' + x.returnId;
   return (kind === 'seeding' ? 'seeding' : 'order') + '|' + x.id;
@@ -544,6 +547,7 @@ function renderSend() {
   // 엑셀로 접수 중인 건은 기본 체크 해제 (바로 접수와 겹쳐 두 번 보내는 것 방지)
   for (const p of pending) {
     if ((p.x.status === '접수중' || epostOperationUnresolved(p.x)) && p.x._sel === undefined) p.x._sel = false;
+    if (p.x.shippingHold) p.x._sel = false;
   }
   const gmap = new Map();
   for (const p of pending) {
@@ -552,9 +556,14 @@ function renderSend() {
     gmap.get(key).push(p);
   }
   const groupsArr = [...gmap.values()];
-  const selectedGroups = groupsArr.filter(g => g.every(p => p.x._sel !== false));
+  const selectedGroups = groupsArr.filter(g => !g.some(p => p.x.shippingHold) && g.every(p => p.x._sel !== false));
   const selCount = selectedGroups.length;
   const selProductQty = productQuantity(selectedGroups.flat(), entry => entry.x);
+  const mergeSuggestions = HamItemLines.cafe24MergeSuggestions(
+    pending,
+    DB.orders.map(x => ({ kind: 'orders', x }))
+  );
+  const stockStates = HamItemLines.shipmentStockStates(DB.orders.filter(notDone), DB.inventory || []);
   const c24 = SYNC_STATUS && SYNC_STATUS.cafe24;
   const goo = SYNC_STATUS && SYNC_STATUS.google;
   const gline = !goo || goo.ok == null ? ''
@@ -577,9 +586,31 @@ function renderSend() {
     const groupProductQty = productQuantity(g, entry => entry.x);
     const spec = g.map(p => p.kind + ':' + p.x.id).join(',');
     const postalPending = g.some(p => epostOperationUnresolved(p.x));
-    const allSel = !postalPending && g.every(p => p.x._sel !== false);
+    const shippingHold = g.some(p => p.x.shippingHold);
+    const allSel = !postalPending && !shippingHold && g.every(p => p.x._sel !== false);
     const kinds = [...new Set(g.map(p => p.x.exchange ? '🔁 교환' : p.kind === 'seeding' ? seedingSourceLabel(p.x) : '🛒 주문'))].join('<br>');
-    const names = g.map(p => `<div style="margin:0.1rem 0">${productParts(p.x).name}</div>`).join('');
+    const names = g.map(p => {
+      const parts = productParts(p.x);
+      if (p.kind !== 'orders' || !p.x.orderNo) return `<div style="margin:0.1rem 0">${parts.name}</div>`;
+      const originalRows = DB.orders.filter(row => row.orderNo === p.x.orderNo && row.status !== '취소됨');
+      const canSplitOrder = originalRows.length > 1 && originalRows.every(row =>
+        row.status === '대기' && !row.invoice && !row.epost && !epostOperationUnresolved(row) &&
+        !row.packGroupId && !row.parcelSplitId && !row.shippingHold
+      );
+      const stock = stockStates.get(p.x.id) || { state: 'unknown' };
+      const shortage = stock.state === 'shortage'
+        ? `<span class="note-badge" style="background:#fdecea;color:#c0392b">재고 ${stock.available}개 · 필요 ${stock.needed}개</span>`
+        : stock.state === 'unknown' ? `<span class="note-badge">실물재고 확인 필요</span>` : '';
+      let action = '';
+      if (p.x.parcelSplitId) {
+        action = p.x.shippingHold
+          ? `<span class="note-badge" style="background:#fff3cd;color:#8a5a00">분리배송 · 재고 기다림</span> <button class="link-btn" onclick="releaseSplit(${p.x.id},'${jsq(p.x.name)}')">재고 들어옴 · 이제 보내기</button> <button class="link-btn" onclick="undoSplit('${jsq(p.x.orderNo)}','${jsq(p.x.name)}')">원주문으로 합치기</button>`
+          : `<span class="note-badge">분리배송</span> <button class="link-btn" onclick="undoSplit('${jsq(p.x.orderNo)}','${jsq(p.x.name)}')">원주문으로 합치기</button>`;
+      } else if (canSplitOrder) {
+        action = `${shortage} <button class="link-btn" onclick="splitForLater(${p.x.id},'${jsq(p.x.name)}','${jsq(String(p.x.product || '').split('\n')[0])}')">이 상품만 나중에 보내기</button>`;
+      }
+      return `<div style="margin:0.1rem 0 0.3rem">${parts.name}${action ? `<div style="margin-top:0.15rem;font-size:0.82rem">${action}</div>` : ''}</div>`;
+    }).join('');
     const opts = g.map(p => `<div style="margin:0.1rem 0">${productParts(p.x).opt || '<span class="muted">-</span>'}</div>`).join('');
     const notes = g.map(p => shipmentMemoHtml(p.x)).filter(Boolean).join('');
     const noZip = !/^\d{5}$/.test(String(first.zip || '').trim()) && !matchZipInAddr(first.addr);
@@ -590,16 +621,16 @@ function renderSend() {
     // 접수 시도에서 "이미 보낸 것과 같은 내용"으로 막힌 건: 확인 후 한 번 더 보내기 허용
     const dupHere = g.filter(p => (window._dupIds || new Set()).has(p.kind + ':' + p.x.id) && !p.x.resendOk);
     const dupBadge = dupHere.length ? `<span class="note-badge" style="background:#fdecea;color:#c0392b">🚫 이미 보낸 것과 같음</span><br><button class="link-btn" style="font-size:0.85rem" onclick="resendOkGroup('${dupHere.map(p => p.kind + ':' + p.x.id).join(',')}','${jsq(first.name)}')">🔁 한 번 더 보내기</button><br>` : '';
-    const sameRecipient = groupsArr.filter(other => other !== g && shipmentRecipientKey(other[0].x) === shipmentRecipientKey(first));
-    const mergeSpec = [...g, ...sameRecipient.flat()].map(p => p.kind + ':' + p.x.id).join(',');
+    const mergeSuggestion = mergeSuggestions.find(s => s.entries.some(entry => g.includes(entry)));
+    const mergeSpec = mergeSuggestion ? mergeSuggestion.entries.map(p => p.kind + ':' + p.x.id).join(',') : '';
     const packingAction = first.packGroupId
       ? `<br><span class="note-badge">합포장 확정</span> <button class="link-btn" style="font-size:0.82rem" onclick="packUnmerge('${jsq(first.packGroupId)}','${jsq(first.name)}')">묶음 풀기</button>`
-      : sameRecipient.length
-        ? `<br><button class="link-btn" style="font-size:0.82rem" onclick="packMerge('${mergeSpec}','${jsq(first.name)}')">📦 같은 주소 ${sameRecipient.length + 1}건 한 비닐로 묶기</button>`
+      : mergeSuggestion
+        ? `<br><button class="link-btn" style="font-size:0.82rem" onclick="packMerge('${mergeSpec}','${jsq(first.name)}')">📦 Cafe24 주문 ${mergeSuggestion.orderNos.length}건 합포하기</button>`
         : '';
     return `
     <tr class="${allSel ? 'checked-row' : ''}">
-      <td><input type="checkbox" ${allSel ? 'checked' : ''} ${postalPending ? 'disabled' : ''} onchange="toggleSelGroup('${spec}',this.checked)"></td>
+      <td><input type="checkbox" ${allSel ? 'checked' : ''} ${postalPending || shippingHold ? 'disabled' : ''} onchange="toggleSelGroup('${spec}',this.checked)"></td>
       <td style="white-space:nowrap">${kinds}</td>
       <td><b>${esc(first.name)}</b>${first.insta ? `<br><span class="muted" style="font-size:0.85rem">${esc(first.insta)}</span>` : ''}<br><span class="note-badge">📦 택배 1건 · 상품 ${groupProductQty}개</span>${packingAction}</td>
       <td>${esc(first.phone)}</td>
@@ -613,7 +644,7 @@ function renderSend() {
       <td style="min-width:240px;max-width:480px">${names}</td>
       <td>${opts}</td>
       <td style="min-width:180px;max-width:300px">${notes || '<span class="muted">-</span>'}</td>
-      <td style="white-space:nowrap">${postalPending ? '<span class="chip processing">🛡 우체국 결과 확인 중</span><br><span class="muted" style="font-size:0.8rem">같은 건 재접수 금지</span><br><button class="link-btn" style="font-weight:800" onclick="epostRefresh()">🔄 접수 결과 확인</button>' : `${dupBadge}${staleBadge}${stusSet.map(s => chip(s)).join(' ')}<div class="btn-col" style="margin-top:0.3rem">${stusSet.includes('접수중') ? `<button class="link-btn" style="font-size:0.85rem" onclick="cancelExcelGroup('${spec}','${jsq(first.name)}')">↩️ 엑셀 접수 취소</button>` : ''}<button class="link-btn" style="font-size:0.85rem" onclick="manualShipGroup('${spec}','${jsq(first.name)}')">따로 보냈어요</button><button class="link-btn" style="font-size:0.85rem;color:var(--red)" onclick="cancelSendGroup('${spec}','${jsq(first.name)}')">안 보내요 ✕</button></div>`}</td>
+      <td style="white-space:nowrap">${shippingHold ? '<span class="chip processing">재고 기다림</span><br><span class="muted" style="font-size:0.8rem">우체국 접수에서 자동 제외</span>' : postalPending ? '<span class="chip processing">🛡 우체국 결과 확인 중</span><br><span class="muted" style="font-size:0.8rem">같은 건 재접수 금지</span><br><button class="link-btn" style="font-weight:800" onclick="epostRefresh()">🔄 접수 결과 확인</button>' : `${dupBadge}${staleBadge}${stusSet.map(s => chip(s)).join(' ')}<div class="btn-col" style="margin-top:0.3rem">${stusSet.includes('접수중') ? `<button class="link-btn" style="font-size:0.85rem" onclick="cancelExcelGroup('${spec}','${jsq(first.name)}')">↩️ 엑셀 접수 취소</button>` : ''}<button class="link-btn" style="font-size:0.85rem" onclick="manualShipGroup('${spec}','${jsq(first.name)}')">따로 보냈어요</button><button class="link-btn" style="font-size:0.85rem;color:var(--red)" onclick="cancelSendGroup('${spec}','${jsq(first.name)}')">안 보내요 ✕</button></div>`}</td>
     </tr>`;
   }).join('');
 
@@ -634,6 +665,14 @@ function renderSend() {
     <div class="card">
       <div class="step-title"><span class="step-num">2</span> 우체국 접수하기</div>
       ${pending.length ? `
+      ${mergeSuggestions.length ? `<div class="result-box" style="background:#fff7e6;border-color:#efb24a;margin-bottom:0.9rem">
+        <div class="big">📦 합포 추천 ${mergeSuggestions.length}명</div>
+        ${mergeSuggestions.map(s => {
+          const spec = s.entries.map(entry => entry.kind + ':' + entry.x.id).join(',');
+          const qty = productQuantity(s.entries, entry => entry.x);
+          return `<div style="margin-top:0.45rem"><b>${esc(s.name)}</b>님이 Cafe24에서 따로 주문한 ${s.orderNos.length}건이 있어요. 상품 ${qty}개를 한 비닐에 넣고 송장 1개로 보낼 수 있어요. <button class="big-btn orange" style="padding:0.35rem 0.8rem;font-size:0.88rem" onclick="packMerge('${spec}','${jsq(s.name)}')">한 비닐로 묶기</button></div>`;
+        }).join('')}
+      </div>` : ''}
       <div class="hint">보낼 목록이에요. 빼고 싶은 사람은 체크를 풀면 돼요. (기본은 전체 선택)</div>
       <div style="margin-bottom:0.5rem">
         <button class="link-btn" onclick="selAll(true)">✅ 전체 선택</button> ·
@@ -745,7 +784,7 @@ async function retryZip(kind, id) {
 function selAll(v) {
   const notDone = x => x.status !== '발송완료' && x.status !== '취소됨';
   for (const list of [DB.orders, DB.seeding]) {
-    for (const x of list) if (notDone(x)) x._sel = v;
+    for (const x of list) if (notDone(x)) x._sel = x.shippingHold ? false : v;
   }
   render();
 }
@@ -1630,6 +1669,38 @@ async function packUnmerge(packGroupId, name) {
   toast('✔️ 합포장을 풀었어요. 출고가 각각 따로 보입니다.', 5000);
 }
 
+async function splitForLater(id, name, product) {
+  if (!confirm(`${name}님의 '${product}'만 나중에 따로 보낼까요?\n\n· 지금 보내는 상품들은 먼저 송장 1개로 나갑니다\n· 이 상품은 재고가 들어올 때까지 우체국 접수에서 빠집니다\n· 재고가 들어오면 [재고 들어옴 · 이제 보내기]를 누르면 별도 송장이 나옵니다`)) return;
+  const r = await api('/api/packing/split', { method: 'POST', body: JSON.stringify({ id }) });
+  if (r.error) { toast('⚠️ ' + r.error, 6000); return; }
+  adoptDb(r.db);
+  const item = DB.orders.find(row => row.id === id);
+  if (item) item._sel = false;
+  renderSend();
+  toast('✔️ 이 상품을 분리배송 대기로 옮겼어요. 지금 우체국 접수에서는 자동으로 빠집니다.', 6000);
+}
+
+async function releaseSplit(id, name) {
+  if (!confirm(`${name}님의 분리배송 상품 재고가 실제로 들어왔나요?\n\n[확인]을 누르면 보내기 체크가 켜지고, 다음 우체국 접수 때 별도 송장이 발급됩니다.`)) return;
+  const r = await api('/api/packing/split/release', { method: 'POST', body: JSON.stringify({ id }) });
+  if (r.error) { toast('⚠️ ' + r.error, 6000); return; }
+  adoptDb(r.db);
+  const item = DB.orders.find(row => row.id === id);
+  if (item) item._sel = true;
+  renderSend();
+  toast('✔️ 별도 배송할 준비가 됐어요. 체크된 상태로 다음 우체국 접수에 포함됩니다.', 6000);
+}
+
+async function undoSplit(orderNo, name) {
+  if (!confirm(`${name}님의 분리배송을 취소하고 원래 주문 한 송장으로 다시 합칠까요?\n모든 상품이 아직 접수 전일 때만 가능합니다.`)) return;
+  const r = await api('/api/packing/split/undo', { method: 'POST', body: JSON.stringify({ orderNo }) });
+  if (r.error) { toast('⚠️ ' + r.error, 6000); return; }
+  adoptDb(r.db);
+  for (const item of DB.orders.filter(row => row.orderNo === orderNo)) item._sel = true;
+  renderSend();
+  toast('✔️ 원래 주문 한 송장으로 다시 합쳤어요.', 5000);
+}
+
 // ── 입출고 내역 ──
 const STOCK_REASON = {
   '출고': ['📤', '#c0392b'], '입고 (직접)': ['📥', '#1e7e46'], '차감 (직접)': ['✏️', '#8a6d1a'],
@@ -1878,7 +1949,7 @@ async function doSync() {
 
 async function doExportAll() {
   const sendable = x => x.status !== '발송완료' && x.status !== '취소됨' &&
-    x.status !== '접수중' && !epostOperationUnresolved(x) && x._sel !== false;
+    x.status !== '접수중' && !x.shippingHold && !epostOperationUnresolved(x) && x._sel !== false;
   const candidates = [
     ...DB.orders.filter(x => x.status !== '발송완료' && x.status !== '취소됨').map(x => ({ type: 'order', kind: 'orders', x })),
     ...DB.seeding.filter(x => x.status !== '발송완료' && x.status !== '취소됨').map(x => ({ type: 'seeding', kind: 'seeding', x }))
@@ -1930,7 +2001,8 @@ async function manualShip(kind, id, name) {
 // 우체국 OpenAPI 바로 접수
 async function doEpostRegister() {
   // '접수중'(엑셀로 이미 접수)은 제외 — 같은 사람에게 두 번 보내는 것 방지
-  const sendable = x => x.status !== '발송완료' && x.status !== '취소됨' && x.status !== '접수중' && x._sel !== false;
+  const sendable = x => x.status !== '발송완료' && x.status !== '취소됨' && x.status !== '접수중' &&
+    !x.shippingHold && x._sel !== false;
   const candidates = [
     ...DB.orders.filter(x => x.status !== '발송완료' && x.status !== '취소됨').map(x => ({ type: 'order', kind: 'orders', x })),
     ...DB.seeding.filter(x => x.status !== '발송완료' && x.status !== '취소됨').map(x => ({ type: 'seeding', kind: 'seeding', x }))

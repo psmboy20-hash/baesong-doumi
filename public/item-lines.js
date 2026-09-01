@@ -120,5 +120,123 @@
     return productTextParts(item).noteLines;
   }
 
-  return { splitShipmentItems, parcelContent, expandSelectedEpostItems, fullySelectedEntries, shipmentProductNotes };
+  function normalizedRecipient(item) {
+    const source = item || {};
+    const name = String(source.name || '').replace(/\s+/g, '').replace(/\(.*?\)/g, '').trim();
+    const phone = String(source.phone || '').replace(/\D/g, '');
+    const addr = String(source.addr || '')
+      .replace(/\((\d{5})\)/g, '')
+      .replace(/\(우\)?\s*\d{5}\)?/g, '')
+      .replace(/우편번호[:\s]*\d{5}/g, '')
+      .replace(/\s+/g, '')
+      .trim();
+    return name && phone && addr ? name + '|' + phone + '|' + addr : '';
+  }
+
+  function cafe24MergeSuggestions(entries, allEntries) {
+    const blockedOrderNos = new Set();
+    for (const entry of (allEntries || entries || [])) {
+      const item = entry && entry.x;
+      if (!item || entry.kind !== 'orders' || !item.orderNo || item.status === '취소됨') continue;
+      if (item.packGroupId || item.parcelSplitId || item.shippingHold ||
+          String(item.status || '대기') !== '대기' || item.epost || item.invoice ||
+          item.epostOp && ['pending', 'unknown'].includes(item.epostOp.state)) {
+        blockedOrderNos.add(String(item.orderNo).trim());
+      }
+    }
+    const recipients = new Map();
+    for (const entry of (entries || [])) {
+      const item = entry && entry.x;
+      if (!item || entry.kind !== 'orders' || !item.orderNo || blockedOrderNos.has(String(item.orderNo).trim())) continue;
+      if (String(item.status || '대기') !== '대기' || item.epost || item.invoice) continue;
+      if (item.epostOp && ['pending', 'unknown'].includes(item.epostOp.state)) continue;
+      const recipient = normalizedRecipient(item);
+      if (!recipient) continue;
+      if (!recipients.has(recipient)) recipients.set(recipient, new Map());
+      const orders = recipients.get(recipient);
+      const orderNo = String(item.orderNo).trim();
+      if (!orders.has(orderNo)) orders.set(orderNo, []);
+      orders.get(orderNo).push(entry);
+    }
+    const suggestions = [];
+    for (const [recipientKey, orders] of recipients) {
+      if (orders.size < 2) continue;
+      const orderNos = [...orders.keys()];
+      const groupedEntries = orderNos.flatMap(orderNo => orders.get(orderNo));
+      suggestions.push({
+        recipientKey,
+        name: groupedEntries[0].x.name || '',
+        orderNos,
+        entries: groupedEntries
+      });
+    }
+    return suggestions;
+  }
+
+  function stockIdentity(item) {
+    const source = item || {};
+    const variant = String(source.variantCode || '').trim().toUpperCase();
+    if (variant) return 'V|' + variant;
+    const sku = String(source.sku || '').trim().toUpperCase();
+    return sku ? 'S|' + sku : '';
+  }
+
+  function shipmentStockStates(items, inventory) {
+    const result = new Map();
+    const grouped = new Map();
+    for (const item of (items || [])) {
+      const identity = stockIdentity(item);
+      if (!identity) {
+        result.set(item.id, { state: 'unknown', needed: Number(item.qty) || 1, available: null, shortage: 0 });
+        continue;
+      }
+      if (!grouped.has(identity)) grouped.set(identity, { items: [], needed: 0 });
+      const group = grouped.get(identity);
+      group.items.push(item);
+      group.needed += Math.max(1, Number(item.qty) || 1);
+    }
+    for (const [identity, group] of grouped) {
+      const matches = (inventory || []).filter(row => !row.retiredAggregate && stockIdentity(row) === identity);
+      const known = matches.length === 1 && !matches[0].needsCount && matches[0].qty !== null &&
+        matches[0].qty !== undefined && Number.isFinite(Number(matches[0].qty));
+      let remaining = known ? Math.max(0, Number(matches[0].qty)) : null;
+      const ordered = [...group.items].sort((a, b) => {
+        const aTime = Date.parse(a.orderedAt || a.regDate || '') || 0;
+        const bTime = Date.parse(b.orderedAt || b.regDate || '') || 0;
+        return aTime - bTime || Number(a.id || 0) - Number(b.id || 0);
+      });
+      for (const item of ordered) {
+        const needed = Math.max(1, Number(item.qty) || 1);
+        if (!known) {
+          result.set(item.id, { state: 'unknown', needed, available: null, shortage: 0 });
+          continue;
+        }
+        const available = remaining;
+        const shortage = Math.max(0, needed - available);
+        result.set(item.id, { state: shortage ? 'shortage' : 'enough', needed, available, shortage });
+        remaining = Math.max(0, remaining - needed);
+      }
+    }
+    return result;
+  }
+
+  function sentShipmentKey(item, recipientKey) {
+    if (!item || item.status !== '발송완료') return '';
+    if (item.packGroupId) return 'sent|pack|' + item.packGroupId;
+    if (item.orderNo && item.parcelSplitId) return 'sent|split|' + item.orderNo + '|' + item.parcelSplitId;
+    if (item.orderNo) return 'sent|order|' + item.orderNo;
+    if (item.returnId) return 'sent|return|' + item.returnId;
+    return 'sent|' + String(item.sentDate || '') + '|' + String(recipientKey || '');
+  }
+
+  return {
+    splitShipmentItems,
+    parcelContent,
+    expandSelectedEpostItems,
+    fullySelectedEntries,
+    shipmentProductNotes,
+    cafe24MergeSuggestions,
+    shipmentStockStates,
+    sentShipmentKey
+  };
 });

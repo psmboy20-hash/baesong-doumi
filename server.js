@@ -21,6 +21,12 @@ const {
   inventoryCountKnown,
   availableStockDeduction,
   canFuzzyMergeOrders,
+  splitOrderLineForLater,
+  releaseSplitOrderLine,
+  undoSplitOrder,
+  groupCafe24ShipmentItems,
+  sameCafe24OrderItem,
+  resolvePackingMergeSelection,
   variantIdentityAmbiguous,
   returnRestockAllowed,
   sheetWriteSucceeded,
@@ -624,6 +630,7 @@ async function cafe24FetchOrders(db) {
           productNo: it.product_no || null,
           variantCode: it.variant_code || '',
           orderItemCode: it.order_item_code || '',
+          orderedAt: String(o.order_date || ''),
           msg,
           courier: '',
           invoice: '',
@@ -1797,7 +1804,7 @@ function mergeOrders(db, parsed) {
           (!ex.canceledInvoice || (p.invoice && p.invoice !== ex.canceledInvoice))) { ex.status = '발송완료'; ch = true; }
       if (shipped && !ex.sentDate && p.sentDate) { ex.sentDate = p.sentDate; ch = true; }
       if (p.orderNo && !ex.orderNo) { ex.orderNo = p.orderNo; ch = true; }
-      for (const f of ['productNo', 'variantCode', 'orderItemCode', 'sku', 'sourceChannel']) {
+      for (const f of ['productNo', 'variantCode', 'orderItemCode', 'orderedAt', 'sku', 'sourceChannel']) {
         if (p[f] != null && String(p[f]) !== '' && String(p[f]) !== String(ex[f] ?? '')) { ex[f] = p[f]; ch = true; }
       }
       // 아직 안 보낸 건은 주소/연락처/옵션 변경을 최신으로 반영
@@ -1859,14 +1866,13 @@ function buildParcelGroups(db, selected) {
     if (item && blockedKeys.has(fulfillmentKey(itemType, item))) continue;
     // 이미 보낸 건은 서버에서도 걸러냄 (화면이 30초 묵은 상태에서 눌러도 이중 접수 방지)
     if (!(item && item.status !== '취소됨' && item.status !== '발송완료' && !item.epost)) continue;
+    if (item.shippingHold) continue;
     if (item.epostOp && ['pending', 'unknown'].includes(item.epostOp.state)) continue;
     // 과거에 이미 보낸 것과 같은 내용이면 차단 — [한 번 더 보내기]로 확인한 건(resendOk)만 통과
     if (!item.resendOk) {
       let prev = null;
       if (sel.type !== 'seeding' && item.orderNo) {
-        // 주문: 같은 주문번호에서 같은 제품·옵션이 이미 발송됨
-        prev = db.orders.find(o => o.id !== item.id && o.orderNo === item.orderNo && o.status === '발송완료' &&
-          normP(o.product) === normP(item.product) && optKey(o) === optKey(item));
+        prev = db.orders.find(o => o.id !== item.id && o.status === '발송완료' && sameCafe24OrderItem(o, item));
       } else if (sel.type === 'seeding') {
         // 시딩: 같은 사람에게 100% 동일한 제품이 이미 발송됨
         prev = db.seeding.find(o => o.id !== item.id && seedKey(o) === seedKey(item) && o.status === '발송완료' &&
@@ -2146,14 +2152,8 @@ async function postProcessShipped(db, matchedItems) {
   // 2) 카페24에 송장번호 자동 등록 + 배송중 처리 (주문건만)
   results.cafe24 = [];
   if (cafe24Configured(db) && db.cafe24Token) {
-    const groupedOrders = new Map();
-    for (const { type, item } of matchedItems) {
-      if (type !== 'order' || !item.orderNo || !item.invoice || item.cafe24Shipped) continue;
-      if (!groupedOrders.has(item.orderNo)) groupedOrders.set(item.orderNo, []);
-      groupedOrders.get(item.orderNo).push(item);
-    }
-    for (const [orderNo, items] of groupedOrders) {
-      const invoice = items[0].invoice;
+    const groupedOrders = groupCafe24ShipmentItems(matchedItems);
+    for (const { orderNo, invoice, items } of groupedOrders) {
       const itemCodes = [...new Set(items.map(item => String(item.orderItemCode || '').trim()).filter(Boolean))];
       try {
         await cafe24RegisterShipment(db, orderNo, invoice, itemCodes);
@@ -2593,20 +2593,13 @@ const server = http.createServer((req, res) => {
     if (url.pathname === '/api/packing/merge' && req.method === 'POST') {
       const b = JSON.parse((await readBody(req)).toString('utf8'));
       const db = loadDb();
-      const picked = [];
-      for (const sel of (b.selected || [])) {
-        const type = sel.type === 'seeding' ? 'seeding' : 'order';
-        const list = type === 'seeding' ? db.seeding : db.orders;
-        const item = list.find(x => x.id === Number(sel.id));
-        if (item && (item.status === '대기' || item.status === '접수중')) picked.push({ type, item });
-      }
-      if (picked.length < 2) return sendJson(res, 200, { error: '묶을 출고를 두 개 이상 선택해 주세요.' });
+      const resolved = resolvePackingMergeSelection(db, b.selected || []);
+      if (resolved.error) return sendJson(res, 200, { error: resolved.error });
+      const picked = resolved.picked;
       const recipientKeys = new Set(picked.map(({ item }) =>
         normName(item.name) + '|' + phoneDigits(item.phone) + '|' + cleanAddr(item.addr)
       ));
       if (recipientKeys.size !== 1) return sendJson(res, 200, { error: '받는 사람·연락처·주소가 모두 같은 것만 한 비닐로 묶을 수 있어요.' });
-      const before = new Set(picked.map(({ type, item }) => fulfillmentKey(type, item)));
-      if (before.size < 2) return sendJson(res, 200, { error: '이미 한 비닐로 묶여 있어요.' });
       const packGroupId = 'PACK-' + Date.now().toString(36).toUpperCase();
       for (const { item } of picked) item.packGroupId = packGroupId;
       saveDb(db);
@@ -2618,17 +2611,46 @@ const server = http.createServer((req, res) => {
       const db = loadDb();
       const packGroupId = String(b.packGroupId || '').trim();
       if (!packGroupId) return sendJson(res, 200, { error: '합포장 번호가 없어요.' });
-      let count = 0;
-      for (const item of [...db.orders, ...db.seeding]) {
-        if (item.packGroupId === packGroupId && (item.status === '대기' || item.status === '접수중')) {
-          delete item.packGroupId;
-          count++;
-        }
+      const members = [...db.orders, ...db.seeding].filter(item => item.packGroupId === packGroupId);
+      if (!members.length) return sendJson(res, 200, { error: '풀 수 있는 합포장 건을 찾지 못했어요.' });
+      if (members.some(item => item.status !== '대기' || item.invoice || item.epost ||
+          item.epostOp && ['pending', 'unknown'].includes(item.epostOp.state))) {
+        return sendJson(res, 200, { error: '이미 엑셀 접수·우체국 접수·발송이 시작된 합포장은 바꿀 수 없어요.' });
       }
-      if (!count) return sendJson(res, 200, { error: '풀 수 있는 합포장 건을 찾지 못했어요.' });
+      for (const item of members) delete item.packGroupId;
+      const count = members.length;
       saveDb(db);
       audit('packing.unmerge', { ref: packGroupId, count, rev: db.rev });
       return sendJson(res, 200, { ok: true, count, db });
+    }
+    if (url.pathname === '/api/packing/split' && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req)).toString('utf8'));
+      const db = loadDb();
+      const splitId = 'SPLIT-' + Date.now().toString(36).toUpperCase() + '-' + Number(b.id);
+      const result = splitOrderLineForLater(db.orders, b.id, splitId);
+      if (result.error) return sendJson(res, 200, result);
+      saveDb(db);
+      audit('packing.split', { ref: splitId, orderNo: result.orderNo, itemId: Number(b.id), rev: db.rev });
+      return sendJson(res, 200, { ok: true, db, splitId, orderNo: result.orderNo });
+    }
+    if (url.pathname === '/api/packing/split/release' && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req)).toString('utf8'));
+      const db = loadDb();
+      const result = releaseSplitOrderLine(db.orders, b.id);
+      if (result.error) return sendJson(res, 200, result);
+      saveDb(db);
+      audit('packing.split_release', { ref: result.item.parcelSplitId, orderNo: result.orderNo, itemId: Number(b.id), rev: db.rev });
+      return sendJson(res, 200, { ok: true, db, orderNo: result.orderNo });
+    }
+    if (url.pathname === '/api/packing/split/undo' && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req)).toString('utf8'));
+      const db = loadDb();
+      const orderNo = String(b.orderNo || '').trim();
+      const result = undoSplitOrder(db.orders, orderNo);
+      if (result.error) return sendJson(res, 200, result);
+      saveDb(db);
+      audit('packing.split_undo', { ref: orderNo, count: result.count, rev: db.rev });
+      return sendJson(res, 200, { ok: true, db, count: result.count, orderNo });
     }
     if (url.pathname === '/api/manual-ship' && req.method === 'POST') {
       // 앱 밖에서(우체국 창구, 다른 택배 등) 따로 보낸 건을 발송완료로 정리
@@ -2637,6 +2659,7 @@ const server = http.createServer((req, res) => {
       const list = body.type === 'seeding' ? db.seeding : db.orders;
       const item = list.find(x => x.id === body.id);
       if (!item) return sendJson(res, 200, { error: '해당 건을 찾지 못했어요.' });
+      if (item.shippingHold) return sendJson(res, 200, { error: '재고 기다림 품목은 발송완료로 바꿀 수 없어요. 재고가 들어온 뒤 [재고 들어옴 · 이제 보내기]를 먼저 눌러 주세요.' });
       if (item.status === '발송완료') return sendJson(res, 200, { error: '이미 발송완료된 건이에요.' });
       const inv = String(body.invoice || '').trim();
       item.invoice = inv;

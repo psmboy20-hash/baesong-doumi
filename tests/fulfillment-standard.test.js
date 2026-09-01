@@ -30,9 +30,22 @@ const {
   variantAllocationState,
   shouldProcessStockDeduction,
   buildReturnRestockPlan,
-  selectStockMatches
+  selectStockMatches,
+  splitOrderLineForLater,
+  releaseSplitOrderLine,
+  undoSplitOrder,
+  groupCafe24ShipmentItems,
+  sameCafe24OrderItem,
+  resolvePackingMergeSelection
 } = require('../lib/operations');
-const { expandSelectedEpostItems, fullySelectedEntries, shipmentProductNotes } = require('../public/item-lines');
+const {
+  expandSelectedEpostItems,
+  fullySelectedEntries,
+  shipmentProductNotes,
+  cafe24MergeSuggestions,
+  shipmentStockStates,
+  sentShipmentKey
+} = require('../public/item-lines');
 
 test('우체국 ERR-225는 미접수 확정으로 판단해 안전하게 재시도할 수 있다', () => {
   assert.equal(epostOrderMissing(new Error('ERR-225: 신청정보가 존재하지 않습니다.')), true);
@@ -64,6 +77,203 @@ test('같은 주문번호의 두 품목은 한 포장으로 묶는다', () => {
   const a = { id: 1, orderNo: '20260827-0001' };
   const b = { id: 2, orderNo: '20260827-0001' };
   assert.equal(fulfillmentKey('order', a), fulfillmentKey('order', b));
+});
+
+test('같은 주문에서도 분리배송 표시가 붙은 품목은 별도 택배가 된다', () => {
+  const ready = { id: 1, orderNo: 'ORDER-1' };
+  const delayed = { id: 2, orderNo: 'ORDER-1', parcelSplitId: 'SPLIT-2' };
+  assert.notEqual(fulfillmentKey('order', ready), fulfillmentKey('order', delayed));
+  assert.match(parcelReference('order', delayed), /^ORDER-1-SPLIT-/);
+});
+
+test('사용자가 확정한 합포장은 분리배송 표시보다 우선한다', () => {
+  const a = { id: 1, orderNo: 'ORDER-1', parcelSplitId: 'SPLIT-1', packGroupId: 'PACK-A' };
+  const b = { id: 2, orderNo: 'ORDER-2', packGroupId: 'PACK-A' };
+  assert.equal(fulfillmentKey('order', a), fulfillmentKey('order', b));
+});
+
+test('분리배송 번호가 우연히 같아도 다른 주문이나 시딩은 합쳐지지 않는다', () => {
+  const a = { id: 1, orderNo: 'ORDER-A', parcelSplitId: 'SPLIT-1' };
+  const b = { id: 2, orderNo: 'ORDER-B', parcelSplitId: 'SPLIT-1' };
+  const seed = { id: 3, parcelSplitId: 'SPLIT-1' };
+  assert.notEqual(fulfillmentKey('order', a), fulfillmentKey('order', b));
+  assert.equal(fulfillmentKey('seeding', seed), 'seeding|3');
+});
+
+test('같은 수취인의 서로 다른 Cafe24 주문만 합포를 권유한다', () => {
+  const common = { name: '고객', phone: '010-1111-2222', addr: '서울시 같은 주소', status: '대기' };
+  const suggestions = cafe24MergeSuggestions([
+    { kind: 'orders', x: { ...common, id: 1, orderNo: 'ORDER-A', product: 'Clara' } },
+    { kind: 'orders', x: { ...common, id: 2, orderNo: 'ORDER-B', product: 'Tessa' } },
+    { kind: 'seeding', x: { ...common, id: 3, product: 'June' } },
+    { kind: 'orders', x: { ...common, id: 4, orderNo: 'ORDER-A', product: 'June' } }
+  ]);
+  assert.equal(suggestions.length, 1);
+  assert.deepEqual(suggestions[0].orderNos, ['ORDER-A', 'ORDER-B']);
+  assert.deepEqual(suggestions[0].entries.map(entry => entry.x.id), [1, 4, 2]);
+});
+
+test('한 품목이라도 분리한 주문 전체는 다른 주문과 합포로 권유하지 않는다', () => {
+  const common = { name: '고객', phone: '010-1111-2222', addr: '서울시 같은 주소', status: '대기', orderNo: 'ORDER-A' };
+  const suggestions = cafe24MergeSuggestions([
+    { kind: 'orders', x: { ...common, id: 1, product: 'Clara' } },
+    { kind: 'orders', x: { ...common, id: 2, product: 'Tessa', parcelSplitId: 'SPLIT-2', shippingHold: true } },
+    { kind: 'orders', x: { ...common, id: 3, orderNo: 'ORDER-B', product: 'June' } }
+  ]);
+  assert.deepEqual(suggestions, []);
+});
+
+test('이미 일부 발송된 Cafe24 주문은 남은 행만 다른 주문과 합포 권유하지 않는다', () => {
+  const common = { name: '고객', phone: '010-1111-2222', addr: '서울시 같은 주소' };
+  const pending = [
+    { kind: 'orders', x: { ...common, id: 2, orderNo: 'ORDER-A', status: '대기', product: 'Tessa' } },
+    { kind: 'orders', x: { ...common, id: 3, orderNo: 'ORDER-B', status: '대기', product: 'June' } }
+  ];
+  const allOrders = [
+    { kind: 'orders', x: { ...common, id: 1, orderNo: 'ORDER-A', status: '발송완료', invoice: '111', product: 'Clara' } },
+    ...pending
+  ];
+  assert.deepEqual(cafe24MergeSuggestions(pending, allOrders), []);
+});
+
+test('실물재고가 부족한 Cafe24 품목만 분리배송 권장으로 표시한다', () => {
+  const states = shipmentStockStates([
+    { id: 1, variantCode: 'V-S', product: 'Clara', qty: 1 },
+    { id: 2, variantCode: 'V-M', product: 'Tessa', qty: 1 },
+    { id: 3, variantCode: 'V-L', product: 'June', qty: 1 }
+  ], [
+    { id: 11, variantCode: 'V-S', qty: 2, needsCount: false },
+    { id: 12, variantCode: 'V-M', qty: 0, needsCount: false },
+    { id: 13, variantCode: 'V-L', qty: null, needsCount: true }
+  ]);
+  assert.equal(states.get(1).state, 'enough');
+  assert.equal(states.get(2).state, 'shortage');
+  assert.equal(states.get(2).shortage, 1);
+  assert.equal(states.get(3).state, 'unknown');
+});
+
+test('같은 SKU 주문이 2개이고 재고가 1개면 먼저 온 한 건만 발송 가능으로 배정한다', () => {
+  const states = shipmentStockStates([
+    { id: 2, variantCode: 'V-S', product: 'Clara', qty: 1, orderedAt: '2026-09-01T11:00:00+09:00' },
+    { id: 1, variantCode: 'V-S', product: 'Clara', qty: 1, orderedAt: '2026-09-01T10:00:00+09:00' }
+  ], [{ id: 11, variantCode: 'V-S', qty: 1, needsCount: false }]);
+  assert.equal(states.get(1).state, 'enough');
+  assert.equal(states.get(2).state, 'shortage');
+  assert.equal(states.get(2).available, 0);
+  assert.equal(states.get(2).shortage, 1);
+});
+
+test('송장번호 없는 분리배송도 분리번호별 택배 건수로 구분한다', () => {
+  const common = { status: '발송완료', orderNo: 'ORDER-1', sentDate: '2026-09-01' };
+  const first = sentShipmentKey({ ...common, parcelSplitId: 'SPLIT-A' }, '고객|주소');
+  const second = sentShipmentKey({ ...common, parcelSplitId: 'SPLIT-B' }, '고객|주소');
+  assert.notEqual(first, second);
+  assert.equal(sentShipmentKey({ ...common }, '고객|주소'), sentShipmentKey({ ...common }, '다른표기'));
+});
+
+test('한 주문의 품목 하나를 나중 배송으로 떼고 입고 후 별도 송장으로 풀 수 있다', () => {
+  const orders = [
+    { id: 1, orderNo: 'ORDER-1', status: '대기', product: 'Clara' },
+    { id: 2, orderNo: 'ORDER-1', status: '대기', product: 'Tessa' },
+    { id: 3, orderNo: 'ORDER-1', status: '대기', product: 'June' }
+  ];
+  const split = splitOrderLineForLater(orders, 2, 'SPLIT-2');
+  assert.equal(split.ok, true);
+  assert.equal(orders[1].parcelSplitId, 'SPLIT-2');
+  assert.equal(orders[1].shippingHold, true);
+  assert.notEqual(fulfillmentKey('order', orders[0]), fulfillmentKey('order', orders[1]));
+
+  const released = releaseSplitOrderLine(orders, 2);
+  assert.equal(released.ok, true);
+  assert.equal(orders[1].shippingHold, undefined);
+  assert.equal(orders[1].parcelSplitId, 'SPLIT-2');
+});
+
+test('분리배송 취소는 같은 원주문의 대기 품목을 다시 한 송장으로 합친다', () => {
+  const orders = [
+    { id: 1, orderNo: 'ORDER-1', status: '대기' },
+    { id: 2, orderNo: 'ORDER-1', status: '대기', parcelSplitId: 'SPLIT-2', shippingHold: true }
+  ];
+  const undone = undoSplitOrder(orders, 'ORDER-1');
+  assert.equal(undone.ok, true);
+  assert.equal(orders[1].parcelSplitId, undefined);
+  assert.equal(orders[1].shippingHold, undefined);
+  assert.equal(fulfillmentKey('order', orders[0]), fulfillmentKey('order', orders[1]));
+});
+
+test('한 품목뿐인 주문이나 이미 합포·접수된 품목은 분리배송으로 바꾸지 않는다', () => {
+  assert.match(splitOrderLineForLater([{ id: 1, orderNo: 'ORDER-1', status: '대기' }], 1, 'SPLIT-1').error, /두 품목/);
+  assert.match(splitOrderLineForLater([
+    { id: 1, orderNo: 'ORDER-1', status: '대기', packGroupId: 'PACK-1' },
+    { id: 2, orderNo: 'ORDER-1', status: '대기' }
+  ], 1, 'SPLIT-1').error, /합포장/);
+  assert.match(splitOrderLineForLater([
+    { id: 1, orderNo: 'ORDER-1', status: '발송완료', invoice: '123' },
+    { id: 2, orderNo: 'ORDER-1', status: '대기' }
+  ], 1, 'SPLIT-1').error, /보낼 준비/);
+  assert.match(splitOrderLineForLater([
+    { id: 1, orderNo: 'ORDER-1', status: '발송완료', invoice: '123' },
+    { id: 2, orderNo: 'ORDER-1', status: '대기' },
+    { id: 3, orderNo: 'ORDER-1', status: '대기' }
+  ], 2, 'SPLIT-2').error, /이미 접수하거나 발송/);
+});
+
+test('합포 서버는 Cafe24 주문 전체를 포함하고 부적합한 행이 하나라도 있으면 전부 거절한다', () => {
+  const common = { name: '고객', phone: '010-1111-2222', addr: '서울시 같은 주소', status: '대기' };
+  const db = {
+    orders: [
+      { ...common, id: 1, orderNo: 'ORDER-A', product: 'Clara' },
+      { ...common, id: 2, orderNo: 'ORDER-A', product: 'Tessa' },
+      { ...common, id: 3, orderNo: 'ORDER-B', product: 'June' }
+    ],
+    seeding: []
+  };
+  const resolved = resolvePackingMergeSelection(db, [{ type: 'order', id: 1 }, { type: 'order', id: 3 }]);
+  assert.equal(resolved.error, undefined);
+  assert.deepEqual(resolved.picked.map(entry => entry.item.id), [1, 2, 3]);
+
+  db.orders[1].shippingHold = true;
+  const blocked = resolvePackingMergeSelection(db, [{ type: 'order', id: 1 }, { type: 'order', id: 3 }]);
+  assert.match(blocked.error, /재고 기다림|분리배송/);
+  assert.deepEqual(blocked.picked, []);
+});
+
+test('재고 대기 품목이 같은 포장에 섞여 있으면 포장 전체 접수를 막는다', () => {
+  const db = {
+    orders: [
+      { id: 1, orderNo: 'ORDER-A', packGroupId: 'PACK-1', name: '고객', status: '대기' },
+      { id: 2, orderNo: 'ORDER-B', packGroupId: 'PACK-1', name: '고객', status: '대기', shippingHold: true }
+    ],
+    seeding: []
+  };
+  const conflicts = fulfillmentGroupConflicts(db, [{ type: 'order', id: 1 }]);
+  assert.equal(conflicts.length, 1);
+  assert.match(conflicts[0].reason, /재고 기다림/);
+});
+
+test('같은 Cafe24 주문의 분리 송장 두 개는 Cafe24에도 각각 등록한다', () => {
+  const groups = groupCafe24ShipmentItems([
+    { type: 'order', item: { orderNo: 'ORDER-1', orderItemCode: 'ITEM-A', invoice: '111', cafe24Shipped: false } },
+    { type: 'order', item: { orderNo: 'ORDER-1', orderItemCode: 'ITEM-B', invoice: '222', cafe24Shipped: false } },
+    { type: 'order', item: { orderNo: 'ORDER-1', orderItemCode: 'ITEM-C', invoice: '111', cafe24Shipped: false } }
+  ]);
+  assert.equal(groups.length, 2);
+  assert.deepEqual(groups.map(group => [group.orderNo, group.invoice, group.items.map(item => item.orderItemCode)]), [
+    ['ORDER-1', '111', ['ITEM-A', 'ITEM-C']],
+    ['ORDER-1', '222', ['ITEM-B']]
+  ]);
+});
+
+test('같은 주문·상품·옵션이어도 Cafe24 품목코드가 다르면 정상 분리배송이다', () => {
+  const sent = { orderNo: 'ORDER-1', orderItemCode: 'ITEM-A', product: 'Clara', option: 'Skyblue, S' };
+  const another = { orderNo: 'ORDER-1', orderItemCode: 'ITEM-B', product: 'Clara', option: 'Skyblue, S' };
+  const replay = { orderNo: 'ORDER-1', orderItemCode: 'ITEM-A', product: 'Clara', option: 'Skyblue, S' };
+  assert.equal(sameCafe24OrderItem(sent, another), false);
+  assert.equal(sameCafe24OrderItem(sent, replay), true);
+  assert.equal(sameCafe24OrderItem(
+    { orderNo: 'ORDER-1', product: 'Clara', option: 'Skyblue, S' },
+    { orderNo: 'ORDER-1', orderItemCode: 'ITEM-A', product: 'Clara', option: 'Skyblue, S' }
+  ), true);
 });
 
 test('합포 송장은 모든 상품명 옵션 수량을 우체국 내용품으로 만든다', () => {
