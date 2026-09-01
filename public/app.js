@@ -940,7 +940,7 @@ async function epostRefresh() {
   if (r.error) { toast('⚠️ ' + r.error, 6000); return; }
   adoptDb(r.db);
   render();
-  toast(`✔️ ${r.refreshed}건 상태를 새로 확인했어요.` + (r.recovered ? ` 불확실했던 접수 ${r.recovered}건도 찾았어요.` : '') + (r.errors && r.errors.length ? ' 일부는 아직 확인 중이에요.' : ''), 6000);
+  toast(`✔️ ${r.refreshed}건 상태를 새로 확인했어요.` + (r.recovered ? ` 불확실했던 접수 ${r.recovered}건도 찾았어요.` : '') + (r.released ? ` 우체국에 접수되지 않은 ${r.released}건은 다시 선택할 수 있게 풀었어요.` : '') + (r.errors && r.errors.length ? ' 일부는 아직 확인 중이에요.' : ''), 6000);
 }
 async function epostCancel(kind, id, name) {
   if (!confirm(`${name}님의 우체국 접수를 정말 취소할까요?\n\n· 발급된 송장번호는 무효가 돼요\n· 이 건은 [보내기] 목록으로 되돌아가요\n· 뺐던 재고도 다시 채워져요`)) return;

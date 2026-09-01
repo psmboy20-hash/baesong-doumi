@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+  epostOrderMissing,
   fulfillmentKey,
   inventorySku,
   ensureOperationalFields,
@@ -28,6 +29,12 @@ const {
   selectStockMatches
 } = require('../lib/operations');
 const { shipmentProductNotes } = require('../public/item-lines');
+
+test('우체국 ERR-225는 미접수 확정으로 판단해 안전하게 재시도할 수 있다', () => {
+  assert.equal(epostOrderMissing(new Error('ERR-225: 신청정보가 존재하지 않습니다.')), true);
+  assert.equal(epostOrderMissing(new Error('ERR-322: 전화번호 형식 오류')), false);
+  assert.equal(epostOrderMissing(new Error('우체국 접수 결과를 아직 확인하지 못했습니다.')), false);
+});
 
 test('같은 주문번호의 두 품목은 한 포장으로 묶는다', () => {
   const a = { id: 1, orderNo: '20260827-0001' };
