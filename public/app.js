@@ -304,6 +304,7 @@ function trackLink(inv) {
 function go(page, sub) {
   PAGE = page;
   if (page === 'shipping') window._shipFilter = sub || 'all'; // 홈 타일에서 오면 그 단계만 보이게
+  if (page === 'epost') window._epostFilter = sub || 'all';
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('active', b.dataset.page === page));
   render();
   window.scrollTo(0, 0);
@@ -382,8 +383,8 @@ function renderHome() {
   const toSend = shipmentCount(toSendItems);
   // 3일 넘게 안 움직인 건 — 앱 밖에서 이미 보냈을 가능성을 먼저 물어본다
   const staleCount = shipmentCount(toSendItems.filter(x => x.regDate && (Date.now() - new Date(x.regDate)) / 86400000 >= 3));
-  const waitPickup = shipmentCount(all.filter(x => x.status === '발송완료' && !x.delivered && x.epost && ['00', '01', '02'].includes(x.epost.stus || '01')));
-  const problem = shipmentCount(all.filter(x => x.status === '발송완료' && !x.delivered && x.epost && x.epost.stus === '04'));
+  const waitPickup = shipmentCount(all.filter(x => HamItemLines.epostFilterMatches(x, 'pickup')));
+  const problem = shipmentCount(all.filter(x => HamItemLines.epostFilterMatches(x, 'problem')));
   const delivered = shipmentCount(all.filter(x => x.status === '발송완료' && x.delivered));
   const moving = shipmentCount(all.filter(x => x.status === '발송완료' && !x.delivered && !(x.epost && ['00', '01', '02', '04'].includes(x.epost.stus || '01'))));
   const retActive = (DB.returns || []).filter(x => !['completed', 'canceled'].includes(x.flowState)).length;
@@ -412,15 +413,15 @@ function renderHome() {
       <div class="flow-row">
         ${flowTile('📮', '보낼 준비', toSend, 'send', true)}
         <div class="flow-arrow">→</div>
-        ${flowTile('📦', '수거 기다림', waitPickup, 'epost', false)}
+        ${flowTile('📦', '우체국 픽업 대기중', waitPickup, 'epost', false, 'pickup')}
         <div class="flow-arrow">→</div>
         ${flowTile('🚚', '가는 중', moving, 'shipping', false, 'moving')}
         <div class="flow-arrow">→</div>
         ${flowTile('✅', '배달 끝', delivered, 'shipping', false, 'done')}
         <div class="flow-arrow" style="color:#e3e8f2">|</div>
         ${flowTile('🔁', '교환·반품', retActive, 'returns', true)}
-        ${needPrintList().length ? `<div class="flow-arrow" style="color:#e3e8f2">|</div>${flowTile('🖨', '인쇄할 운송장', needPrintList().length, 'epost', true)}` : ''}
-        ${problem ? `<div class="flow-arrow" style="color:#e3e8f2">|</div>${flowTile('⚠️', '기사님이 못 가져감', problem, 'epost', true)}` : ''}
+        ${needPrintList().length ? `<div class="flow-arrow" style="color:#e3e8f2">|</div>${flowTile('🖨', '인쇄할 운송장', needPrintList().length, 'epost', true, 'print')}` : ''}
+        ${problem ? `<div class="flow-arrow" style="color:#e3e8f2">|</div>${flowTile('⚠️', '기사님이 못 가져감', problem, 'epost', true, 'problem')}` : ''}
       </div>
       <div class="hint" style="margin:0.9rem 0 0; font-size:1.05rem">
         📅 <b>이번 달(${Number(ym.slice(5))}월)</b>: 보낸 택배 <b>${sentThisCount}건</b> · 상품 <b>${sentProductQty}개</b>
@@ -858,7 +859,7 @@ const EPOST_STUS = { '00': ['processing', '접수 준비중'], '01': ['processin
 // 회수(교환/반품)용 — 기사님이 고객 집으로 가는 방향
 const RET_STUS = { '00': ['processing', '회수 준비중'], '01': ['processing', '기사님 방문 예정'], '02': ['processing', '기사님 방문 예정'], '03': ['done', '물건 가져옴 ✓'], '04': ['wait', '⚠️ 아직 못 가져옴'], '05': ['wait', '취소됨 ✕'] };
 function renderEpost() {
-  const items = [
+  const allItems = [
     ...DB.orders.filter(x => x.epost).map(x => ({ kind: 'order', icon: '🛒', x })),
     ...DB.seeding.filter(x => x.epost).map(x => ({ kind: 'seeding', icon: '🎁', x }))
   ].sort((a, b) => {
@@ -867,6 +868,16 @@ function renderEpost() {
     const bp = b.x.epost.label && !b.x.printed ? 0 : 1;
     return ap - bp || (b.x.sentDate || '').localeCompare(a.x.sentDate || '');
   });
+  const filter = window._epostFilter || 'all';
+  const items = allItems.filter(entry => HamItemLines.epostFilterMatches(entry.x, filter));
+  const filterCounts = {
+    all: shipmentCount(allItems, entry => entry.x),
+    pickup: shipmentCount(allItems.filter(entry => HamItemLines.epostFilterMatches(entry.x, 'pickup')), entry => entry.x),
+    print: shipmentCount(allItems.filter(entry => HamItemLines.epostFilterMatches(entry.x, 'print')), entry => entry.x),
+    problem: shipmentCount(allItems.filter(entry => HamItemLines.epostFilterMatches(entry.x, 'problem')), entry => entry.x)
+  };
+  const filterLabel = { all: '전체 접수', pickup: '우체국 픽업 대기중', print: '인쇄 필요', problem: '확인 필요' }[filter] || '전체 접수';
+  const filterButton = (key, label) => `<button class="big-btn ${filter === key ? '' : 'gray'}" onclick="go('epost','${key}')">${label} ${filterCounts[key]}건</button>`;
   const parcels = shipmentGroups(items, entry => entry.x);
   const rows = parcels.map(group => {
     const { kind, x } = group[0];
@@ -902,7 +913,13 @@ function renderEpost() {
   const printable = parcels.filter(group => group[0].x.epost.label).map(parcelSpec);
   main().innerHTML = `
     <h1>📦 우체국 접수</h1>
-    <div class="sub">앱에서 우체국에 접수한 택배들이에요. 순서: <b>① 접수</b> → <b>② [🖨 인쇄]로 운송장 출력</b> → <b>③ 상자에 붙이면 기사님이 수거</b></div>
+    <div class="sub"><b>${filterLabel} ${parcels.length}건</b>을 보고 있어요. 순서: <b>① 접수</b> → <b>② [🖨 인쇄]로 운송장 출력</b> → <b>③ 상자에 붙이면 기사님이 픽업</b></div>
+    <div style="display:flex; gap:0.55rem; flex-wrap:wrap; margin-bottom:0.8rem">
+      ${filterButton('all', '전체')}
+      ${filterButton('pickup', '우체국 픽업 대기중')}
+      ${filterButton('print', '인쇄 필요')}
+      ${filterButton('problem', '확인 필요')}
+    </div>
     <div style="display:flex; gap:0.8rem; flex-wrap:wrap; margin-bottom:1.2rem">
       <button class="big-btn" onclick="epostRefresh()">🔄 진행상태 새로고침</button>
       ${needP.length ? `<button class="big-btn green" onclick="printLabels('${needP.join(',')}')">🖨 안 뽑은 운송장 ${needP.length}장 인쇄</button>` : ''}
@@ -918,7 +935,7 @@ function renderEpost() {
         </table>
       </div>
       <div class="hint" style="margin-top:0.8rem">· 운송장은 <b>[🖨 운송장 인쇄]</b>로 라벨기에서 바로 뽑는 게 기본이에요<br>· 우체국 사이트(오즈뷰어)로 뽑으려면: <b>[🖨 우체국 사이트에서 출력]</b> → 로그인 → <b>계약소포 → 신청정보등록 → [라벨인쇄]</b> — 앱에서 접수한 건들이 거기 목록에 그대로 떠 있어요<br>· <b>[취소]</b>는 기사님이 가져가기 전까지 할 수 있어요 — 취소 버튼이 보이면 아직 가능해요. 취소하면 [보내기] 목록으로 돌아갑니다</div>
-      ` : `<div class="hint" style="font-size:1.1rem">아직 앱에서 우체국에 접수한 건이 없어요.<br>[📮 보내기]에서 <b>[🚀 우체국 바로 접수]</b>를 누르면 여기에 나타납니다.</div>`}
+      ` : `<div class="hint" style="font-size:1.1rem"><b>${filterLabel}</b>에 해당하는 택배가 없어요.${filter === 'all' ? '<br>[📮 보내기]에서 <b>[🚀 우체국 바로 접수]</b>를 누르면 여기에 나타납니다.' : '<br><button class="link-btn" onclick="go(\'epost\',\'all\')">전체 접수 목록 보기</button>'}</div>`}
     </div>
     <div id="epost-page-result"></div>`;
 }
@@ -959,8 +976,8 @@ function printLabels(sel) {
 // 인쇄가 필요한(접수됐는데 아직 안 뽑은) 건 수
 function needPrintList() {
   const items = [
-    ...DB.orders.filter(x => x.status === '발송완료' && x.epost && x.epost.label && !x.printed && !['03', '05'].includes(x.epost.stus)).map(x => ({ kind: 'order', x })),
-    ...DB.seeding.filter(x => x.status === '발송완료' && x.epost && x.epost.label && !x.printed && !['03', '05'].includes(x.epost.stus)).map(x => ({ kind: 'seeding', x }))
+    ...DB.orders.filter(x => HamItemLines.epostFilterMatches(x, 'print')).map(x => ({ kind: 'order', x })),
+    ...DB.seeding.filter(x => HamItemLines.epostFilterMatches(x, 'print')).map(x => ({ kind: 'seeding', x }))
   ];
   return shipmentGroups(items, entry => entry.x).map(group => group[0]);
 }

@@ -120,6 +120,25 @@
     return productTextParts(item).noteLines;
   }
 
+  function epostFilterMatches(item, filter) {
+    const source = item || {};
+    if (!source.epost) return false;
+    if (!filter || filter === 'all') return true;
+    if (filter === 'pickup') {
+      return source.status === '발송완료' && !source.delivered &&
+        ['00', '01', '02'].includes(source.epost.stus || '01');
+    }
+    if (filter === 'print') {
+      return source.status === '발송완료' && !source.delivered &&
+        source.epost.label && !source.printed &&
+        !['03', '05'].includes(source.epost.stus || '01');
+    }
+    if (filter === 'problem') {
+      return source.status === '발송완료' && !source.delivered && source.epost.stus === '04';
+    }
+    return true;
+  }
+
   function normalizedRecipient(item) {
     const source = item || {};
     const name = String(source.name || '').replace(/\s+/g, '').replace(/\(.*?\)/g, '').trim();
@@ -235,6 +254,7 @@
     expandSelectedEpostItems,
     fullySelectedEntries,
     shipmentProductNotes,
+    epostFilterMatches,
     cafe24MergeSuggestions,
     shipmentStockStates,
     sentShipmentKey
