@@ -1966,22 +1966,47 @@ async function doExportAll() {
   ).map(entry => ({ type: entry.type, id: entry.x.id }));
   if (!selected.length) { toast('선택된 사람이 없어요.'); return; }
   const parcelCount = selectedShipmentCount(selected);
-  if (!confirm(`택배 ${parcelCount}건짜리 우체국 엑셀 파일을 만들까요?\n\n· 목록이 [엑셀 접수 중]으로 바뀌어요 (잘못 눌렀으면 [↩️ 엑셀 접수 취소]로 되돌려요)\n· 파일 폴더와 우체국 사이트가 자동으로 열려요`)) return;
+  if (!confirm(`택배 ${parcelCount}건짜리 우체국 엑셀 파일을 내려받을까요?\n\n· 이 컴퓨터의 다운로드 폴더에 저장돼요.\n· 목록이 [엑셀 접수 중]으로 바뀌어요 (잘못 눌렀으면 [↩️ 엑셀 접수 취소]로 되돌려요)`)) return;
   busy(true, '우체국 엑셀을 만드는 중…');
-  const r = await api('/api/export/epost', { method: 'POST', body: JSON.stringify({ selected }) });
-  busy(false);
-  if (r.error) { toast('⚠️ ' + r.error, 6000); return; }
-  adoptDb(r.db);
-  render();
-  const box = $('#export-result');
-  if (box) box.innerHTML = `
-    <div class="result-box ok">
-      <div class="big">✅ 다 됐어요! 택배 ${r.parcels}건짜리 엑셀을 만들었어요.</div>
-      방금 <b>파일이 든 폴더</b>와 <b>우체국 사이트</b>가 자동으로 열렸어요.<br>
-      우체국 사이트에서 <b>계약소포 → 파일등록 → [찾기]</b>를 누르고,<br>
-      열린 폴더에 있는 <b>${esc(r.fname)}</b> 파일을 선택하면 됩니다.
-    </div>`;
-  window.scrollTo(0, document.body.scrollHeight);
+  try {
+    const response = await fetch('/api/export/epost', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ selected })
+    });
+    const contentType = String(response.headers.get('Content-Type') || '');
+    if (contentType.includes('application/json')) {
+      const result = await response.json();
+      throw new Error(result.error || '엑셀 파일을 만들지 못했어요.');
+    }
+    if (!response.ok) throw new Error('엑셀 파일을 만들지 못했어요.');
+    const disposition = String(response.headers.get('Content-Disposition') || '');
+    const match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+    const filename = match ? decodeURIComponent(match[1]) : '우체국접수.xlsx';
+    const blob = await response.blob();
+    const href = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = href;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(href), 1000);
+    adoptDb(await api('/api/db'));
+    render();
+    const box = $('#export-result');
+    if (box) box.innerHTML = `
+      <div class="result-box ok">
+        <div class="big">다 됐어요. 택배 ${parcelCount}건짜리 엑셀을 내려받았어요.</div>
+        이 컴퓨터의 <b>다운로드 폴더</b>에서 <b>${esc(filename)}</b> 파일을 찾으세요.<br>
+        우체국에서 <b>계약소포 → 파일등록 → [찾기]</b>를 누른 뒤 이 파일을 선택하면 됩니다.
+      </div>`;
+    window.scrollTo(0, document.body.scrollHeight);
+  } catch (error) {
+    toast('⚠️ ' + (error.message || '엑셀 파일을 만들지 못했어요.'), 7000);
+  } finally {
+    busy(false);
+  }
 }
 
 // 앱 밖에서 따로 보낸 건 정리 (우체국 창구, 다른 택배 등)

@@ -4,7 +4,6 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const https = require('https');
 const crypto = require('crypto');
 const { exec } = require('child_process');
@@ -49,6 +48,7 @@ const {
   selectStockMatches
 } = require('./lib/operations');
 const { writeJsonAtomic, appendAudit, createMutationQueue } = require('./lib/storage');
+const { buildWorkbookBuffer, xlsxDownloadHeaders } = require('./lib/spreadsheet-export');
 const {
   clientJson,
   mergeClientDb,
@@ -1941,25 +1941,12 @@ function exportEpost(db, selected) {
   if (!rows.length) return { error: '내보낼 항목이 없습니다.' };
   const cols = db.settings.epostColumns;
   const aoa = [cols].concat(rows.map(r => cols.map(c => r[c] != null ? r[c] : '')));
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws['!cols'] = cols.map(c => ({ wch: c.includes('주소') ? 45 : c.includes('내용품') ? 30 : 14 }));
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, '우체국접수');
-  const downloads = path.join(os.homedir(), 'Downloads');
   const fname = `우체국접수_${nowStamp()}.xlsx`;
-  const fpath = path.join(fs.existsSync(downloads) ? downloads : __dirname, fname);
-  XLSX.writeFile(wb, fpath);
-  // 상태 갱신
+  const buffer = buildWorkbookBuffer('우체국접수', cols, aoa.slice(1));
   for (const { item } of picked) {
     if (item.status === '대기') item.status = '접수중';
   }
-  // 편의: 파일이 담긴 폴더를 열고(파일 선택된 상태), 우체국 접수 사이트도 연다
-  try {
-    exec(`explorer /select,"${fpath}"`);
-    // start는 셸 따옴표 문제로 안 열리는 경우가 있어 rundll32 방식 사용
-    exec('rundll32 url.dll,FileProtocolHandler https://biz.epost.go.kr');
-  } catch (e) { /* 못 열어도 치명적이지 않음 */ }
-  return { path: fpath, fname, count, parcels };
+  return { buffer, fname, count, parcels };
 }
 
 // ---------- 송장 매칭 ----------
@@ -3238,7 +3225,9 @@ const server = http.createServer((req, res) => {
       const r = exportEpost(db, selected);
       if (r.error) return sendJson(res, 200, r);
       saveDb(db);
-      return sendJson(res, 200, Object.assign({ ok: true, db }, r));
+      audit('epost.xlsx.download', { parcels: r.parcels, items: r.count, rev: db.rev });
+      res.writeHead(200, xlsxDownloadHeaders(r.fname, r.buffer.length));
+      return res.end(r.buffer);
     }
     // 정적 파일
     let p = url.pathname === '/' ? '/index.html' : url.pathname;
