@@ -870,14 +870,14 @@ async function manualShipGroup(spec, name) {
   const inv = prompt('송장번호가 있으면 입력해 주세요.\n없으면 빈칸 그대로 [확인]을 누르세요.');
   if (inv === null) return;
   busy(true, '발송완료로 정리하는 중…');
-  let err = null;
-  for (const { kind, x } of items) {
-    const r = await api('/api/manual-ship', { method: 'POST', body: JSON.stringify({ type: kind === 'seeding' ? 'seeding' : 'order', id: x.id, invoice: (inv || '').trim() }) });
-    if (r.error) err = r.error; else adoptDb(r.db);
-  }
+  const first = items[0];
+  const r = first
+    ? await api('/api/manual-ship', { method: 'POST', body: JSON.stringify({ type: first.kind === 'seeding' ? 'seeding' : 'order', id: first.x.id, invoice: (inv || '').trim() }) })
+    : { error: '처리할 포장을 찾지 못했어요.' };
+  if (!r.error) adoptDb(r.db);
   busy(false);
   render();
-  toast(err ? '⚠️ 일부는 처리 못 했어요: ' + err : `✔️ ${name}님 건을 발송완료로 정리했어요.`, 7000);
+  toast(r.error ? '⚠️ 처리하지 못했어요: ' + r.error : `✔️ ${name}님 포장 전체를 발송완료로 정리했어요.`, 7000);
 }
 
 function toggleSel(kind, id, checked) {

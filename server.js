@@ -211,8 +211,11 @@ function storeAlive() {
   if (!VIEW_ONLY) return Promise.resolve(false); // 매장 PC 자신은 항상 담당
   return new Promise(resolve => {
     try {
-      const u = new URL(STORE_URL + '/api/status');
-      const r = http.get({ hostname: u.hostname, port: u.port, path: u.pathname, timeout: 2000 }, res => { resolve(res.statusCode === 200); res.resume(); });
+      const u = new URL('/healthz', STORE_URL);
+      const r = http.get({ hostname: u.hostname, port: u.port, path: u.pathname, timeout: 2000 }, res => {
+        resolve(Number.isInteger(res.statusCode));
+        res.resume();
+      });
       r.on('timeout', () => { r.destroy(); resolve(false); });
       r.on('error', () => resolve(false));
     } catch (e) { resolve(false); }
@@ -2801,15 +2804,13 @@ const server = http.createServer((req, res) => {
           error: preflightConflicts[0].name + ': ' + preflightConflicts[0].reason
         });
       }
-      if (!epostConfigured(db) || !db.epost) return sendJson(res, 200, { error: '먼저 설정에서 [우체국 연결]을 해주세요.' });
-      if (VIEW_ONLY && await storeAliveCached()) {
-        // 매장이 켜져 있을 땐 주문 접수는 매장에 양보 (카페24 동시 접속 방지) — 시딩만 허용
-        body.selected = (body.selected || []).filter(s => s.type === 'seeding');
-        if (!body.selected.length) {
-          return sendJson(res, 200, { error: '매장 컴퓨터가 켜져 있어요 — 주문(🛒) 접수는 매장 화면에서 해주세요. (시딩🎁은 여기서도 가능)' });
-        }
-      }
       const selected = expandSelectedFulfillments(db, Array.isArray(body.selected) ? body.selected : []);
+      if (VIEW_ONLY && await storeAliveCached() && selected.some(entry => entry.type === 'order')) {
+        return sendJson(res, 200, {
+          error: '매장 컴퓨터가 켜져 있어요. 주문이 포함된 포장은 매장 화면에서 접수해 주세요.'
+        });
+      }
+      if (!epostConfigured(db) || !db.epost) return sendJson(res, 200, { error: '먼저 설정에서 [우체국 연결]을 해주세요.' });
       body.selected = selected;
       const out = [];
       const shippedItems = [];
@@ -3005,22 +3006,29 @@ const server = http.createServer((req, res) => {
       // 앱 밖에서(우체국 창구, 다른 택배 등) 따로 보낸 건을 발송완료로 정리
       const body = JSON.parse((await readBody(req)).toString('utf8'));
       const db = loadDb();
-      const list = body.type === 'seeding' ? db.seeding : db.orders;
-      const item = list.find(x => x.id === body.id);
-      if (!item) return sendJson(res, 200, { error: '해당 건을 찾지 못했어요.' });
-      const shipmentConflicts = fulfillmentGroupConflicts(db, [{ type: body.type === 'seeding' ? 'seeding' : 'order', id: item.id }]);
+      const type = body.type === 'seeding' ? 'seeding' : 'order';
+      const selected = expandSelectedFulfillments(db, [{ type, id: Number(body.id) }]);
+      const entries = selected.map(sel => ({
+        type: sel.type,
+        item: (sel.type === 'seeding' ? db.seeding : db.orders).find(row => row.id === Number(sel.id))
+      })).filter(entry => entry.item);
+      if (!entries.length) return sendJson(res, 200, { error: '해당 건을 찾지 못했어요.' });
+      const shipmentConflicts = fulfillmentGroupConflicts(db, selected);
       if (shipmentConflicts.length) return sendJson(res, 200, { error: shipmentConflicts[0].reason });
-      if (item.sheetCancelHold) return sendJson(res, 200, { error: '구글시트에서 기존 송장번호와 발송일을 지운 뒤 [시트에서 기존 송장 지웠어요]를 먼저 눌러 주세요.' });
-      if (item.shippingHold) return sendJson(res, 200, { error: '재고 기다림 품목은 발송완료로 바꿀 수 없어요. 재고가 들어온 뒤 [재고 들어옴 · 이제 보내기]를 먼저 눌러 주세요.' });
-      if (item.status === '발송완료') return sendJson(res, 200, { error: '이미 발송완료된 건이에요.' });
+      if (entries.some(entry => entry.item.sheetCancelHold)) return sendJson(res, 200, { error: '구글시트에서 기존 송장번호와 발송일을 지운 뒤 [시트에서 기존 송장 지웠어요]를 먼저 눌러 주세요.' });
+      if (entries.some(entry => entry.item.shippingHold)) return sendJson(res, 200, { error: '재고 기다림 품목은 발송완료로 바꿀 수 없어요. 재고가 들어온 뒤 [재고 들어옴 · 이제 보내기]를 먼저 눌러 주세요.' });
+      if (entries.some(entry => entry.item.status === '발송완료' || entry.item.invoice || entry.item.epost)) return sendJson(res, 200, { error: '이 포장에는 이미 발송된 상품이 있어요.' });
       const inv = String(body.invoice || '').trim();
-      item.invoice = inv;
-      item.courier = inv.replace(/\D/g, '').length === 13 ? '우체국' : (inv ? '기타' : '');
-      item.status = '발송완료';
-      item.sentDate = today();
-      const post = await postProcessShipped(db, [{ type: body.type === 'seeding' ? 'seeding' : 'order', item }]);
+      const courier = inv.replace(/\D/g, '').length === 13 ? '우체국' : (inv ? '기타' : '');
+      for (const { item } of entries) {
+        item.invoice = inv;
+        item.courier = courier;
+        item.status = '발송완료';
+        item.sentDate = today();
+      }
+      const post = await postProcessShipped(db, entries);
       saveDb(db);
-      audit('shipment.manual', { type: body.type === 'seeding' ? 'seeding' : 'order', count: 1, rev: db.rev });
+      audit('shipment.manual', { type, count: entries.length, rev: db.rev });
       return sendJson(res, 200, { ok: true, db, stock: post.stock, stockMissing: post.stockMissing, cafe24: post.cafe24, sheet: post.sheet });
     }
     if (url.pathname === '/api/epost/status' && req.method === 'POST') {
