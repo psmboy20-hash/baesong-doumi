@@ -566,7 +566,7 @@ function renderSend() {
   // 엑셀로 접수 중인 건은 기본 체크 해제 (바로 접수와 겹쳐 두 번 보내는 것 방지)
   for (const p of pending) {
     if ((p.x.status === '접수중' || epostOperationUnresolved(p.x)) && p.x._sel === undefined) p.x._sel = false;
-    if (p.x.shippingHold) p.x._sel = false;
+    if (p.x.shippingHold || p.x.sheetCancelHold) p.x._sel = false;
   }
   const gmap = new Map();
   for (const p of pending) {
@@ -575,7 +575,7 @@ function renderSend() {
     gmap.get(key).push(p);
   }
   const groupsArr = [...gmap.values()];
-  const selectedGroups = groupsArr.filter(g => !g.some(p => p.x.shippingHold) && g.every(p => p.x._sel !== false));
+  const selectedGroups = groupsArr.filter(g => !g.some(p => p.x.shippingHold || p.x.sheetCancelHold) && g.every(p => p.x._sel !== false));
   const selCount = selectedGroups.length;
   const selProductQty = productQuantity(selectedGroups.flat(), entry => entry.x);
   const mergeSuggestions = HamItemLines.cafe24MergeSuggestions(
@@ -606,7 +606,8 @@ function renderSend() {
     const spec = g.map(p => p.kind + ':' + p.x.id).join(',');
     const postalPending = g.some(p => epostOperationUnresolved(p.x));
     const shippingHold = g.some(p => p.x.shippingHold);
-    const allSel = !postalPending && !shippingHold && g.every(p => p.x._sel !== false);
+    const sheetCancelHold = g.some(p => p.x.sheetCancelHold);
+    const allSel = !postalPending && !shippingHold && !sheetCancelHold && g.every(p => p.x._sel !== false);
     const kinds = [...new Set(g.map(p => p.x.exchange ? '🔁 교환' : p.kind === 'seeding' ? seedingSourceLabel(p.x) : '🛒 주문'))].join('<br>');
     const names = g.map(p => {
       const parts = productParts(p.x);
@@ -649,7 +650,7 @@ function renderSend() {
         : '';
     return `
     <tr class="${allSel ? 'checked-row' : ''}">
-      <td><input type="checkbox" ${allSel ? 'checked' : ''} ${postalPending || shippingHold ? 'disabled' : ''} onchange="toggleSelGroup('${spec}',this.checked)"></td>
+      <td><input type="checkbox" ${allSel ? 'checked' : ''} ${postalPending || shippingHold || sheetCancelHold ? 'disabled' : ''} onchange="toggleSelGroup('${spec}',this.checked)"></td>
       <td style="white-space:nowrap">${kinds}</td>
       <td><b>${esc(first.name)}</b>${first.insta ? `<br><span class="muted" style="font-size:0.85rem">${esc(first.insta)}</span>` : ''}<br><span class="note-badge">📦 택배 1건 · 상품 ${groupProductQty}개</span>${packingAction}</td>
       <td>${esc(first.phone)}</td>
@@ -663,7 +664,7 @@ function renderSend() {
       <td style="min-width:240px;max-width:480px">${names}</td>
       <td>${opts}</td>
       <td style="min-width:180px;max-width:300px">${notes || '<span class="muted">-</span>'}</td>
-      <td style="white-space:nowrap">${shippingHold ? '<span class="chip processing">재고 기다림</span><br><span class="muted" style="font-size:0.8rem">우체국 접수에서 자동 제외</span>' : postalPending ? '<span class="chip processing">🛡 우체국 결과 확인 중</span><br><span class="muted" style="font-size:0.8rem">같은 건 재접수 금지</span><br><button class="link-btn" style="font-weight:800" onclick="epostRefresh()">🔄 접수 결과 확인</button>' : `${dupBadge}${staleBadge}${stusSet.map(s => chip(s)).join(' ')}<div class="btn-col" style="margin-top:0.3rem">${stusSet.includes('접수중') ? `<button class="link-btn" style="font-size:0.85rem" onclick="cancelExcelGroup('${spec}','${jsq(first.name)}')">↩️ 엑셀 접수 취소</button>` : ''}<button class="link-btn" style="font-size:0.85rem" onclick="manualShipGroup('${spec}','${jsq(first.name)}')">따로 보냈어요</button><button class="link-btn" style="font-size:0.85rem;color:var(--red)" onclick="cancelSendGroup('${spec}','${jsq(first.name)}')">안 보내요 ✕</button></div>`}</td>
+      <td style="white-space:nowrap">${sheetCancelHold ? `<span class="chip wait">시트 송장 정리 필요</span><br><span class="muted" style="font-size:0.8rem">기존 송장을 지우기 전 재발송 금지</span><br><button class="link-btn" style="font-weight:800" onclick="resolveLegacySheetCancel('${spec}','${jsq(first.name)}')">✓ 시트에서 기존 송장 지웠어요</button>` : shippingHold ? '<span class="chip processing">재고 기다림</span><br><span class="muted" style="font-size:0.8rem">우체국 접수에서 자동 제외</span>' : postalPending ? '<span class="chip processing">🛡 우체국 결과 확인 중</span><br><span class="muted" style="font-size:0.8rem">같은 건 재접수 금지</span><br><button class="link-btn" style="font-weight:800" onclick="epostRefresh()">🔄 접수 결과 확인</button>' : `${dupBadge}${staleBadge}${stusSet.map(s => chip(s)).join(' ')}<div class="btn-col" style="margin-top:0.3rem">${stusSet.includes('접수중') ? `<button class="link-btn" style="font-size:0.85rem" onclick="cancelExcelGroup('${spec}','${jsq(first.name)}')">↩️ 엑셀 접수 취소</button>` : ''}<button class="link-btn" style="font-size:0.85rem" onclick="manualShipGroup('${spec}','${jsq(first.name)}')">따로 보냈어요</button><button class="link-btn" style="font-size:0.85rem;color:var(--red)" onclick="cancelSendGroup('${spec}','${jsq(first.name)}')">안 보내요 ✕</button></div>`}</td>
     </tr>`;
   }).join('');
 
@@ -803,7 +804,7 @@ async function retryZip(kind, id) {
 function selAll(v) {
   const notDone = x => x.status !== '발송완료' && x.status !== '취소됨';
   for (const list of [DB.orders, DB.seeding]) {
-    for (const x of list) if (notDone(x)) x._sel = x.shippingHold ? false : v;
+    for (const x of list) if (notDone(x)) x._sel = x.shippingHold || x.sheetCancelHold ? false : v;
   }
   render();
 }
@@ -847,6 +848,21 @@ async function cancelExcelGroup(spec, name) {
   await saveDb();
   render();
   toast('✔️ [보낼 준비]로 되돌렸어요.');
+}
+async function resolveLegacySheetCancel(spec, name) {
+  if (!confirm(`${name}님 행의 예전 송장번호와 발송일을 구글시트에서 직접 지웠나요?\n\n[확인]을 누르면 재발송할 수 있고, 새 송장은 시트에 다시 기록됩니다.`)) return;
+  const ids = specItems(spec).filter(entry => entry.kind === 'seeding').map(entry => entry.x.id);
+  const result = await api('/api/seeding/cancel-sheet-resolved', {
+    method: 'POST',
+    body: JSON.stringify({ ids })
+  });
+  if (result.error) {
+    toast('시트 정리 완료를 기록하지 못했어요. 잠시 뒤 다시 눌러 주세요.', 6000);
+    return;
+  }
+  adoptDb(result.db);
+  render();
+  toast('시트 정리를 확인했어요. 이제 새 송장으로 다시 보낼 수 있어요.', 6000);
 }
 async function manualShipGroup(spec, name) {
   const items = specItems(spec);
@@ -1995,7 +2011,7 @@ async function doSync() {
 
 async function doExportAll() {
   const sendable = x => x.status !== '발송완료' && x.status !== '취소됨' &&
-    x.status !== '접수중' && !x.shippingHold && !epostOperationUnresolved(x) && x._sel !== false;
+    x.status !== '접수중' && !x.shippingHold && !x.sheetCancelHold && !epostOperationUnresolved(x) && x._sel !== false;
   const candidates = [
     ...DB.orders.filter(x => x.status !== '발송완료' && x.status !== '취소됨').map(x => ({ type: 'order', kind: 'orders', x })),
     ...DB.seeding.filter(x => x.status !== '발송완료' && x.status !== '취소됨').map(x => ({ type: 'seeding', kind: 'seeding', x }))
@@ -2073,7 +2089,7 @@ async function manualShip(kind, id, name) {
 async function doEpostRegister() {
   // '접수중'(엑셀로 이미 접수)은 제외 — 같은 사람에게 두 번 보내는 것 방지
   const sendable = x => x.status !== '발송완료' && x.status !== '취소됨' && x.status !== '접수중' &&
-    !x.shippingHold && x._sel !== false;
+    !x.shippingHold && !x.sheetCancelHold && x._sel !== false;
   const candidates = [
     ...DB.orders.filter(x => x.status !== '발송완료' && x.status !== '취소됨').map(x => ({ type: 'order', kind: 'orders', x })),
     ...DB.seeding.filter(x => x.status !== '발송완료' && x.status !== '취소됨').map(x => ({ type: 'seeding', kind: 'seeding', x }))

@@ -11,6 +11,8 @@ const XLSX = require('xlsx');
 const seed = require('./lib/seed128');
 const {
   releaseMissingEpostOperations,
+  epostResponseRecognized,
+  epostTreatmentStatus,
   fulfillmentKey,
   expandSelectedFulfillments,
   markPrintedFulfillments,
@@ -19,6 +21,7 @@ const {
   setEpostCancellationState,
   finalizeEpostCancellation,
   flagMissingCanceledSheetSource,
+  resolveMissingCanceledSheetSource,
   fulfillmentGroupConflicts,
   parcelReference,
   selectInvoiceParcelGroup,
@@ -122,6 +125,7 @@ const BIND_HOST = String(process.env.HAM_BIND || '0.0.0.0').trim() || '0.0.0.0';
 const AUTO_SYNC_ENABLED = process.env.HAM_DISABLE_SYNC !== '1';
 const ZIP_LOOKUP_VERSION = 2;
 const TRUST_PROXY = process.env.HAM_TRUST_PROXY === '1';
+const CLOUD_WRITER = process.env.HAM_CLOUD_WRITER === '1';
 const EXTERNAL_TIMEOUT_MS = Math.max(5000, Number(process.env.HAM_EXTERNAL_TIMEOUT_MS) || 30000);
 const MUTATION_STALL_MS = Math.max(60000, Number(process.env.HAM_MUTATION_STALL_MS) || 10 * 60 * 1000);
 // ── 접속 코드 게이트 (클라우드 서버용) ───────────────────────────────
@@ -157,13 +161,14 @@ document.getElementById('c').addEventListener('keydown',e=>{if(e.key==='Enter')g
 async function gateCheck(req, res, url) {
   const code = accessCode();
   const ip = clientIp(req);
-  if (!code && accessCodeRequiredForIp(ip)) {
+  const gateRequired = accessCodeRequiredForIp(ip, CLOUD_WRITER);
+  if (!code && gateRequired) {
     if (url.pathname.startsWith('/api/')) sendJson(res, 403, { error: '이 서버는 다른 컴퓨터 접속이 잠겨 있어요. 서버 컴퓨터에서 접속 코드를 먼저 설정해 주세요.' });
     else { res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('서버 컴퓨터에서 접속 코드를 먼저 설정해 주세요.'); }
     return true;
   }
   if (!code) return false;
-  if (!accessCodeRequiredForIp(ip)) return false;
+  if (!gateRequired) return false;
   if (reqCookies(req).hamKey === gateHash(code)) return false; // 이미 코드 입력한 컴퓨터
   if (String(req.headers['x-ham-code'] || '').trim() === code) return false; // 외부 시스템(allin_v4 등)의 마스터 API 호출
   if (url.pathname === '/api/login' && req.method === 'POST') {
@@ -829,6 +834,14 @@ function httpGetText(urlStr) {
       },
       timeout: 20000
     }, res => {
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        res.resume();
+        const error = new Error('우체국 응답 오류 (' + res.statusCode + ')');
+        error.responseReceived = true;
+        error.indeterminate = true;
+        reject(error);
+        return;
+      }
       const chunks = [];
       res.on('data', c => chunks.push(c));
       res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
@@ -857,6 +870,12 @@ async function epostCall(db, msgName, params) {
   const enc = seed.encryptHex(s.epostSecKey, epostPlain(params));
   const url = `http://ship.epost.go.kr/${msgName}?key=${encodeURIComponent(s.epostApiKey)}&regData=${enc}`;
   const xml = await httpGetText(url);
+  if (!epostResponseRecognized(xml)) {
+    const error = new Error('우체국 응답 내용을 확인할 수 없어요.');
+    error.responseReceived = true;
+    error.indeterminate = true;
+    throw error;
+  }
   const errCode = xmlVal(xml, 'error_code');
   if (errCode) {
     const error = new Error(errCode + ': ' + (xmlVal(xml, 'message') || '우체국 오류'));
@@ -2207,9 +2226,14 @@ async function reconcileEpostCancellation(db, orderNo) {
         custNo: db.epost.custNo,
         reqType: '1',
         orderNo: operation.orderNo,
-        reqYmd: operation.reqYmd
+        reqYmd: operation.reqYmd || today().replace(/-/g, '')
       });
-      const status = xmlVal(statusXml, 'treatStusCd') || '01';
+      const status = epostTreatmentStatus(statusXml);
+      if (!status) {
+        const error = new Error('우체국 진행상태 응답을 확인할 수 없어요.');
+        error.indeterminate = true;
+        throw error;
+      }
       if (status === '05') {
         setEpostCancellationState(db, orderNo, 'epost_canceled', '');
         saveDb(db);
@@ -2228,14 +2252,25 @@ async function reconcileEpostCancellation(db, orderNo) {
           reqNo: operation.reqNo,
           resNo: operation.resNo,
           regiNo: operation.regiNo,
-          reqYmd: operation.reqYmd,
+          reqYmd: operation.reqYmd || today().replace(/-/g, ''),
           delYn: 'Y'
         });
+        const verifiedXml = await epostCall(db, 'api.GetResInfo.jparcel', {
+          custNo: db.epost.custNo,
+          reqType: '1',
+          orderNo: operation.orderNo,
+          reqYmd: operation.reqYmd || today().replace(/-/g, '')
+        });
+        if (epostTreatmentStatus(verifiedXml) !== '05') {
+          const error = new Error('우체국 취소 완료 여부를 확인 중이에요. 다시 취소하지 마세요.');
+          error.indeterminate = true;
+          throw error;
+        }
         setEpostCancellationState(db, orderNo, 'epost_canceled', '');
         saveDb(db);
       }
     } catch (error) {
-      const unknown = !error.responseReceived;
+      const unknown = !!error.indeterminate || !error.responseReceived;
       const message = unknown
         ? '우체국 응답이 중간에 끊겨 취소 여부를 자동 확인 중이에요. 다시 취소하지 마세요.'
         : error.message;
@@ -3511,6 +3546,19 @@ const server = http.createServer((req, res) => {
       saveDb(db);
       audit('label.printed', { parcels: result.parcels, items: result.items, rev: db.rev });
       return sendJson(res, 200, Object.assign({ ok: true, db }, result));
+    }
+    if (url.pathname === '/api/seeding/cancel-sheet-resolved' && req.method === 'POST') {
+      const body = JSON.parse((await readBody(req)).toString('utf8'));
+      const ids = new Set((Array.isArray(body.ids) ? body.ids : []).map(Number));
+      const db = loadDb();
+      let resolved = 0;
+      for (const item of db.seeding || []) {
+        if (ids.has(Number(item.id)) && resolveMissingCanceledSheetSource(item)) resolved += 1;
+      }
+      if (!resolved) return sendJson(res, 400, { error: '시트 정리 확인이 필요한 시딩을 찾지 못했어요.' });
+      saveDb(db);
+      audit('sheet.cancel.resolved', { count: resolved, rev: db.rev });
+      return sendJson(res, 200, { ok: true, resolved, db });
     }
     if (url.pathname === '/api/export/epost' && req.method === 'POST') {
       const body = JSON.parse((await readBody(req)).toString('utf8'));

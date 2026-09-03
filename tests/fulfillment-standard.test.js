@@ -2,6 +2,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   epostOrderMissing,
+  epostResponseRecognized,
+  epostTreatmentStatus,
   releaseMissingEpostOperations,
   fulfillmentKey,
   expandSelectedFulfillments,
@@ -43,6 +45,7 @@ const {
   setEpostCancellationState,
   finalizeEpostCancellation,
   flagMissingCanceledSheetSource,
+  resolveMissingCanceledSheetSource,
   shipmentOperationKey,
   classifyCafe24Shipment,
   setExternalSyncState,
@@ -99,6 +102,14 @@ test('우체국 ERR-225는 미접수 확정으로 판단해 안전하게 재시�
   assert.match(missing.epostOp.error, /다시 접수/);
   assert.equal(releaseMissingEpostOperations([{ item: other }], new Error('ERR-322: 전화번호 형식 오류')), false);
   assert.equal(other.epostOp.state, 'unknown');
+});
+
+test('우체국 취소는 정상 XML의 취소 상태 05가 확인될 때만 완료로 판단한다', () => {
+  assert.equal(epostResponseRecognized(''), false);
+  assert.equal(epostResponseRecognized('<html>오류</html>'), false);
+  assert.equal(epostResponseRecognized('<response><message>정상</message></response>'), true);
+  assert.equal(epostTreatmentStatus('<response><treatStusCd><![CDATA[05]]></treatStusCd></response>'), '05');
+  assert.equal(epostTreatmentStatus('<response><message>처리됨</message></response>'), '');
 });
 
 test('저장돼 있던 ERR-225 잠금만 시작할 때 풀고 다른 우체국 오류는 유지한다', () => {
@@ -467,7 +478,14 @@ test('예전 시딩 행에 고유번호가 없으면 송장 삭제 실패를 숨
   assert.equal(flagMissingCanceledSheetSource(item, '2026-09-03T12:00:00.000Z'), true);
   assert.equal(item.syncOps.sheetInvoiceCancel.state, 'failed');
   assert.match(item.syncIssues[0].message, /직접 지워/);
+  assert.equal(item.sheetCancelHold, true);
   assert.ok(item.canceledSheet);
+  item.sheetWritten = true;
+  assert.equal(resolveMissingCanceledSheetSource(item, '2026-09-03T12:05:00.000Z'), true);
+  assert.equal(item.sheetWritten, false);
+  assert.equal(item.sheetCancelHold, false);
+  assert.equal(item.canceledSheet, undefined);
+  assert.equal(item.syncOps.sheetInvoiceCancel.state, 'success');
 });
 
 test('같은 주문에서 일부 상품만 이미 발송됐으면 남은 상품의 두 번째 접수를 막는다', () => {

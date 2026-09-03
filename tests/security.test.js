@@ -51,4 +51,6 @@ test('접속 코드가 있으면 localhost 외 모든 컴퓨터가 로그인한�
   assert.equal(accessCodeRequiredForIp('192.168.0.20'), true);
   assert.equal(accessCodeRequiredForIp('100.94.125.77'), true);
   assert.equal(accessCodeRequiredForIp('140.238.54.44'), true);
+  assert.equal(accessCodeRequiredForIp('127.0.0.1', true), true);
+  assert.equal(accessCodeRequiredForIp('::1', true), true);
 });
