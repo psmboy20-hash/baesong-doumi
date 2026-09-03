@@ -25,6 +25,7 @@ const {
   releaseSplitOrderLine,
   undoSplitOrder,
   groupCafe24ShipmentItems,
+  cafe24ShipmentItemsReady,
   shipmentOperationKey,
   classifyCafe24Shipment,
   setExternalSyncState,
@@ -111,7 +112,8 @@ const {
   returnCompletionSafety
 } = require('./lib/claims');
 
-const PORT = 8899;
+const PORT = Number(process.env.HAM_PORT) || 8899;
+const BIND_HOST = String(process.env.HAM_BIND || '0.0.0.0').trim() || '0.0.0.0';
 const ZIP_LOOKUP_VERSION = 2;
 const TRUST_PROXY = process.env.HAM_TRUST_PROXY === '1';
 // ── 접속 코드 게이트 (클라우드 서버용) ───────────────────────────────
@@ -210,7 +212,7 @@ async function storeAliveCached() {
   _storeCache = { t: Date.now(), v };
   return v;
 }
-const DATA_DIR = path.join(__dirname, 'data');
+const DATA_DIR = path.resolve(process.env.HAM_DATA_DIR || path.join(__dirname, 'data'));
 const DB_PATH = path.join(DATA_DIR, 'db.json');
 const AUDIT_PATH = path.join(DATA_DIR, 'audit.ndjson');
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -2321,7 +2323,7 @@ async function postProcessShipped(db, matchedItems) {
     for (const { orderNo, invoice, items } of groupedOrders) {
       const itemCodes = [...new Set(items.map(item => String(item.orderItemCode || '').trim()).filter(Boolean))];
       const operationKey = shipmentOperationKey(orderNo, invoice, itemCodes);
-      if (itemCodes.length !== items.length) {
+      if (!cafe24ShipmentItemsReady(items)) {
         const message = '이 송장에 카페24 품목코드가 없는 상품이 있어 전체 자동 배송처리를 멈췄어요.';
         for (const item of items) setExternalSyncState(item, 'cafe24', 'shipment', 'failed', message, operationKey);
         results.cafe24.push({ orderNo, ok: false, error: message });
@@ -2401,6 +2403,10 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const handle = async () => {
     try {
+    if (url.pathname === '/healthz' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end('ok');
+    }
     // 다른 사이트가 API를 몰래 호출하는 것 차단 — 같은 주소(same-origin)에서 온 요청만 허용
     // (localhost뿐 아니라 Tailscale 주소로 열어도 자기 자신이면 통과)
     if (req.method === 'POST') {
@@ -3469,8 +3475,7 @@ server.on('error', e => {
   throw e;
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-  // 모든 인터페이스에서 수신 (클라우드 서버·Tailscale 접속용; 공개 인터넷은 접속 코드 게이트가 지킴)
+server.listen(PORT, BIND_HOST, () => {
   console.log('배송 도우미 실행됨 → http://localhost:' + PORT);
   // 켜질 때 한 번 + 5분마다 자동으로 새 주문/시딩 확인
   mutationQueue.run(() => syncAll()).then(({ out }) => {

@@ -35,6 +35,7 @@ const {
   releaseSplitOrderLine,
   undoSplitOrder,
   groupCafe24ShipmentItems,
+  cafe24ShipmentItemsReady,
   sameCafe24OrderItem,
   resolvePackingMergeSelection,
   markPrintedFulfillments,
@@ -295,6 +296,17 @@ test('같은 Cafe24 주문의 분리 송장 두 개는 Cafe24에도 각각 등�
     ['ORDER-1', '111', ['ITEM-A', 'ITEM-C']],
     ['ORDER-1', '222', ['ITEM-B']]
   ]);
+});
+
+test('같은 Cafe24 품목을 수량 때문에 여러 줄로 나눠도 송장 등록 대상이다', () => {
+  assert.equal(cafe24ShipmentItemsReady([
+    { orderItemCode: 'ITEM-A', qty: 1 },
+    { orderItemCode: 'ITEM-A', qty: 2 }
+  ]), true);
+  assert.equal(cafe24ShipmentItemsReady([
+    { orderItemCode: 'ITEM-A' },
+    { orderItemCode: '' }
+  ]), false);
 });
 
 test('카페24 송장은 주문번호 송장번호 품목코드 전체로 중복을 판정한다', () => {
