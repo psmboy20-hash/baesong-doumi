@@ -958,20 +958,8 @@ function epostSitePrint() {
   }
 }
 function printLabels(sel) {
-  window.open('/label.html?print=1&sel=' + encodeURIComponent(sel), '_blank');
-  // 인쇄 창을 연 순간 "인쇄함 ✓" 표시 (필요하면 언제든 [다시 인쇄] 가능)
-  for (const part of String(sel).split(',')) {
-    const [kind, id] = part.split(':');
-    const list = kind === 'seeding' ? DB.seeding : DB.orders;
-    const x = list.find(i => i.id === Number(id));
-    if (x) {
-      const key = shipmentKey(x);
-      for (const item of [...DB.orders, ...DB.seeding]) {
-        if (shipmentKey(item) === key) item.printed = true;
-      }
-    }
-  }
-  saveDb().then(() => render());
+  const opened = window.open('/label.html?print=1&sel=' + encodeURIComponent(sel), '_blank');
+  if (!opened) toast('팝업이 막혀 라벨 창을 열지 못했어요. 주소창 오른쪽에서 팝업을 허용해 주세요.', 7000);
 }
 // 인쇄가 필요한(접수됐는데 아직 안 뽑은) 건 수
 function needPrintList() {
@@ -2246,6 +2234,13 @@ async function refreshStatus(force) {
 }
 
 // ---------- 시작 ----------
+window.addEventListener('message', async event => {
+  if (event.origin !== location.origin || !event.data || event.data.type !== 'ham-label-printed') return;
+  adoptDb(await api('/api/db'));
+  render();
+  toast(`인쇄 완료를 택배 ${Number(event.data.parcels) || 0}건에 기록했어요.`);
+});
+
 (async function init() {
   DB = await api('/api/db');
   if (DB && DB.error) {

@@ -141,7 +141,8 @@
 </head>
 <body>
 <div class="toolbar">
-  <button onclick="window.print()">🖨 인쇄하기</button>
+  <button onclick="startPrint()">🖨 인쇄하기</button>
+  <button id="printed-ok" onclick="markPrinted(false)" style="margin-left:8px;background:#168447;border-color:#168447">✓ 라벨이 잘 나왔어요</button>
   <select id="paper" onchange="setPaper(this.value)">
     <option value="post">우체국 전용라벨 C형 168×107 (6인치 라벨기)</option>
     <option value="roll">택배라벨 100×150mm</option>
@@ -155,6 +156,7 @@
     <span id="off">0, 0</span>mm <button class="nud" onclick="setOffset(0,0)">처음으로</button>
   </span>
   <br><span id="paper-hint" style="color:#555">라벨기에서 한 장씩 나옵니다. 인쇄 창에서 프린터를 라벨기로 선택하세요.</span>
+  <br><b id="print-status" style="display:inline-block;margin-top:8px;color:#9a3412">인쇄가 끝난 뒤 [라벨이 잘 나왔어요]를 눌러 주세요.</b>
 </div>
 <style>.nud { font-size: 15px; padding: 4px 10px; border: 1px solid #999; background: #f5f5f5; color: #222; border-radius: 6px; cursor: pointer; }</style>
 <style id="pagestyle"></style>
@@ -179,7 +181,7 @@ function splitAddr(addr) {
   return [a1, a2]; // 짧은 주소는 둘째 줄 비움 (같은 주소 두 번 인쇄 방지)
 }
 
-let LABELS = [], DBREF = null, MODE = 'roll';
+let LABELS = [], DBREF = null, MODE = 'roll', LABEL_SELECTIONS = [], PRINT_PENDING = false;
 
 function areaHtml(a, lb, cls) {
   const invCn = a.cn && !/^[ABC]/.test(a.cn);
@@ -312,6 +314,43 @@ function setOffset(x, y) {
 function nudge(dx, dy) {
   setOffset(Number(localStorage.getItem('labelOffX') || 0) + dx, Number(localStorage.getItem('labelOffY') || 0) + dy);
 }
+function startPrint() {
+  PRINT_PENDING = true;
+  window.print();
+}
+async function markPrinted(skipConfirm) {
+  if (!LABEL_SELECTIONS.length) return;
+  if (!skipConfirm && !confirm('라벨이 실제로 프린터에서 잘 나왔나요?')) return;
+  const button = document.getElementById('printed-ok');
+  const status = document.getElementById('print-status');
+  button.disabled = true;
+  status.textContent = '인쇄 완료를 장부에 기록하는 중…';
+  try {
+    const response = await fetch('/api/labels/printed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ selected: LABEL_SELECTIONS })
+    });
+    const result = await response.json();
+    if (!response.ok || result.error) throw new Error(result.error || '기록하지 못했어요.');
+    status.style.color = '#166534';
+    status.textContent = `완료: 택배 ${result.parcels}건을 인쇄함으로 기록했어요.`;
+    button.textContent = '✓ 인쇄 완료 기록됨';
+    if (window.opener) window.opener.postMessage({ type: 'ham-label-printed', parcels: result.parcels }, location.origin);
+  } catch (error) {
+    button.disabled = false;
+    status.style.color = '#b91c1c';
+    status.textContent = '기록하지 못했어요. 잠시 뒤 이 버튼을 다시 눌러 주세요.';
+  }
+}
+window.addEventListener('afterprint', () => {
+  if (!PRINT_PENDING) return;
+  PRINT_PENDING = false;
+  setTimeout(() => {
+    if (confirm('라벨이 프린터에서 잘 나왔나요?\n\n[확인]을 누르면 배송 도우미에 인쇄 완료로 기록됩니다.')) markPrinted(true);
+    else document.getElementById('print-status').textContent = '인쇄 완료로 기록하지 않았어요. 다시 인쇄한 뒤 확인해 주세요.';
+  }, 150);
+});
 function setPaper(mode) {
   MODE = mode;
   localStorage.setItem('labelPaper', mode);
@@ -342,6 +381,7 @@ async function main() {
     const [type, id] = value.split(':');
     return { type: type === 'seeding' ? 'seeding' : 'order', id: Number(id) };
   });
+  LABEL_SELECTIONS = selections;
   const items = HamItemLines.expandSelectedEpostItems(DBREF, selections);
   const seen = new Set();
   LABELS = [];
@@ -360,7 +400,7 @@ async function main() {
   }
   if (!LABELS.length) { document.getElementById('sheet').innerHTML = '<p style="padding:2rem">인쇄할 운송장이 없어요. (앱에서 접수한 건만 인쇄할 수 있습니다)</p>'; return; }
   setPaper(localStorage.getItem('labelPaper') || 'post');
-  if (params.get('print') === '1') setTimeout(() => window.print(), 700);
+  if (params.get('print') === '1') setTimeout(startPrint, 700);
 }
 main();
 </script>

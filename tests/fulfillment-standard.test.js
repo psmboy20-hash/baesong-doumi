@@ -36,7 +36,8 @@ const {
   undoSplitOrder,
   groupCafe24ShipmentItems,
   sameCafe24OrderItem,
-  resolvePackingMergeSelection
+  resolvePackingMergeSelection,
+  markPrintedFulfillments
 } = require('../lib/operations');
 const {
   expandSelectedEpostItems,
@@ -344,6 +345,29 @@ test('서버는 같은 주문의 한 행만 받아도 모든 상품 행을 한 �
     { type: 'order', id: 1 },
     { type: 'order', id: 2 }
   ]);
+});
+
+test('라벨은 실제 인쇄 확인 뒤에만 같은 송장의 모든 상품을 인쇄 완료로 기록한다', () => {
+  const db = {
+    orders: [
+      { id: 1, orderNo: 'ORDER-1', epost: { orderNo: 'HAM-1', regiNo: '123', label: {} } },
+      { id: 2, orderNo: 'ORDER-1', epost: { orderNo: 'HAM-1', regiNo: '123', label: {} } },
+      { id: 3, orderNo: 'ORDER-2' }
+    ],
+    seeding: []
+  };
+
+  const result = markPrintedFulfillments(db, [
+    { type: 'order', id: 1 },
+    { type: 'order', id: 3 }
+  ], '2026-09-03T10:00:00.000Z');
+
+  assert.deepEqual(result, { parcels: 1, items: 2 });
+  assert.equal(db.orders[0].printed, true);
+  assert.equal(db.orders[1].printed, true);
+  assert.equal(db.orders[0].printedAt, '2026-09-03T10:00:00.000Z');
+  assert.equal(db.orders[1].printedAt, '2026-09-03T10:00:00.000Z');
+  assert.equal(db.orders[2].printed, undefined);
 });
 
 test('같은 주문에서 일부 상품만 이미 발송됐으면 남은 상품의 두 번째 접수를 막는다', () => {

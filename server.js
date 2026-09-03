@@ -14,6 +14,7 @@ const {
   releaseMissingEpostOperations,
   fulfillmentKey,
   expandSelectedFulfillments,
+  markPrintedFulfillments,
   fulfillmentGroupConflicts,
   parcelReference,
   selectInvoiceParcelGroup,
@@ -3219,6 +3220,15 @@ const server = http.createServer((req, res) => {
       const result = await matchInvoices(db, rows);
       if (result.error) return sendJson(res, 200, { error: result.error });
       saveDb(db);
+      return sendJson(res, 200, Object.assign({ ok: true, db }, result));
+    }
+    if (url.pathname === '/api/labels/printed' && req.method === 'POST') {
+      const body = JSON.parse((await readBody(req)).toString('utf8'));
+      const db = loadDb();
+      const result = markPrintedFulfillments(db, Array.isArray(body.selected) ? body.selected : []);
+      if (!result.parcels) return sendJson(res, 400, { error: '인쇄 완료로 기록할 운송장이 없어요.' });
+      saveDb(db);
+      audit('label.printed', { parcels: result.parcels, items: result.items, rev: db.rev });
       return sendJson(res, 200, Object.assign({ ok: true, db }, result));
     }
     if (url.pathname === '/api/export/epost' && req.method === 'POST') {
