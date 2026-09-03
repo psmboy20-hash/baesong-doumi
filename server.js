@@ -25,6 +25,10 @@ const {
   releaseSplitOrderLine,
   undoSplitOrder,
   groupCafe24ShipmentItems,
+  shipmentOperationKey,
+  classifyCafe24Shipment,
+  setExternalSyncState,
+  clearExternalSyncState,
   sameCafe24OrderItem,
   resolvePackingMergeSelection,
   variantIdentityAmbiguous,
@@ -488,6 +492,19 @@ async function cafe24RegisterShipment(db, orderNo, invoice, requestedItemCodes) 
   if (!itemCodes.length) throw new Error('선택한 상품의 카페24 품목코드가 없어 자동 배송처리를 멈췄어요.');
   if (itemCodes.some(codeValue => !activeCodes.has(codeValue))) throw new Error('선택한 상품이 카페24의 현재 배송 가능 품목과 맞지 않아 자동 배송처리를 멈췄어요.');
   const tracking = String(invoice).replace(/\D/g, '');
+  const existing = await cafe24Fetch(db, token, `/api/v2/admin/orders/${orderNo}/shipments`);
+  if (existing.status !== 200 || !existing.json) {
+    const error = new Error('기존 카페24 송장을 확인하지 못해 중복 방지를 위해 등록을 멈췄어요.');
+    error.responseReceived = existing.status > 0;
+    throw error;
+  }
+  const existingState = classifyCafe24Shipment(existing.json.shipments || [], tracking, itemCodes);
+  if (existingState === 'exact') return { ok: true, reconciled: true };
+  if (existingState === 'conflict') {
+    const error = new Error('같은 송장번호가 카페24에 다른 상품 구성으로 이미 등록돼 있어 자동 처리를 멈췄어요.');
+    error.responseReceived = true;
+    throw error;
+  }
   const body = {
     shop_no: 1,
     request: {
@@ -500,8 +517,9 @@ async function cafe24RegisterShipment(db, orderNo, invoice, requestedItemCodes) 
   const r = await cafe24Fetch(db, token, `/api/v2/admin/orders/${orderNo}/shipments`, 'POST', body);
   if (r.status >= 200 && r.status < 300) return { ok: true };
   const msg = (r.json && r.json.error && r.json.error.message) || r.text.slice(0, 150);
-  // 이미 배송처리된 주문 등은 참고용 메시지로
-  throw new Error(msg || ('등록 실패(' + r.status + ')'));
+  const error = new Error(msg || ('등록 실패(' + r.status + ')'));
+  error.responseReceived = true;
+  throw error;
 }
 
 async function cafe24ClaimCarrierId(db, ret) {
@@ -1210,7 +1228,8 @@ function backupDb() {
 const syncStatus = {
   lastRun: null, lastOk: null,
   google: { ok: null, error: null, added: 0 },
-  cafe24: { configured: false, connected: false, ok: null, error: null, added: 0 }
+  cafe24: { configured: false, connected: false, ok: null, error: null, added: 0 },
+  reconciliation: { pending: 0, lastRun: null }
 };
 
 async function writeSheetSchemaStatus(db, schema) {
@@ -1523,6 +1542,24 @@ async function syncAll() {
         changed = true;
       }
     }
+  }
+  const reconciliationItems = [];
+  for (const item of db.orders || []) {
+    const needsCafe24 = (item.syncIssues || []).some(issue => issue.system === 'cafe24' && issue.action === 'shipment');
+    if (item.status === '발송완료' && needsCafe24 && !c24Skip) reconciliationItems.push({ type: 'order', item });
+  }
+  for (const item of db.seeding || []) {
+    const needsSheet = (item.syncIssues || []).some(issue => issue.system === 'sheet' && issue.action === 'invoice');
+    if (item.status === '발송완료' && needsSheet) reconciliationItems.push({ type: 'seeding', item });
+  }
+  syncStatus.reconciliation = { pending: reconciliationItems.length, lastRun: new Date().toISOString() };
+  if (reconciliationItems.length) {
+    await postProcessShipped(db, reconciliationItems);
+    changed = true;
+    syncStatus.reconciliation.pending = reconciliationItems.filter(({ item }) => (item.syncIssues || []).some(issue =>
+      (issue.system === 'cafe24' && issue.action === 'shipment') ||
+      (issue.system === 'sheet' && issue.action === 'invoice')
+    )).length;
   }
   backupDb(); // 하루 1개 자동 백업
   try { if (await checkDelivered(db)) changed = true; } catch (e) { /* 무시 */ }
@@ -2143,14 +2180,35 @@ async function postProcessShipped(db, matchedItems) {
     const groupedOrders = groupCafe24ShipmentItems(matchedItems);
     for (const { orderNo, invoice, items } of groupedOrders) {
       const itemCodes = [...new Set(items.map(item => String(item.orderItemCode || '').trim()).filter(Boolean))];
+      const operationKey = shipmentOperationKey(orderNo, invoice, itemCodes);
+      if (itemCodes.length !== items.length) {
+        const message = '이 송장에 카페24 품목코드가 없는 상품이 있어 전체 자동 배송처리를 멈췄어요.';
+        for (const item of items) setExternalSyncState(item, 'cafe24', 'shipment', 'failed', message, operationKey);
+        results.cafe24.push({ orderNo, ok: false, error: message });
+        continue;
+      }
+      if (items.every(item => item.syncOps && item.syncOps.cafe24Shipment &&
+        item.syncOps.cafe24Shipment.key === operationKey && item.syncOps.cafe24Shipment.state === 'success')) {
+        results.cafe24.push({ orderNo, ok: true, itemCount: itemCodes.length, skipped: true });
+        continue;
+      }
+      for (const item of items) setExternalSyncState(item, 'cafe24', 'shipment', 'pending', '', operationKey);
+      saveDb(db);
       try {
         await cafe24RegisterShipment(db, orderNo, invoice, itemCodes);
         const completedCodes = new Set(itemCodes);
         for (const o of db.orders) {
-          if (o.orderNo === orderNo && completedCodes.has(String(o.orderItemCode || ''))) o.cafe24Shipped = true;
+          if (o.orderNo !== orderNo || !completedCodes.has(String(o.orderItemCode || ''))) continue;
+          o.cafe24Shipped = true;
+          clearExternalSyncState(o, 'cafe24', 'shipment', operationKey);
         }
         results.cafe24.push({ orderNo, ok: true, itemCount: itemCodes.length });
       } catch (e) {
+        const state = e.responseReceived ? 'failed' : 'unknown';
+        const message = state === 'unknown'
+          ? '카페24 응답이 중간에 끊겨 송장 등록 여부를 확인 중이에요. 중복 방지를 위해 바로 다시 등록하지 않습니다.'
+          : e.message;
+        for (const item of items) setExternalSyncState(item, 'cafe24', 'shipment', state, message, operationKey);
         results.cafe24.push({ orderNo, ok: false, error: e.message });
       }
     }
@@ -2180,12 +2238,25 @@ async function postProcessShipped(db, matchedItems) {
       const r = await httpsJson('POST', wh, { 'Content-Type': 'application/json' },
         { token: db.settings.sheetWebhookToken || '', updates });
       if (sheetWriteSucceeded(r, updates.length)) {
-        for (const u of matchedItems) if (u.type === 'seeding') u.item.sheetWritten = true;
+        for (const { item } of seedWrites) {
+          item.sheetWritten = true;
+          clearExternalSyncState(item, 'sheet', 'invoice', String(item.sourceRowId || '') + '|' + String(item.invoice || ''));
+        }
         results.sheet = { ok: true, count: updates.length };
       } else {
-        results.sheet = { ok: false, error: r.json && r.json.error || `시트 기록 확인 실패 (${r.status}, ${Number(r.json && r.json.written || 0)}/${updates.length}건)` };
+        const message = r.json && r.json.error || `시트 기록 확인 실패 (${r.status}, ${Number(r.json && r.json.written || 0)}/${updates.length}건)`;
+        for (const { item } of seedWrites) {
+          setExternalSyncState(item, 'sheet', 'invoice', 'failed', message, String(item.sourceRowId || '') + '|' + String(item.invoice || ''));
+        }
+        results.sheet = { ok: false, error: message };
       }
-    } catch (e) { results.sheet = { ok: false, error: e.message }; }
+    } catch (e) {
+      const message = '구글시트 응답이 끊겨 기록 여부를 확인하지 못했어요. 같은 행에 다시 기록해도 중복되지 않도록 안전하게 재시도합니다.';
+      for (const { item } of seedWrites) {
+        setExternalSyncState(item, 'sheet', 'invoice', 'unknown', message, String(item.sourceRowId || '') + '|' + String(item.invoice || ''));
+      }
+      results.sheet = { ok: false, error: e.message };
+    }
   }
 
   return results;

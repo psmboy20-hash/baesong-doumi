@@ -37,7 +37,11 @@ const {
   groupCafe24ShipmentItems,
   sameCafe24OrderItem,
   resolvePackingMergeSelection,
-  markPrintedFulfillments
+  markPrintedFulfillments,
+  shipmentOperationKey,
+  classifyCafe24Shipment,
+  setExternalSyncState,
+  clearExternalSyncState
 } = require('../lib/operations');
 const {
   expandSelectedEpostItems,
@@ -291,6 +295,29 @@ test('같은 Cafe24 주문의 분리 송장 두 개는 Cafe24에도 각각 등�
     ['ORDER-1', '111', ['ITEM-A', 'ITEM-C']],
     ['ORDER-1', '222', ['ITEM-B']]
   ]);
+});
+
+test('카페24 송장은 주문번호 송장번호 품목코드 전체로 중복을 판정한다', () => {
+  const key = shipmentOperationKey('ORDER-1', '6890-1234', ['B', 'A', 'A']);
+  assert.equal(key, 'ORDER-1|68901234|A,B');
+  const shipments = [
+    { tracking_no: '68901234', order_item_code: ['A', 'B'] },
+    { tracking_no: '77770000', order_item_code: ['C'] }
+  ];
+  assert.equal(classifyCafe24Shipment(shipments, '68901234', ['B', 'A']), 'exact');
+  assert.equal(classifyCafe24Shipment(shipments, '68901234', ['A']), 'conflict');
+  assert.equal(classifyCafe24Shipment(shipments, '99990000', ['A']), 'missing');
+});
+
+test('외부 연동 실패는 새로고침 뒤에도 남고 성공하면 해당 문제만 지운다', () => {
+  const item = {};
+  setExternalSyncState(item, 'cafe24', 'shipment', 'unknown', '확인 중', 'KEY-1', '2026-09-03T11:00:00.000Z');
+  setExternalSyncState(item, 'sheet', 'invoice', 'failed', '기록 실패', 'KEY-2', '2026-09-03T11:01:00.000Z');
+  assert.equal(item.syncOps.cafe24Shipment.state, 'unknown');
+  assert.equal(item.syncIssues.length, 2);
+  clearExternalSyncState(item, 'cafe24', 'shipment', 'KEY-1', '2026-09-03T11:02:00.000Z');
+  assert.equal(item.syncOps.cafe24Shipment.state, 'success');
+  assert.deepEqual(item.syncIssues.map(row => row.system), ['sheet']);
 });
 
 test('같은 주문·상품·옵션이어도 Cafe24 품목코드가 다르면 정상 분리배송이다', () => {

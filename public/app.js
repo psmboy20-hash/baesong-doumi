@@ -292,6 +292,13 @@ function shipmentSourceLabel(x) {
   if (x.sourceChannel === 'direct') return '✍ 직접 등록';
   return '🛒 주문';
 }
+function externalSyncIssues() {
+  const rows = [];
+  for (const item of [...(DB.orders || []), ...(DB.seeding || [])]) {
+    for (const issue of item.syncIssues || []) rows.push({ item, issue });
+  }
+  return rows;
+}
 
 function trackLink(inv) {
   if (!inv) return '';
@@ -405,6 +412,16 @@ function renderHome() {
   const dlvThis = shipmentCount(sentThis.filter(x => x.delivered));
   const retThis = (DB.returns || []).filter(x => (x.regDate || '').startsWith(ym) && x.status !== '취소됨').length;
   const lowStock = DB.inventory.filter(i => i.qty <= 2).length;
+  const syncIssues = externalSyncIssues();
+  const syncIssueCard = syncIssues.length ? `
+    <div class="card" style="border:2px solid #f4b942;background:#fffaf0;margin-top:1rem">
+      <div class="step-title">⚠️ 연동 확인이 필요한 것 ${syncIssues.length}건</div>
+      <div class="hint" style="margin-bottom:0.7rem">우체국 접수는 끝났지만 카페24나 시트 기록을 다시 확인해야 해요. 중복 접수는 막아 두었습니다.</div>
+      ${syncIssues.slice(0, 6).map(({ item, issue }) => `<div class="mini-row">
+        <span class="grow"><b>${esc(item.name || item.orderNo || '배송건')}</b> · ${issue.system === 'cafe24' ? '카페24' : '구글시트'}<br><span class="muted">${esc(issue.message)}</span></span>
+      </div>`).join('')}
+      <button class="big-btn" style="margin-top:0.8rem" onclick="doSync()">🔄 지금 다시 확인하기</button>
+    </div>` : '';
   main().innerHTML = `
     <h1>안녕하세요! 👋</h1>
     <div class="sub">물건이 지금 어디까지 갔는지 한눈에 보여요. 칸을 누르면 그 화면으로 가요.</div>
@@ -433,6 +450,7 @@ function renderHome() {
         <button class="link-btn" onclick="go('send')">보내기에서 [따로 보냈어요] 누르기 →</button>
       </div>` : ''}
     </div>
+    ${syncIssueCard}
     ${dashGrid(all)}
     <div class="card" style="margin-top:1rem">
       <details>
