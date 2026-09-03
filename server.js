@@ -522,6 +522,49 @@ async function cafe24RegisterShipment(db, orderNo, invoice, requestedItemCodes) 
   throw error;
 }
 
+async function cafe24DeleteShipment(db, orderNo, invoice, requestedItemCodes) {
+  const token = await cafe24EnsureToken(db);
+  const itemCodes = [...new Set((requestedItemCodes || []).map(value => String(value || '').trim()).filter(Boolean))];
+  const lookup = await cafe24Fetch(db, token, `/api/v2/admin/orders/${orderNo}/shipments`);
+  if (lookup.status !== 200 || !lookup.json) {
+    const error = new Error('카페24 기존 송장을 확인하지 못해 삭제를 멈췄어요.');
+    error.responseReceived = lookup.status > 0;
+    throw error;
+  }
+  const shipments = lookup.json.shipments || [];
+  const state = classifyCafe24Shipment(shipments, invoice, itemCodes);
+  if (state === 'missing') return { ok: true, alreadyDeleted: true };
+  if (state === 'conflict') {
+    const error = new Error('같은 송장번호가 카페24에 다른 상품 구성으로 등록돼 있어 자동 삭제를 멈췄어요.');
+    error.responseReceived = true;
+    throw error;
+  }
+  const exact = shipments.filter(shipment => classifyCafe24Shipment([shipment], invoice, itemCodes) === 'exact');
+  for (const shipment of exact) {
+    const shippingCode = String(shipment.shipping_code || '').trim();
+    if (!shippingCode) {
+      const error = new Error('카페24 배송번호를 찾지 못해 송장 삭제를 멈췄어요.');
+      error.responseReceived = true;
+      throw error;
+    }
+    const result = await cafe24Fetch(db, token,
+      `/api/v2/admin/orders/${orderNo}/shipments/${encodeURIComponent(shippingCode)}`, 'DELETE', { shop_no: 1 });
+    if (result.status < 200 || result.status >= 300) {
+      const error = new Error(result.json && result.json.error && result.json.error.message || `카페24 송장 삭제 실패(${result.status})`);
+      error.responseReceived = true;
+      throw error;
+    }
+  }
+  const verify = await cafe24Fetch(db, token, `/api/v2/admin/orders/${orderNo}/shipments`);
+  if (verify.status !== 200 || !verify.json ||
+      classifyCafe24Shipment(verify.json.shipments || [], invoice, itemCodes) !== 'missing') {
+    const error = new Error('카페24 송장 삭제 결과를 아직 확인하지 못했어요.');
+    error.responseReceived = false;
+    throw error;
+  }
+  return { ok: true };
+}
+
 async function cafe24ClaimCarrierId(db, ret) {
   if (ret.cafe24CarrierId) return ret.cafe24CarrierId;
   if (!ret.originalOrderNo) return '';
@@ -1561,6 +1604,8 @@ async function syncAll() {
       (issue.system === 'sheet' && issue.action === 'invoice')
     )).length;
   }
+  const cancelWarnings = await retryCanceledExternalUpdates(db, !c24Skip);
+  if (cancelWarnings.length) changed = true;
   backupDb(); // 하루 1개 자동 백업
   try { if (await checkDelivered(db)) changed = true; } catch (e) { /* 무시 */ }
   if (changed) saveDb(db);
@@ -2123,6 +2168,101 @@ function restoreShipmentStock(db, item, type, reason) {
   return { restored: 0, missingSkus: [] };
 }
 
+async function writeSeedingSheetRows(db, items, clear) {
+  const webhook = String(db.settings.sheetWebhookUrl || '').trim();
+  if (!webhook) throw new Error('구글시트 자동기록 주소가 설정되지 않았어요.');
+  const updates = (items || []).map(item => ({
+    sourceRowId: item.sourceRowId || '',
+    name: item.name,
+    phone: item.phone,
+    invoice: clear ? '' : item.invoice,
+    sentDate: clear ? '' : item.sentDate
+  }));
+  const recipientCounts = new Map();
+  for (const item of db.seeding) recipientCounts.set(seedKey(item), (recipientCounts.get(seedKey(item)) || 0) + 1);
+  const needsSourceMatch = (items || []).some(item => (recipientCounts.get(seedKey(item)) || 0) > 1);
+  if (needsSourceMatch) {
+    const capability = await httpsJson('POST', webhook, { 'Content-Type': 'application/json' },
+      { token: db.settings.sheetWebhookToken || '', action: 'capabilities' });
+    if (!(capability.status >= 200 && capability.status < 300 && capability.json && capability.json.sourceRowId === true)) {
+      const error = new Error('같은 사람이 여러 번 신청해 시트 행을 안전하게 고를 수 없습니다. 구글시트 자동기록 스크립트를 최신 버전으로 바꿔 주세요.');
+      error.responseReceived = true;
+      throw error;
+    }
+  }
+  const result = await httpsJson('POST', webhook, { 'Content-Type': 'application/json' },
+    { token: db.settings.sheetWebhookToken || '', updates });
+  if (!sheetWriteSucceeded(result, updates.length)) {
+    const error = new Error(result.json && result.json.error ||
+      `시트 기록 확인 실패 (${result.status}, ${Number(result.json && result.json.written || 0)}/${updates.length}건)`);
+    error.responseReceived = true;
+    throw error;
+  }
+  return { ok: true, count: updates.length };
+}
+
+async function retryCanceledExternalUpdates(db, allowCafe24) {
+  const warnings = [];
+  const groups = new Map();
+  for (const item of db.orders || []) {
+    const ref = item.canceledShipment;
+    if (!ref || !ref.orderNo || !ref.invoice) continue;
+    const itemCodes = Array.isArray(ref.itemCodes) ? ref.itemCodes : [];
+    const key = shipmentOperationKey(ref.orderNo, ref.invoice, itemCodes);
+    if (!groups.has(key)) groups.set(key, { ref, items: [] });
+    groups.get(key).items.push(item);
+  }
+  for (const [key, group] of groups) {
+    if (!allowCafe24) continue;
+    if (!cafe24Configured(db) || !db.cafe24Token) {
+      const message = '카페24 연결이 없어 취소한 송장 삭제를 아직 반영하지 못했어요.';
+      for (const item of group.items) setExternalSyncState(item, 'cafe24', 'shipment-cancel', 'failed', message, key);
+      warnings.push(message);
+      continue;
+    }
+    for (const item of group.items) setExternalSyncState(item, 'cafe24', 'shipment-cancel', 'pending', '', key);
+    saveDb(db);
+    try {
+      await cafe24DeleteShipment(db, group.ref.orderNo, group.ref.invoice, group.ref.itemCodes || []);
+      for (const item of group.items) {
+        item.cafe24Shipped = false;
+        clearExternalSyncState(item, 'cafe24', 'shipment-cancel', key);
+        delete item.canceledShipment;
+      }
+    } catch (error) {
+      const state = error.responseReceived ? 'failed' : 'unknown';
+      const message = state === 'unknown'
+        ? '카페24 응답이 끊겨 취소한 송장 삭제 여부를 확인 중이에요.'
+        : error.message;
+      for (const item of group.items) setExternalSyncState(item, 'cafe24', 'shipment-cancel', state, message, key);
+      warnings.push(message);
+    }
+  }
+
+  const sheetItems = (db.seeding || []).filter(item => item.canceledSheet && item.canceledSheet.sourceRowId);
+  if (sheetItems.length) {
+    const keyOf = item => String(item.canceledSheet.sourceRowId || '') + '|' + String(item.canceledSheet.invoice || '');
+    for (const item of sheetItems) setExternalSyncState(item, 'sheet', 'invoice-cancel', 'pending', '', keyOf(item));
+    saveDb(db);
+    try {
+      await writeSeedingSheetRows(db, sheetItems, true);
+      for (const item of sheetItems) {
+        item.sheetWritten = false;
+        clearExternalSyncState(item, 'sheet', 'invoice-cancel', keyOf(item));
+        delete item.canceledSheet;
+      }
+    } catch (error) {
+      const state = error.responseReceived ? 'failed' : 'unknown';
+      const message = state === 'unknown'
+        ? '구글시트 응답이 끊겨 취소한 송장 삭제 여부를 확인 중이에요.'
+        : error.message;
+      for (const item of sheetItems) setExternalSyncState(item, 'sheet', 'invoice-cancel', state, message, keyOf(item));
+      warnings.push(message);
+    }
+  }
+  return [...new Set(warnings)];
+}
+
 // 발송 확정된 건들의 공통 후처리 (송장매칭·API접수 양쪽에서 사용)
 async function postProcessShipped(db, matchedItems) {
   const results = {};
@@ -2218,42 +2358,21 @@ async function postProcessShipped(db, matchedItems) {
   results.sheet = null;
   const wh = (db.settings.sheetWebhookUrl || '').trim();
   const seedWrites = matchedItems.filter(x => x.type === 'seeding' && !x.item.sheetWritten);
-  const updates = seedWrites.map(x => ({
-    sourceRowId: x.item.sourceRowId || '', name: x.item.name, phone: x.item.phone,
-    invoice: x.item.invoice, sentDate: x.item.sentDate
-  }));
-  if (wh && updates.length) {
+  if (wh && seedWrites.length) {
     try {
-      const recipientCounts = new Map();
-      for (const item of db.seeding) recipientCounts.set(seedKey(item), (recipientCounts.get(seedKey(item)) || 0) + 1);
-      const needsSourceMatch = seedWrites.some(x => (recipientCounts.get(seedKey(x.item)) || 0) > 1);
-      if (needsSourceMatch) {
-        const capability = await httpsJson('POST', wh, { 'Content-Type': 'application/json' },
-          { token: db.settings.sheetWebhookToken || '', action: 'capabilities' });
-        if (!(capability.status >= 200 && capability.status < 300 && capability.json && capability.json.sourceRowId === true)) {
-          results.sheet = { ok: false, error: '같은 사람이 여러 번 신청해 시트 행을 안전하게 고를 수 없습니다. 구글시트 자동기록 스크립트를 최신 버전으로 바꿔 주세요.' };
-          return results;
-        }
-      }
-      const r = await httpsJson('POST', wh, { 'Content-Type': 'application/json' },
-        { token: db.settings.sheetWebhookToken || '', updates });
-      if (sheetWriteSucceeded(r, updates.length)) {
-        for (const { item } of seedWrites) {
-          item.sheetWritten = true;
-          clearExternalSyncState(item, 'sheet', 'invoice', String(item.sourceRowId || '') + '|' + String(item.invoice || ''));
-        }
-        results.sheet = { ok: true, count: updates.length };
-      } else {
-        const message = r.json && r.json.error || `시트 기록 확인 실패 (${r.status}, ${Number(r.json && r.json.written || 0)}/${updates.length}건)`;
-        for (const { item } of seedWrites) {
-          setExternalSyncState(item, 'sheet', 'invoice', 'failed', message, String(item.sourceRowId || '') + '|' + String(item.invoice || ''));
-        }
-        results.sheet = { ok: false, error: message };
-      }
-    } catch (e) {
-      const message = '구글시트 응답이 끊겨 기록 여부를 확인하지 못했어요. 같은 행에 다시 기록해도 중복되지 않도록 안전하게 재시도합니다.';
+      const result = await writeSeedingSheetRows(db, seedWrites.map(entry => entry.item), false);
       for (const { item } of seedWrites) {
-        setExternalSyncState(item, 'sheet', 'invoice', 'unknown', message, String(item.sourceRowId || '') + '|' + String(item.invoice || ''));
+        item.sheetWritten = true;
+        clearExternalSyncState(item, 'sheet', 'invoice', String(item.sourceRowId || '') + '|' + String(item.invoice || ''));
+      }
+      results.sheet = result;
+    } catch (e) {
+      const state = e.responseReceived ? 'failed' : 'unknown';
+      const message = state === 'unknown'
+        ? '구글시트 응답이 끊겨 기록 여부를 확인하지 못했어요. 같은 행에 다시 기록해도 중복되지 않도록 안전하게 재시도합니다.'
+        : e.message;
+      for (const { item } of seedWrites) {
+        setExternalSyncState(item, 'sheet', 'invoice', state, message, String(item.sourceRowId || '') + '|' + String(item.invoice || ''));
       }
       results.sheet = { ok: false, error: e.message };
     }
@@ -2843,29 +2962,43 @@ const server = http.createServer((req, res) => {
       } catch (e) {
         return sendJson(res, 200, { error: '우체국 취소 실패: ' + e.message + ' (이미 집하됐으면 취소할 수 없어요)' });
       }
-      // 같은 접수(orderNo)로 묶인 항목 전부 원상복구
-      const warn = [];
-      const stockWarn = [];
-      for (const [type, arr] of [['order', db.orders], ['seeding', db.seeding]]) {
-        for (const it of arr) {
-          if (it.epost && it.epost.orderNo === item.epost.orderNo) {
-            const restored = restoreShipmentStock(db, it, type, '접수 취소 복구');
-            if (restored.missingSkus.length) stockWarn.push(...restored.missingSkus);
-            if (it.cafe24Shipped) warn.push(it.orderNo || it.name);
-            // 재접수 시 새 송장이 카페24/시트에 다시 등록되도록 플래그 초기화 + 무효 송장 기억
-            it.cafe24Shipped = false;
-            it.sheetWritten = false;
-            it.canceledInvoice = String(it.invoice || '');
-            it.status = '대기';
-            it.invoice = '';
-            it.sentDate = '';
-            delete it.epost;
-          }
+      const canceledItems = [];
+      for (const [type, rows] of [['order', db.orders], ['seeding', db.seeding]]) {
+        for (const row of rows) {
+          if (row.epost && row.epost.orderNo === item.epost.orderNo) canceledItems.push({ type, item: row });
         }
       }
+      const cafe24Groups = new Map();
+      for (const entry of canceledItems.filter(entry => entry.type === 'order' && entry.item.cafe24Shipped)) {
+        const key = String(entry.item.orderNo || '') + '|' + String(entry.item.invoice || '');
+        if (!cafe24Groups.has(key)) cafe24Groups.set(key, []);
+        cafe24Groups.get(key).push(entry.item);
+      }
+      for (const rows of cafe24Groups.values()) {
+        const ref = {
+          orderNo: rows[0].orderNo,
+          invoice: rows[0].invoice,
+          itemCodes: [...new Set(rows.map(row => String(row.orderItemCode || '').trim()).filter(Boolean))]
+        };
+        for (const row of rows) row.canceledShipment = ref;
+      }
+      for (const entry of canceledItems.filter(entry => entry.type === 'seeding' && entry.item.sheetWritten)) {
+        entry.item.canceledSheet = { sourceRowId: entry.item.sourceRowId || '', invoice: entry.item.invoice || '' };
+      }
+      const externalWarnings = await retryCanceledExternalUpdates(db, true);
+      const stockWarn = [];
+      for (const { type, item: canceledItem } of canceledItems) {
+        const restored = restoreShipmentStock(db, canceledItem, type, '접수 취소 복구');
+        if (restored.missingSkus.length) stockWarn.push(...restored.missingSkus);
+        canceledItem.canceledInvoice = String(canceledItem.invoice || '');
+        canceledItem.status = '대기';
+        canceledItem.invoice = '';
+        canceledItem.sentDate = '';
+        delete canceledItem.epost;
+      }
       saveDb(db);
-      const warnings = [];
-      if (warn.length) warnings.push(`카페24에는 이미 배송처리로 등록돼 있어요 (${warn.join(', ')}). 카페24 관리자에서 배송상태를 되돌려 주세요.`);
+      const warnings = [...externalWarnings];
+      if (externalWarnings.length) warnings.push('외부 연동 문제는 홈의 [연동 확인이 필요한 것]에 남겨 두었고 자동으로 다시 확인합니다.');
       if (stockWarn.includes('과거 출고 기록')) warnings.push('예전 출고 건은 어떤 SKU를 차감했는지 확실하지 않아 재고를 자동으로 늘리지 않았어요. 재고 화면에서 직접 확인해 주세요.');
       const missingStock = [...new Set(stockWarn.filter(value => value !== '과거 출고 기록'))];
       if (missingStock.length) warnings.push(`재고 ${missingStock.join(', ')}는 목록에서 찾지 못해 자동 복구하지 못했어요. 재고 화면에서 확인해 주세요.`);

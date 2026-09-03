@@ -294,7 +294,7 @@ function shipmentSourceLabel(x) {
 }
 function externalSyncIssues() {
   const rows = [];
-  for (const item of [...(DB.orders || []), ...(DB.seeding || [])]) {
+  for (const item of [...(DB.orders || []), ...(DB.seeding || []), ...(DB.returns || [])]) {
     for (const issue of item.syncIssues || []) rows.push({ item, issue });
   }
   return rows;
@@ -418,7 +418,7 @@ function renderHome() {
       <div class="step-title">⚠️ 연동 확인이 필요한 것 ${syncIssues.length}건</div>
       <div class="hint" style="margin-bottom:0.7rem">우체국 접수는 끝났지만 카페24나 시트 기록을 다시 확인해야 해요. 중복 접수는 막아 두었습니다.</div>
       ${syncIssues.slice(0, 6).map(({ item, issue }) => `<div class="mini-row">
-        <span class="grow"><b>${esc(item.name || item.orderNo || '배송건')}</b> · ${issue.system === 'cafe24' ? '카페24' : '구글시트'}<br><span class="muted">${esc(issue.message)}</span></span>
+        <span class="grow"><b>${esc(item.name || item.orderNo || '배송건')}</b> · ${{ cafe24: '카페24', sheet: '구글시트', epost: '우체국' }[issue.system] || esc(issue.system)}<br><span class="muted">${esc(issue.message)}</span></span>
       </div>`).join('')}
       <button class="big-btn" style="margin-top:0.8rem" onclick="doSync()">🔄 지금 다시 확인하기</button>
     </div>` : '';
