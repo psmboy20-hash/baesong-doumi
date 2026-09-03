@@ -1,0 +1,4 @@
+baesong.140.238.54.44.sslip.io {
+    reverse_proxy 127.0.0.1:8899
+    encode zstd gzip
+}

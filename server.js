@@ -114,6 +114,7 @@ const {
 
 const PORT = Number(process.env.HAM_PORT) || 8899;
 const BIND_HOST = String(process.env.HAM_BIND || '0.0.0.0').trim() || '0.0.0.0';
+const AUTO_SYNC_ENABLED = process.env.HAM_DISABLE_SYNC !== '1';
 const ZIP_LOOKUP_VERSION = 2;
 const TRUST_PROXY = process.env.HAM_TRUST_PROXY === '1';
 // ── 접속 코드 게이트 (클라우드 서버용) ───────────────────────────────
@@ -3477,6 +3478,10 @@ server.on('error', e => {
 
 server.listen(PORT, BIND_HOST, () => {
   console.log('배송 도우미 실행됨 → http://localhost:' + PORT);
+  if (!AUTO_SYNC_ENABLED) {
+    console.log('자동 동기화 꺼짐 (격리 복구 점검 모드)');
+    return;
+  }
   // 켜질 때 한 번 + 5분마다 자동으로 새 주문/시딩 확인
   mutationQueue.run(() => syncAll()).then(({ out }) => {
     console.log(`자동 확인: 시딩 +${out.seeding.added}, 시트주문 +${out.orders.added}, 카페24 +${out.cafe24.added}`);
