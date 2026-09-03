@@ -14,6 +14,11 @@ const {
   fulfillmentKey,
   expandSelectedFulfillments,
   markPrintedFulfillments,
+  epostCancellationEntries,
+  prepareEpostCancellation,
+  setEpostCancellationState,
+  finalizeEpostCancellation,
+  flagMissingCanceledSheetSource,
   fulfillmentGroupConflicts,
   parcelReference,
   selectInvoiceParcelGroup,
@@ -117,6 +122,8 @@ const BIND_HOST = String(process.env.HAM_BIND || '0.0.0.0').trim() || '0.0.0.0';
 const AUTO_SYNC_ENABLED = process.env.HAM_DISABLE_SYNC !== '1';
 const ZIP_LOOKUP_VERSION = 2;
 const TRUST_PROXY = process.env.HAM_TRUST_PROXY === '1';
+const EXTERNAL_TIMEOUT_MS = Math.max(5000, Number(process.env.HAM_EXTERNAL_TIMEOUT_MS) || 30000);
+const MUTATION_STALL_MS = Math.max(60000, Number(process.env.HAM_MUTATION_STALL_MS) || 10 * 60 * 1000);
 // ── 접속 코드 게이트 (클라우드 서버용) ───────────────────────────────
 const gateCrypto = require('crypto');
 let _accessCode = null;
@@ -352,7 +359,7 @@ function findCol(header, keywords) {
 function fetchUrl(url, redirects) {
   return new Promise((resolve, reject) => {
     if (redirects > 6) return reject(new Error('리다이렉트가 너무 많습니다'));
-    https.get(url, res => {
+    const req = https.get(url, res => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
         return resolve(fetchUrl(res.headers.location, (redirects || 0) + 1));
@@ -364,7 +371,13 @@ function fetchUrl(url, redirects) {
       const chunks = [];
       res.on('data', c => chunks.push(c));
       res.on('end', () => resolve(Buffer.concat(chunks)));
-    }).on('error', reject);
+    });
+    req.setTimeout(EXTERNAL_TIMEOUT_MS, () => {
+      const error = new Error('구글시트 응답 시간 초과');
+      error.responseReceived = false;
+      req.destroy(error);
+    });
+    req.on('error', reject);
   });
 }
 
@@ -392,6 +405,11 @@ function httpsJson(method, urlStr, headers, body, redirects) {
         try { json = JSON.parse(text); } catch (e) { /* not json */ }
         resolve({ status: res.statusCode, json, text });
       });
+    });
+    req.setTimeout(EXTERNAL_TIMEOUT_MS, () => {
+      const error = new Error('외부 서비스 응답 시간 초과');
+      error.responseReceived = false;
+      req.destroy(error);
     });
     req.on('error', reject);
     if (data) req.write(data);
@@ -840,7 +858,11 @@ async function epostCall(db, msgName, params) {
   const url = `http://ship.epost.go.kr/${msgName}?key=${encodeURIComponent(s.epostApiKey)}&regData=${enc}`;
   const xml = await httpGetText(url);
   const errCode = xmlVal(xml, 'error_code');
-  if (errCode) throw new Error(errCode + ': ' + (xmlVal(xml, 'message') || '우체국 오류'));
+  if (errCode) {
+    const error = new Error(errCode + ': ' + (xmlVal(xml, 'message') || '우체국 오류'));
+    error.responseReceived = true;
+    throw error;
+  }
   return xml;
 }
 // 연결: 아이디 → 고객번호 → 계약승인번호 → 공급지 코드 자동 조회
@@ -1570,6 +1592,8 @@ async function syncAll() {
   // 우편번호 없는 건 자동 채우기 (카카오 키 설정 시)
   if (await fillMissingZips(db) > 0) changed = true;
   if (epostConfigured(db) && db.epost) {
+    const resumedCancellations = await resumePendingEpostCancellations(db);
+    if (resumedCancellations.completed || resumedCancellations.errors.length) changed = true;
     for (const ret of (db.returns || []).filter(returnPickupNeedsSync).slice(0, 30)) {
       try {
         await syncReturnPickup(db, ret, !c24Skip);
@@ -2171,6 +2195,89 @@ function restoreShipmentStock(db, item, type, reason) {
   return { restored: 0, missingSkus: [] };
 }
 
+async function reconcileEpostCancellation(db, orderNo) {
+  const entries = epostCancellationEntries(db, orderNo);
+  if (!entries.length) return { ok: false, error: '저장된 우체국 취소 작업을 찾지 못했어요.' };
+  const operation = entries[0].item.epostCancelOp;
+  if (!operation) return { ok: false, error: '저장된 우체국 취소 작업을 찾지 못했어요.' };
+
+  if (['pending', 'unknown'].includes(operation.state)) {
+    try {
+      const statusXml = await epostCall(db, 'api.GetResInfo.jparcel', {
+        custNo: db.epost.custNo,
+        reqType: '1',
+        orderNo: operation.orderNo,
+        reqYmd: operation.reqYmd
+      });
+      const status = xmlVal(statusXml, 'treatStusCd') || '01';
+      if (status === '05') {
+        setEpostCancellationState(db, orderNo, 'epost_canceled', '');
+        saveDb(db);
+      } else {
+        if (!['00', '01', '02'].includes(status)) {
+          const error = new Error(status === '03'
+            ? '기사님이 이미 가져가서 우체국 접수를 취소할 수 없어요.'
+            : '현재 우체국 상태에서는 접수를 취소할 수 없어요.');
+          error.responseReceived = true;
+          throw error;
+        }
+        await epostCall(db, 'api.GetResCancelCmd.jparcel', {
+          custNo: db.epost.custNo,
+          apprNo: db.epost.apprNo,
+          reqType: '1',
+          reqNo: operation.reqNo,
+          resNo: operation.resNo,
+          regiNo: operation.regiNo,
+          reqYmd: operation.reqYmd,
+          delYn: 'Y'
+        });
+        setEpostCancellationState(db, orderNo, 'epost_canceled', '');
+        saveDb(db);
+      }
+    } catch (error) {
+      const unknown = !error.responseReceived;
+      const message = unknown
+        ? '우체국 응답이 중간에 끊겨 취소 여부를 자동 확인 중이에요. 다시 취소하지 마세요.'
+        : error.message;
+      setEpostCancellationState(db, orderNo, unknown ? 'unknown' : 'failed', message);
+      saveDb(db);
+      return { ok: false, pending: unknown, error: message };
+    }
+  }
+
+  const current = epostCancellationEntries(db, orderNo)[0];
+  if (!current || !current.item.epostCancelOp ||
+      !['epost_canceled', 'local_finalized'].includes(current.item.epostCancelOp.state)) {
+    return { ok: false, error: current && current.item.epostCancelOp && current.item.epostCancelOp.error || '우체국 취소를 완료하지 못했어요.' };
+  }
+  const finalized = finalizeEpostCancellation(db, orderNo, entry =>
+    restoreShipmentStock(db, entry.item, entry.type, '접수 취소 복구')
+  );
+  saveDb(db);
+  return { ok: true, entries: finalized.entries, stockMissing: finalized.stockMissing };
+}
+
+async function resumePendingEpostCancellations(db) {
+  const orderNos = new Set();
+  for (const entry of [
+    ...(db.orders || []).map(item => ({ item })),
+    ...(db.seeding || []).map(item => ({ item }))
+  ]) {
+    const operation = entry.item.epostCancelOp;
+    if (operation && ['pending', 'unknown', 'epost_canceled'].includes(operation.state) && operation.orderNo) {
+      orderNos.add(operation.orderNo);
+    }
+  }
+  const errors = [];
+  let completed = 0;
+  for (const orderNo of orderNos) {
+    const result = await reconcileEpostCancellation(db, orderNo);
+    if (result.ok) completed += 1;
+    else errors.push(result.error);
+  }
+  return { completed, errors: [...new Set(errors)] };
+}
+
 async function writeSeedingSheetRows(db, items, clear) {
   const webhook = String(db.settings.sheetWebhookUrl || '').trim();
   if (!webhook) throw new Error('구글시트 자동기록 주소가 설정되지 않았어요.');
@@ -2242,6 +2349,11 @@ async function retryCanceledExternalUpdates(db, allowCafe24) {
     }
   }
 
+  const missingSourceItems = (db.seeding || []).filter(item => item.canceledSheet && !item.canceledSheet.sourceRowId);
+  for (const item of missingSourceItems) {
+    flagMissingCanceledSheetSource(item);
+    warnings.push('시트 행 고유번호가 없어 취소한 송장을 자동으로 지우지 못했어요. 구글시트에서 직접 확인해 주세요.');
+  }
   const sheetItems = (db.seeding || []).filter(item => item.canceledSheet && item.canceledSheet.sourceRowId);
   if (sheetItems.length) {
     const keyOf = item => String(item.canceledSheet.sourceRowId || '') + '|' + String(item.canceledSheet.invoice || '');
@@ -2405,8 +2517,10 @@ const server = http.createServer((req, res) => {
   const handle = async () => {
     try {
     if (url.pathname === '/healthz' && req.method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
-      return res.end('ok');
+      const queue = mutationQueue.status();
+      const stalled = queue.running && queue.activeForMs >= MUTATION_STALL_MS;
+      res.writeHead(stalled ? 503 : 200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(stalled ? 'mutation queue stalled' : 'ok');
     }
     // 다른 사이트가 API를 몰래 호출하는 것 차단 — 같은 주소(same-origin)에서 온 요청만 허용
     // (localhost뿐 아니라 Tailscale 주소로 열어도 자기 자신이면 통과)
@@ -2959,51 +3073,20 @@ const server = http.createServer((req, res) => {
       const list = body.type === 'seeding' ? db.seeding : db.orders;
       const item = list.find(x => x.id === body.id);
       if (!item || !item.epost) return sendJson(res, 200, { error: '취소할 접수 정보를 찾지 못했어요.' });
-      try {
-        await epostCall(db, 'api.GetResCancelCmd.jparcel', {
-          custNo: db.epost.custNo, apprNo: db.epost.apprNo, reqType: '1',
-          reqNo: item.epost.reqNo, resNo: item.epost.resNo,
-          regiNo: String(item.invoice || '').replace(/\D/g, ''),
-          reqYmd: item.epost.reqYmd, delYn: 'Y'
+      const prepared = prepareEpostCancellation(db, body.type, body.id);
+      if (!prepared) return sendJson(res, 200, { error: '취소할 접수 정보를 찾지 못했어요.' });
+      saveDb(db);
+      const cancellation = await reconcileEpostCancellation(db, prepared.orderNo);
+      if (!cancellation.ok) {
+        return sendJson(res, 200, {
+          error: cancellation.pending
+            ? cancellation.error + ' 홈의 [연동 확인이 필요한 것]에서 결과를 알려드릴게요.'
+            : '우체국 취소 실패: ' + cancellation.error
         });
-      } catch (e) {
-        return sendJson(res, 200, { error: '우체국 취소 실패: ' + e.message + ' (이미 집하됐으면 취소할 수 없어요)' });
-      }
-      const canceledItems = [];
-      for (const [type, rows] of [['order', db.orders], ['seeding', db.seeding]]) {
-        for (const row of rows) {
-          if (row.epost && row.epost.orderNo === item.epost.orderNo) canceledItems.push({ type, item: row });
-        }
-      }
-      const cafe24Groups = new Map();
-      for (const entry of canceledItems.filter(entry => entry.type === 'order' && entry.item.cafe24Shipped)) {
-        const key = String(entry.item.orderNo || '') + '|' + String(entry.item.invoice || '');
-        if (!cafe24Groups.has(key)) cafe24Groups.set(key, []);
-        cafe24Groups.get(key).push(entry.item);
-      }
-      for (const rows of cafe24Groups.values()) {
-        const ref = {
-          orderNo: rows[0].orderNo,
-          invoice: rows[0].invoice,
-          itemCodes: [...new Set(rows.map(row => String(row.orderItemCode || '').trim()).filter(Boolean))]
-        };
-        for (const row of rows) row.canceledShipment = ref;
-      }
-      for (const entry of canceledItems.filter(entry => entry.type === 'seeding' && entry.item.sheetWritten)) {
-        entry.item.canceledSheet = { sourceRowId: entry.item.sourceRowId || '', invoice: entry.item.invoice || '' };
       }
       const externalWarnings = await retryCanceledExternalUpdates(db, true);
-      const stockWarn = [];
-      for (const { type, item: canceledItem } of canceledItems) {
-        const restored = restoreShipmentStock(db, canceledItem, type, '접수 취소 복구');
-        if (restored.missingSkus.length) stockWarn.push(...restored.missingSkus);
-        canceledItem.canceledInvoice = String(canceledItem.invoice || '');
-        canceledItem.status = '대기';
-        canceledItem.invoice = '';
-        canceledItem.sentDate = '';
-        delete canceledItem.epost;
-      }
       saveDb(db);
+      const stockWarn = cancellation.stockMissing || [];
       const warnings = [...externalWarnings];
       if (externalWarnings.length) warnings.push('외부 연동 문제는 홈의 [연동 확인이 필요한 것]에 남겨 두었고 자동으로 다시 확인합니다.');
       if (stockWarn.includes('과거 출고 기록')) warnings.push('예전 출고 건은 어떤 SKU를 차감했는지 확실하지 않아 재고를 자동으로 늘리지 않았어요. 재고 화면에서 직접 확인해 주세요.');

@@ -1,0 +1,19 @@
+[Unit]
+Description=NUSOLVERE Shipping Helper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/ham
+ExecStart=/usr/bin/node /home/ubuntu/ham/server.js
+Restart=always
+RestartSec=3
+Environment=NODE_ENV=production
+Environment=HAM_CLOUD_WRITER=1
+Environment=HAM_TRUST_PROXY=1
+Environment=HAM_BIND=127.0.0.1
+
+[Install]
+WantedBy=multi-user.target

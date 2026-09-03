@@ -54,3 +54,22 @@ test('외부 접수와 장부 저장 작업은 한 번에 하나씩 실행한다
   await Promise.all([first, second]);
   assert.deepEqual(events, ['first-start', 'first-end', 'second-start']);
 });
+
+test('변경 작업이 멈추면 상태 점검에서 실행 시간과 대기 건수를 알 수 있다', async () => {
+  const queue = createMutationQueue();
+  let releaseFirst;
+  const firstGate = new Promise(resolve => { releaseFirst = resolve; });
+  const first = queue.run(() => firstGate);
+  const second = queue.run(() => Promise.resolve());
+  await new Promise(resolve => setTimeout(resolve, 10));
+  const active = queue.status(Date.now() + 5000);
+  assert.equal(active.running, true);
+  assert.equal(active.queued, 1);
+  assert.ok(active.activeForMs >= 5000);
+  releaseFirst();
+  await Promise.all([first, second]);
+  const done = queue.status();
+  assert.equal(done.running, false);
+  assert.equal(done.queued, 0);
+  assert.ok(done.lastCompletedAt);
+});

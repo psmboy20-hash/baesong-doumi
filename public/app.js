@@ -882,8 +882,8 @@ function renderEpost() {
     ...DB.seeding.filter(x => x.epost).map(x => ({ kind: 'seeding', icon: '🎁', x }))
   ].sort((a, b) => {
     // 인쇄 안 한 것 먼저, 그 다음 최신순
-    const ap = a.x.epost.label && !a.x.printed ? 0 : 1;
-    const bp = b.x.epost.label && !b.x.printed ? 0 : 1;
+    const ap = !a.x.printed ? 0 : 1;
+    const bp = !b.x.printed ? 0 : 1;
     return ap - bp || (b.x.sentDate || '').localeCompare(a.x.sentDate || '');
   });
   const filter = window._epostFilter || 'all';
@@ -921,13 +921,17 @@ function renderEpost() {
           ? (x.printed
             ? `<span class="chip done" style="font-size:0.85rem">🖨 인쇄함 ✓</span> <button class="link-btn" style="font-size:0.9rem" onclick="printLabels('${printSpec}')">다시 인쇄</button>`
             : `<button class="link-btn" style="font-weight:800" onclick="printLabels('${printSpec}')">🖨 운송장 인쇄</button>`)
-          : `<button class="link-btn" onclick="epostSitePrint()" title="이 건은 우체국 사이트에서 출력">🖨 사이트에서</button>`}
+          : (x.printed
+            ? `<span class="chip done" style="font-size:0.85rem">🖨 사이트 인쇄함 ✓</span>`
+            : `<button class="link-btn" onclick="epostSitePrint()" title="이 건은 우체국 사이트에서 출력">🖨 사이트에서 출력</button>
+               <button class="link-btn" style="font-weight:800" onclick="confirmSitePrinted('${printSpec}','${jsq(x.name)}')">✓ 인쇄 확인</button>`)}
         ${cancelable ? `<button class="link-btn" style="color:var(--red)" onclick="epostCancel('${kind}',${x.id},'${jsq(x.name)}')">취소</button>` : ''}
       </td>
     </tr>`;
   }).join('');
   const parcelSpec = group => group.map(entry => entry.kind + ':' + entry.x.id).join(',');
   const needP = parcels.filter(group => group[0].x.epost.label && group.some(entry => !entry.x.printed)).map(parcelSpec);
+  const needSite = parcels.filter(group => !group[0].x.epost.label && group.some(entry => !entry.x.printed)).map(parcelSpec);
   const printable = parcels.filter(group => group[0].x.epost.label).map(parcelSpec);
   main().innerHTML = `
     <h1>📦 우체국 접수</h1>
@@ -941,6 +945,7 @@ function renderEpost() {
     <div style="display:flex; gap:0.8rem; flex-wrap:wrap; margin-bottom:1.2rem">
       <button class="big-btn" onclick="epostRefresh()">🔄 진행상태 새로고침</button>
       ${needP.length ? `<button class="big-btn green" onclick="printLabels('${needP.join(',')}')">🖨 안 뽑은 운송장 ${needP.length}장 인쇄</button>` : ''}
+      ${needSite.length ? `<button class="big-btn gray" onclick="epostSitePrint()">🖨 사이트 출력 필요한 운송장 ${needSite.length}장</button>` : ''}
       ${printable.length && printable.length !== needP.length ? `<button class="big-btn gray" onclick="printLabels('${printable.join(',')}')">전체 다시 인쇄 (${printable.length}장)</button>` : ''}
       <button class="big-btn gray" onclick="epostSitePrint()">🖨 우체국 사이트에서 출력 (오즈뷰어)</button>
     </div>
@@ -978,6 +983,24 @@ function epostSitePrint() {
 function printLabels(sel) {
   const opened = window.open('/label.html?print=1&sel=' + encodeURIComponent(sel), '_blank');
   if (!opened) toast('팝업이 막혀 라벨 창을 열지 못했어요. 주소창 오른쪽에서 팝업을 허용해 주세요.', 7000);
+}
+async function confirmSitePrinted(sel, name) {
+  if (!confirm(`${name}님 운송장을 우체국 사이트(오즈뷰어)에서 실제로 인쇄했나요?`)) return;
+  const selected = String(sel || '').split(',').filter(Boolean).map(value => {
+    const [type, id] = value.split(':');
+    return { type: type === 'seeding' ? 'seeding' : 'order', id: Number(id) };
+  });
+  const result = await api('/api/labels/printed', {
+    method: 'POST',
+    body: JSON.stringify({ selected })
+  });
+  if (result.error) {
+    toast('인쇄 확인을 장부에 기록하지 못했어요. 잠시 뒤 다시 눌러 주세요.', 6000);
+    return;
+  }
+  adoptDb(result.db);
+  render();
+  toast(`택배 ${result.parcels}건을 인쇄 완료로 기록했어요.`);
 }
 // 인쇄가 필요한(접수됐는데 아직 안 뽑은) 건 수
 function needPrintList() {

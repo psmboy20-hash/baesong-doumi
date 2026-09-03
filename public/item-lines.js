@@ -130,7 +130,7 @@
     }
     if (filter === 'print') {
       return source.status === '발송완료' && !source.delivered &&
-        source.epost.label && !source.printed &&
+        !source.printed &&
         !['03', '05'].includes(source.epost.stus || '01');
     }
     if (filter === 'problem') {

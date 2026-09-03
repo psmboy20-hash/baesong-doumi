@@ -39,6 +39,10 @@ const {
   sameCafe24OrderItem,
   resolvePackingMergeSelection,
   markPrintedFulfillments,
+  prepareEpostCancellation,
+  setEpostCancellationState,
+  finalizeEpostCancellation,
+  flagMissingCanceledSheetSource,
   shipmentOperationKey,
   classifyCafe24Shipment,
   setExternalSyncState,
@@ -73,6 +77,7 @@ test('우체국 인쇄 필요와 확인 필요 목록도 각각 해당 송장만
   assert.equal(epostFilterMatches({ ...base, printed: true }, 'print'), false);
   assert.equal(epostFilterMatches({ ...base, epost: { stus: '04', label: {} } }, 'problem'), true);
   assert.equal(epostFilterMatches({ ...base, epost: { stus: '03', label: {} } }, 'problem'), false);
+  assert.equal(epostFilterMatches({ ...base, epost: { stus: '02', label: null } }, 'print'), true);
 });
 
 test('임시 가상번호 안내는 실제 번호와 다른 가상번호가 있을 때만 표시한다', () => {
@@ -414,6 +419,55 @@ test('라벨은 실제 인쇄 확인 뒤에만 같은 송장의 모든 상품을
   assert.equal(db.orders[0].printedAt, '2026-09-03T10:00:00.000Z');
   assert.equal(db.orders[1].printedAt, '2026-09-03T10:00:00.000Z');
   assert.equal(db.orders[2].printed, undefined);
+});
+
+test('복구된 우체국 송장은 라벨 데이터가 없어도 사이트 인쇄 완료로 기록한다', () => {
+  const db = {
+    orders: [
+      { id: 1, invoice: '6890000000001', epost: { orderNo: 'HAM-RECOVERED', regiNo: '6890000000001', label: null } },
+      { id: 2, invoice: '6890000000001', epost: { orderNo: 'HAM-RECOVERED', regiNo: '6890000000001', label: null } }
+    ],
+    seeding: []
+  };
+  const result = markPrintedFulfillments(db, [{ type: 'order', id: 1 }], '2026-09-03T11:00:00.000Z');
+  assert.deepEqual(result, { parcels: 1, items: 2 });
+  assert.equal(db.orders[0].printed, true);
+  assert.equal(db.orders[1].printed, true);
+});
+
+test('우체국 취소는 성공 상태를 저장한 뒤 로컬 장부를 한 번만 되돌린다', () => {
+  const db = {
+    inventory: [{ sku: 'SKU-1', qty: 4 }],
+    orders: [{
+      id: 1, orderNo: 'ORDER-1', orderItemCode: 'ITEM-1', status: '발송완료',
+      invoice: '6890000000002', sentDate: '2026-09-03', cafe24Shipped: true,
+      stockDeducted: true, stockDeductionDetails: [{ sku: 'SKU-1', qty: 1 }],
+      epost: { orderNo: 'HAM-CANCEL', reqNo: 'REQ', resNo: 'RES', reqYmd: '20260903', regiNo: '6890000000002' }
+    }],
+    seeding: []
+  };
+  const prepared = prepareEpostCancellation(db, 'order', 1, '2026-09-03T12:00:00.000Z');
+  assert.equal(prepared.operation.state, 'pending');
+  setEpostCancellationState(db, prepared.orderNo, 'epost_canceled', '', '2026-09-03T12:01:00.000Z');
+  const restore = entry => restoreStockDeductions(entry.item, db.inventory);
+  const first = finalizeEpostCancellation(db, prepared.orderNo, restore, '2026-09-03T12:02:00.000Z');
+  const second = finalizeEpostCancellation(db, prepared.orderNo, restore, '2026-09-03T12:03:00.000Z');
+  assert.equal(first.entries.length, 1);
+  assert.equal(second.entries.length, 1);
+  assert.equal(db.inventory[0].qty, 5);
+  assert.equal(db.orders[0].status, '대기');
+  assert.equal(db.orders[0].invoice, '');
+  assert.equal(db.orders[0].epost, undefined);
+  assert.equal(db.orders[0].epostCancelOp.state, 'local_finalized');
+  assert.equal(db.orders[0].canceledShipment.invoice, '6890000000002');
+});
+
+test('예전 시딩 행에 고유번호가 없으면 송장 삭제 실패를 숨기지 않는다', () => {
+  const item = { id: 7, canceledSheet: { sourceRowId: '', invoice: '6890000000003' } };
+  assert.equal(flagMissingCanceledSheetSource(item, '2026-09-03T12:00:00.000Z'), true);
+  assert.equal(item.syncOps.sheetInvoiceCancel.state, 'failed');
+  assert.match(item.syncIssues[0].message, /직접 지워/);
+  assert.ok(item.canceledSheet);
 });
 
 test('같은 주문에서 일부 상품만 이미 발송됐으면 남은 상품의 두 번째 접수를 막는다', () => {
