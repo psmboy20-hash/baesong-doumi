@@ -237,6 +237,9 @@ function labelC(L, i) { // 오즈뷰어 C형 출력과 같은 배치
   const zip = String(it.zip || lb.refineZip || '').replace(/\D/g, '').slice(0, 5);
   const addr = cleanA(it.addr);
   const vtel = lb.vTelNo ? fmtVtel(lb.vTelNo) : (it.phone || '');
+  const virtualPhoneNote = HamItemLines.hasVirtualPhone(lb, it.phone)
+    ? '<div class="f" style="left:55mm; top:73mm; font-size:2.4mm">※ 고객님의 개인정보 보호를 위하여 임시 가상번호를 사용합니다.</div>'
+    : '';
   const prod = L.products.map(p => `<div style="margin-bottom:0.9mm">${p}</div>`).join('') +
     (it.msg ? `<div style="margin-top:0.5mm"><b>※ ${esc(it.msg)}</b></div>` : '');
   const invCn = a.cn && !/^[ABC]/.test(a.cn);
@@ -267,7 +270,7 @@ function labelC(L, i) { // 오즈뷰어 C형 출력과 같은 배치
     <div class="f wrap" style="left:55mm; top:39mm; width:90mm; font-size:5mm; font-weight:900; line-height:1.35">${esc(addr)} .</div>
     <div class="f" style="left:55mm; top:58mm; font-size:6.5mm; font-weight:900">${esc(maskName(it.name))} 님</div>
     <div class="f" style="left:55mm; top:67mm; font-size:5mm; font-weight:900">T: ${esc(vtel)}</div>
-    <div class="f" style="left:55mm; top:73mm; font-size:2.4mm">※ 고객님의 개인정보 보호를 위하여 임시 가상번호를 사용합니다.</div>
+    ${virtualPhoneNote}
     <!-- 등기번호 + 대형 바코드 -->
     <div class="f" style="left:55mm; top:77mm; font-size:5mm; font-weight:900">등기번호: ${esc(fmtRegi(it.invoice))}</div>
     <div class="f" style="left:55mm; top:84mm"><svg id="regi${i}" style="width:85mm;height:17mm"></svg></div>

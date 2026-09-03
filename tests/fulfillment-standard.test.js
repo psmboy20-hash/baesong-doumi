@@ -46,7 +46,8 @@ const {
   epostFilterMatches,
   cafe24MergeSuggestions,
   shipmentStockStates,
-  sentShipmentKey
+  sentShipmentKey,
+  hasVirtualPhone
 } = require('../public/item-lines');
 
 test('우체국 픽업 대기는 접수 후 기사님이 가져가기 전 송장만 포함한다', () => {
@@ -67,6 +68,12 @@ test('우체국 인쇄 필요와 확인 필요 목록도 각각 해당 송장만
   assert.equal(epostFilterMatches({ ...base, printed: true }, 'print'), false);
   assert.equal(epostFilterMatches({ ...base, epost: { stus: '04', label: {} } }, 'problem'), true);
   assert.equal(epostFilterMatches({ ...base, epost: { stus: '03', label: {} } }, 'problem'), false);
+});
+
+test('임시 가상번호 안내는 실제 번호와 다른 가상번호가 있을 때만 표시한다', () => {
+  assert.equal(hasVirtualPhone({ vTelNo: '050412345678' }, '01012345678'), true);
+  assert.equal(hasVirtualPhone({ vTelNo: '01012345678' }, '010-1234-5678'), false);
+  assert.equal(hasVirtualPhone({}, '010-1234-5678'), false);
 });
 
 test('우체국 ERR-225는 미접수 확정으로 판단해 안전하게 재시도할 수 있다', () => {

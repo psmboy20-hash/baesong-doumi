@@ -139,6 +139,12 @@
     return true;
   }
 
+  function hasVirtualPhone(label, phone) {
+    const virtual = String(label && label.vTelNo || '').replace(/\D/g, '');
+    const actual = String(phone || '').replace(/\D/g, '');
+    return Boolean(virtual && virtual !== actual);
+  }
+
   function normalizedRecipient(item) {
     const source = item || {};
     const name = String(source.name || '').replace(/\s+/g, '').replace(/\(.*?\)/g, '').trim();
@@ -255,6 +261,7 @@
     fullySelectedEntries,
     shipmentProductNotes,
     epostFilterMatches,
+    hasVirtualPhone,
     cafe24MergeSuggestions,
     shipmentStockStates,
     sentShipmentKey
