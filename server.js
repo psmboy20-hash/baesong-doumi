@@ -1995,7 +1995,7 @@ function buildParcelGroups(db, selected) {
     if (item && blockedKeys.has(fulfillmentKey(itemType, item))) continue;
     // 이미 보낸 건은 서버에서도 걸러냄 (화면이 30초 묵은 상태에서 눌러도 이중 접수 방지)
     if (!(item && item.status !== '취소됨' && item.status !== '발송완료' && !item.epost)) continue;
-    if (item.shippingHold) continue;
+    if (item.shippingHold || item.sheetCancelHold) continue;
     if (item.epostOp && ['pending', 'unknown'].includes(item.epostOp.state)) continue;
     // 과거에 이미 보낸 것과 같은 내용이면 차단 — [한 번 더 보내기]로 확인한 건(resendOk)만 통과
     if (!item.resendOk) {
@@ -2105,7 +2105,7 @@ async function matchInvoices(db, rows) {
     hIdx = -1;
   }
   const pendings = [];
-  for (const s of db.seeding) if (!s.invoice && s.status !== '취소됨') pendings.push({ type: 'seeding', item: s });
+  for (const s of db.seeding) if (!s.invoice && s.status !== '취소됨' && !s.sheetCancelHold) pendings.push({ type: 'seeding', item: s });
   for (const o of db.orders) if (!o.invoice && o.status !== '취소됨') pendings.push({ type: 'order', item: o });
 
   const results = { matched: [], unmatched: [] };
@@ -2786,6 +2786,15 @@ const server = http.createServer((req, res) => {
     if (url.pathname === '/api/epost/register' && req.method === 'POST') {
       const body = JSON.parse((await readBody(req)).toString('utf8'));
       const db = loadDb();
+      const preflightConflicts = fulfillmentGroupConflicts(
+        db,
+        Array.isArray(body.selected) ? body.selected : []
+      );
+      if (preflightConflicts.length) {
+        return sendJson(res, 200, {
+          error: preflightConflicts[0].name + ': ' + preflightConflicts[0].reason
+        });
+      }
       if (!epostConfigured(db) || !db.epost) return sendJson(res, 200, { error: '먼저 설정에서 [우체국 연결]을 해주세요.' });
       if (VIEW_ONLY && await storeAliveCached()) {
         // 매장이 켜져 있을 땐 주문 접수는 매장에 양보 (카페24 동시 접속 방지) — 시딩만 허용
@@ -2993,6 +3002,9 @@ const server = http.createServer((req, res) => {
       const list = body.type === 'seeding' ? db.seeding : db.orders;
       const item = list.find(x => x.id === body.id);
       if (!item) return sendJson(res, 200, { error: '해당 건을 찾지 못했어요.' });
+      const shipmentConflicts = fulfillmentGroupConflicts(db, [{ type: body.type === 'seeding' ? 'seeding' : 'order', id: item.id }]);
+      if (shipmentConflicts.length) return sendJson(res, 200, { error: shipmentConflicts[0].reason });
+      if (item.sheetCancelHold) return sendJson(res, 200, { error: '구글시트에서 기존 송장번호와 발송일을 지운 뒤 [시트에서 기존 송장 지웠어요]를 먼저 눌러 주세요.' });
       if (item.shippingHold) return sendJson(res, 200, { error: '재고 기다림 품목은 발송완료로 바꿀 수 없어요. 재고가 들어온 뒤 [재고 들어옴 · 이제 보내기]를 먼저 눌러 주세요.' });
       if (item.status === '발송완료') return sendJson(res, 200, { error: '이미 발송완료된 건이에요.' });
       const inv = String(body.invoice || '').trim();

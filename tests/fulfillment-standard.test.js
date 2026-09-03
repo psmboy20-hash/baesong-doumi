@@ -301,6 +301,20 @@ test('재고 대기 품목이 같은 포장에 섞여 있으면 포장 전체 �
   assert.match(conflicts[0].reason, /재고 기다림/);
 });
 
+test('시트의 기존 송장을 정리하지 않은 시딩은 서버에서도 포장 전체 접수를 막는다', () => {
+  const db = {
+    orders: [],
+    seeding: [
+      { id: 1, name: '시딩', status: '대기', sheetCancelHold: true },
+      { id: 2, name: '시딩', status: '대기', packGroupId: 'PACK-1' }
+    ]
+  };
+  db.seeding[0].packGroupId = 'PACK-1';
+  const conflicts = fulfillmentGroupConflicts(db, [{ type: 'seeding', id: 1 }]);
+  assert.equal(conflicts.length, 1);
+  assert.match(conflicts[0].reason, /기존 송장을 정리/);
+});
+
 test('같은 Cafe24 주문의 분리 송장 두 개는 Cafe24에도 각각 등록한다', () => {
   const groups = groupCafe24ShipmentItems([
     { type: 'order', item: { orderNo: 'ORDER-1', orderItemCode: 'ITEM-A', invoice: '111', cafe24Shipped: false } },
