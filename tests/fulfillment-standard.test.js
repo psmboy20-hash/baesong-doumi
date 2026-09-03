@@ -7,6 +7,7 @@ const {
   releaseMissingEpostOperations,
   fulfillmentKey,
   expandSelectedFulfillments,
+  sheetCleanupHoldReason,
   fulfillmentGroupConflicts,
   inventorySku,
   ensureOperationalFields,
@@ -303,7 +304,7 @@ test('재고 대기 품목이 같은 포장에 섞여 있으면 포장 전체 �
 
 test('시트의 기존 송장을 정리하지 않은 시딩은 서버에서도 포장 전체 접수를 막는다', () => {
   const db = {
-    orders: [],
+    orders: [{ id: 3, name: '주문', status: '대기', packGroupId: 'PACK-1' }],
     seeding: [
       { id: 1, name: '시딩', status: '대기', sheetCancelHold: true },
       { id: 2, name: '시딩', status: '대기', packGroupId: 'PACK-1' }
@@ -313,6 +314,13 @@ test('시트의 기존 송장을 정리하지 않은 시딩은 서버에서도 �
   const conflicts = fulfillmentGroupConflicts(db, [{ type: 'seeding', id: 1 }]);
   assert.equal(conflicts.length, 1);
   assert.match(conflicts[0].reason, /기존 송장을 정리/);
+  const mixedConflict = fulfillmentGroupConflicts(db, [{ type: 'order', id: 3 }]);
+  assert.equal(mixedConflict.length, 1);
+  assert.match(mixedConflict[0].reason, /기존 송장을 정리/);
+  assert.match(sheetCleanupHoldReason([
+    { type: 'order', item: db.orders[0] },
+    { type: 'seeding', item: db.seeding[0] }
+  ]), /기존 송장을 정리/);
 });
 
 test('같은 Cafe24 주문의 분리 송장 두 개는 Cafe24에도 각각 등록한다', () => {
@@ -420,6 +428,17 @@ test('서버는 같은 주문의 한 행만 받아도 모든 상품 행을 한 �
   assert.deepEqual(expandSelectedFulfillments(db, [{ type: 'order', id: 1 }]), [
     { type: 'order', id: 1 },
     { type: 'order', id: 2 }
+  ]);
+});
+
+test('주문과 시딩이 한 포장이면 어느 쪽을 눌러도 포장 전체를 확장한다', () => {
+  const db = {
+    orders: [{ id: 1, orderNo: 'ORDER-1', packGroupId: 'PACK-MIXED' }],
+    seeding: [{ id: 2, packGroupId: 'PACK-MIXED' }]
+  };
+  assert.deepEqual(expandSelectedFulfillments(db, [{ type: 'order', id: 1 }]), [
+    { type: 'order', id: 1 },
+    { type: 'seeding', id: 2 }
   ]);
 });
 

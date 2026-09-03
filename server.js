@@ -22,6 +22,7 @@ const {
   finalizeEpostCancellation,
   flagMissingCanceledSheetSource,
   resolveMissingCanceledSheetSource,
+  sheetCleanupHoldReason,
   fulfillmentGroupConflicts,
   parcelReference,
   selectInvoiceParcelGroup,
@@ -2105,7 +2106,7 @@ async function matchInvoices(db, rows) {
     hIdx = -1;
   }
   const pendings = [];
-  for (const s of db.seeding) if (!s.invoice && s.status !== '취소됨' && !s.sheetCancelHold) pendings.push({ type: 'seeding', item: s });
+  for (const s of db.seeding) if (!s.invoice && s.status !== '취소됨') pendings.push({ type: 'seeding', item: s });
   for (const o of db.orders) if (!o.invoice && o.status !== '취소됨') pendings.push({ type: 'order', item: o });
 
   const results = { matched: [], unmatched: [] };
@@ -2125,6 +2126,11 @@ async function matchInvoices(db, rows) {
     const reference = refCol >= 0 ? String(row[refCol] || '').trim() : '';
     if (!nm && !ph && !reference) { results.unmatched.push({ invoice: inv, name: '', reason: '이름·주문번호 정보 없음' }); continue; }
     const selected = selectInvoiceParcelGroup(pendings.filter(p => !p.done), { name: nm, phone: ph, reference });
+    const cleanupHold = sheetCleanupHoldReason(selected.items);
+    if (cleanupHold) {
+      results.unmatched.push({ invoice: inv, name: nameCol >= 0 ? String(row[nameCol] || '') : '', reason: cleanupHold });
+      continue;
+    }
     if (selected.items.length) {
       for (const p of selected.items) {
         p.item.invoice = inv;
