@@ -20,13 +20,9 @@ if (-not $node) {
 }
 Write-Host "[1/4] Node.js 확인 완료 ($($node.Source))"
 
-# 2. 프로그램 파일 확인 (xlsx 모듈 없으면 설치)
-if (-not (Test-Path "$here\node_modules\xlsx")) {
-    Write-Host "[2/4] 부품(xlsx) 내려받는 중..."
-    npm install xlsx --no-fund --no-audit | Out-Null
-} else {
-    Write-Host "[2/4] 프로그램 부품 확인 완료"
-}
+# 2. 잠금파일에 지정된 안전한 버전으로 프로그램 부품 설치
+Write-Host "[2/4] 프로그램 부품 확인 중..."
+npm ci --omit=dev --no-fund --no-audit | Out-Null
 
 # 3. 바로가기 2개 만들기
 $ws = New-Object -ComObject WScript.Shell

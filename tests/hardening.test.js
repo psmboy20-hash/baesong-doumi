@@ -63,6 +63,7 @@ test('진짜 XLSX XLS CSV만 스프레드시트 업로드로 받는다', () => {
   const cp949Book = XLSX.read(cp949, spreadsheetReadOptions(cp949, 'csv'));
   const cp949Rows = XLSX.utils.sheet_to_json(cp949Book.Sheets[cp949Book.SheetNames[0]], { header: 1 });
   assert.deepEqual(cp949Rows[0], ['홍글', '전화']);
+  assert.equal(cp949Rows[1][1], '010');
   assert.equal(spreadsheetFormat(Buffer.from([0x50, 0x4b, 0x03, 0x04, 1, 2]), 'orders.xlsx'), '');
   assert.equal(spreadsheetFormat(Buffer.from('<html>가짜 파일</html>', 'utf8'), 'orders.xlsx'), '');
   assert.equal(spreadsheetFormat(Buffer.from([0, 1, 2, 3]), 'orders.csv'), '');
