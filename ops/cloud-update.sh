@@ -18,7 +18,7 @@ node --check server.js
 node --check public/app.js
 node --check public/item-lines.js
 sudo systemctl restart ham
-curl --fail --silent --show-error --retry 5 --retry-delay 2 http://127.0.0.1:8899/healthz >/dev/null
+curl --fail --silent --show-error --retry 10 --retry-delay 1 --retry-connrefused http://127.0.0.1:8899/healthz >/dev/null
 marker_tmp="${DEPLOYED_SHA_FILE}.tmp.$$"
 printf '%s\n' "$remote_sha" > "$marker_tmp"
 mv "$marker_tmp" "$DEPLOYED_SHA_FILE"

@@ -15,6 +15,7 @@ test('클라우드 업데이트는 성공한 버전만 표시하고 실패한 �
   assert.ok(restartAt < healthAt);
   assert.ok(healthAt < markerAt);
   assert.match(script, /deployed_sha/);
+  assert.match(script, /--retry-connrefused/);
 });
 
 test('클라우드 서비스는 공개 포트가 아니라 로컬 프록시에만 연결한다', () => {
