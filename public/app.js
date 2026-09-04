@@ -1477,7 +1477,7 @@ function renderShipping() {
       <td style="min-width:240px;max-width:480px">${pp.name}</td>
       <td>${pp.opt || '<span class="muted">-</span>'}</td>
       <td style="min-width:180px;max-width:300px">${memo || '<span class="muted">-</span>'}</td>
-      <td>${chip(x.delivered ? '배달완료' : x.status)}${!x.delivered && x.status === '발송완료' && x.deliveryCheckStatus === '확인필요' ? '<br><span class="note-badge">택배사 확인 필요</span>' : ''}</td>
+      <td>${chip(x.delivered ? '배달완료' : x.status)}${!x.delivered && x.status === '발송완료' && x.deliveryCheckStatus === '확인필요' ? '<br><span class="note-badge">택배사 확인 필요</span>' : ''}${!x.delivered && x.status === '발송완료' && x.sentDate && (Date.now() - new Date(x.sentDate)) / 86400000 >= 7 ? `<br><span class="note-badge" title="택배사에서 배달완료가 확인되지 않았어요. 실제로 받았다면 [✔ 배달 끝 처리]를 눌러 주세요.">⏰ ${Math.floor((Date.now() - new Date(x.sentDate)) / 86400000)}일째 배달 확인 안 됨</span>` : ''}</td>
       <td style="max-width:150px">${invoiceCell(x.invoice, x.courier)}</td>
       <td style="white-space:nowrap"><div class="btn-col">${x.status === '발송완료'
         ? `<button class="link-btn" onclick="returnFormFrom('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id})">🔁 교환/반품</button>${!x.delivered ? `<button class="link-btn" style="font-size:0.9rem" onclick="markDelivered('${x._kind === '시딩' ? 'seeding' : 'orders'}',${x.id},'${jsq(x.name)}')">✔ 배달 끝 처리</button>` : ''}`

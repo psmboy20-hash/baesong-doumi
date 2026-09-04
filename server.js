@@ -59,7 +59,9 @@ const {
   splitShipmentItems,
   parcelContent,
   buildReturnRestockPlan,
-  selectStockMatches
+  selectStockMatches,
+  deliveryCheckOrder,
+  groupRecipientConflict
 } = require('./lib/operations');
 const { writeJsonAtomic, appendAudit, createMutationQueue } = require('./lib/storage');
 const { buildWorkbookBuffer, xlsxDownloadHeaders } = require('./lib/spreadsheet-export');
@@ -71,7 +73,8 @@ const {
   isSecureRequest,
   readBodyLimited,
   spreadsheetFormat,
-  spreadsheetReadOptions
+  spreadsheetReadOptions,
+  codeMatches
 } = require('./lib/security');
 const {
   postalAddressCandidates,
@@ -171,7 +174,17 @@ async function gateCheck(req, res, url) {
   if (!code) return false;
   if (!gateRequired) return false;
   if (reqCookies(req).hamKey === gateHash(code)) return false; // 이미 코드 입력한 컴퓨터
-  if (String(req.headers['x-ham-code'] || '').trim() === code) return false; // 외부 시스템(allin_v4 등)의 마스터 API 호출
+  // 외부 시스템(allin_v4 등)의 헤더 코드 — 로그인과 같은 IP별 시도 제한 + 상수시간 비교
+  const headerCode = String(req.headers['x-ham-code'] || '').trim();
+  if (headerCode) {
+    const f = gateFails.get(ip);
+    if (f && f.until > Date.now()) { sendJson(res, 429, { error: '시도가 너무 많아요. 10분 뒤 다시 해주세요.' }); return true; }
+    if (codeMatches(headerCode, code)) { gateFails.delete(ip); return false; }
+    const n = (f ? f.n : 0) + 1;
+    gateFails.set(ip, { n, until: n >= 5 ? Date.now() + 10 * 60 * 1000 : 0 });
+    sendJson(res, 401, { error: '접속 코드가 맞지 않아요.' + (n >= 5 ? ' 10분 뒤 다시 해주세요.' : '') });
+    return true;
+  }
   if (url.pathname === '/api/login' && req.method === 'POST') {
     const f = gateFails.get(ip);
     if (f && f.until > Date.now()) { sendJson(res, 429, { error: '시도가 너무 많아요. 10분 뒤 다시 해주세요.' }); return true; }
@@ -183,7 +196,7 @@ async function gateCheck(req, res, url) {
         return true;
       }
     }
-    if (String(body.code || '').trim() === code) {
+    if (codeMatches(String(body.code || '').trim(), code)) {
       gateFails.delete(ip);
       res.writeHead(200, {
         'Content-Type': 'application/json; charset=utf-8',
@@ -1426,11 +1439,12 @@ async function syncGoogle(db) {
 // 조회 페이지의 hidden input #deliveryVal 값이 "배달완료"/"수취함투함"일 때만 완료 —
 // 우체국 페이지 자신이 STEP4 표시에 쓰는 것과 동일한 기준 (본문 글자 검색은 항상 있는 라벨 때문에 오탐)
 async function checkDelivered(db) {
-  const targets = [...db.orders, ...db.seeding].filter(x =>
+  // 안 본 것·오래전에 본 것부터 10건 — 미배달이 쌓여도 신규 발송이 조회에서 영영 밀리지 않게
+  const targets = deliveryCheckOrder([...db.orders, ...db.seeding].filter(x =>
     x.status === '발송완료' && !x.delivered &&
     String(x.invoice || '').replace(/\D/g, '').length === 13 &&
     (!x.courier || x.courier === '우체국')
-  ).slice(0, 10);
+  )).slice(0, 10);
   let found = 0;
   for (const it of targets) {
     const no = String(it.invoice).replace(/\D/g, '');
@@ -1454,11 +1468,11 @@ async function checkDelivered(db) {
     }
   }
   // 롯데 송장(숫자 12자리)은 롯데글로벌로지스 조회 페이지로 실제 배달완료 확인
-  const lotte = [...db.orders, ...db.seeding].filter(x =>
+  const lotte = deliveryCheckOrder([...db.orders, ...db.seeding].filter(x =>
     x.status === '발송완료' && !x.delivered &&
     String(x.invoice || '').replace(/\D/g, '').length === 12 &&
     (!x.courier || x.courier === '롯데' || /롯데/.test(String(x.invoice)))
-  ).slice(0, 10);
+  )).slice(0, 10);
   for (const it of lotte) {
     const no = String(it.invoice).replace(/\D/g, '');
     try {
@@ -2026,6 +2040,12 @@ function buildParcelGroups(db, selected) {
     g.items.push({ type, item });
     if (item.msg) g.msgs.push(item.msg);
     if (type === 'seeding' && item.request) g.msgs.push(String(item.request).trim());
+  }
+  // 접수 직전 재검증: 한 포장 안의 받는 사람·주소가 갈렸으면(합포장 뒤 주소 변경 등) 그 포장은 접수하지 않는다
+  for (const [gk, g] of [...groups]) {
+    const reason = groupRecipientConflict(g.items.map(({ item }) => item),
+      it => normName(it.name) + '|' + phoneDigits(it.phone) + '|' + cleanAddr(it.addr));
+    if (reason) { conflicts.push({ key: gk, name: g.name, reason }); groups.delete(gk); }
   }
   return { groups, pick, dups, conflicts };
 }
