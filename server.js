@@ -142,6 +142,11 @@ function accessCode() {
   return _accessCode;
 }
 function gateHash(code) { return gateCrypto.createHash('sha256').update('ham-gate:' + code).digest('hex'); }
+// 접속 코드 변경(설정 화면) — 캐시도 함께 갱신해 재시작 없이 즉시 적용
+function setAccessCode(db, next) {
+  db.accessCode = next;
+  _accessCode = next;
+}
 function clientIp(req) { return String(req.socket.remoteAddress || '').replace(/^::ffff:/, ''); }
 function reqCookies(req) {
   const out = {};
@@ -3226,6 +3231,25 @@ const server = http.createServer((req, res) => {
       } catch (e) { /* 폴더 없으면 빈 목록 */ }
       return sendJson(res, 200, { ok: true, files });
     }
+    if (url.pathname === '/api/access-code' && req.method === 'POST') {
+      // 접속 코드 변경: 지금 코드를 아는 사람만, 4~10자리 숫자/영문으로
+      const b = JSON.parse((await readBody(req, 16 * 1024)).toString('utf8'));
+      const db = loadDb();
+      const current = accessCode();
+      const next = String(b.next || '').trim();
+      if (current && !codeMatches(String(b.current || '').trim(), current)) return sendJson(res, 200, { error: '지금 쓰는 접속 코드가 맞지 않아요.' });
+      if (!/^[A-Za-z0-9]{4,10}$/.test(next)) return sendJson(res, 200, { error: '새 코드는 4~10자리 숫자·영문으로 정해 주세요.' });
+      if (next === current) return sendJson(res, 200, { error: '지금 코드와 같아요. 다른 코드를 정해 주세요.' });
+      setAccessCode(db, next);
+      saveDb(db);
+      audit('access-code.change', { rev: db.rev });
+      // 이 컴퓨터는 새 코드로 바로 다시 열어둔다 (다른 컴퓨터는 새 코드를 한 번 입력해야 함)
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Set-Cookie': 'hamKey=' + gateHash(next) + '; Max-Age=31536000; Path=/; HttpOnly; SameSite=Lax' + (isSecureRequest(req, TRUST_PROXY) ? '; Secure' : '')
+      });
+      return res.end(JSON.stringify({ ok: true }));
+    }
     if (url.pathname === '/api/backup/restore' && req.method === 'POST') {
       const b = JSON.parse((await readBody(req)).toString('utf8'));
       if (!/^db-\d{4}-\d{2}-\d{2}\.json$/.test(String(b.file || ''))) return sendJson(res, 200, { error: '백업 파일 이름이 이상해요.' });
@@ -3233,7 +3257,11 @@ const server = http.createServer((req, res) => {
       if (!fs.existsSync(src)) return sendJson(res, 200, { error: '그 날짜의 백업이 없어요.' });
       // 되돌리기 직전 상태도 안전하게 보관
       if (fs.existsSync(DB_PATH)) fs.copyFileSync(DB_PATH, path.join(BACKUP_DIR, 'db-before-restore-' + nowStamp() + '.json'));
-      writeJsonAtomic(DB_PATH, JSON.parse(fs.readFileSync(src, 'utf8')));
+      // 접속 코드는 복원 대상이 아니다 — 코드 설정 전 백업을 되돌려도 클라우드가 잠기지 않게 현재 값을 유지
+      const restored = JSON.parse(fs.readFileSync(src, 'utf8'));
+      const currentCode = accessCode();
+      if (currentCode) restored.accessCode = currentCode; else delete restored.accessCode;
+      writeJsonAtomic(DB_PATH, restored);
       const db = loadDb();
       saveDb(db); // rev를 올려 모든 화면이 새로 받게
       audit('backup.restore', { ref: b.file, rev: db.rev });

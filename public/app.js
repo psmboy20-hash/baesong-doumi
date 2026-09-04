@@ -1818,6 +1818,16 @@ async function invDel(id) {
 }
 
 // ---------- 설정 ----------
+async function changeAccessCode() {
+  const current = $('#set-code-cur').value.trim();
+  const next = $('#set-code-new').value.trim();
+  if (!next) { toast('새 코드를 적어 주세요.'); return; }
+  if (!confirm(`접속 코드를 '${next}'(으)로 바꿀까요?\n\n· 다른 컴퓨터·폰은 새 코드를 한 번 다시 입력해야 해요\n· allin_v4 같은 외부 연동도 새 코드로 바꿔야 해요`)) return;
+  const r = await api('/api/access-code', { method: 'POST', body: JSON.stringify({ current, next }) });
+  if (r.error) { toast('⚠️ ' + r.error, 6000); return; }
+  toast('✔️ 접속 코드를 바꿨어요. 이 컴퓨터는 그대로 쓸 수 있어요.', 6000);
+  renderSettings();
+}
 function renderSettings() {
   const s = DB.settings;
   const c24 = SYNC_STATUS && SYNC_STATUS.cafe24;
@@ -1874,6 +1884,13 @@ function renderSettings() {
       </div>
       ${DB.epost ? `<div class="hint" style="margin-top:0.8rem">고객번호 ${esc(DB.epost.custNo)} · 계약승인번호 ${esc(DB.epost.apprNo)} · 공급지 ${esc(DB.epost.officeNm || DB.epost.officeSer)}</div>` : ''}
       <div id="epost-result"></div>
+    </div>
+    <div class="card">
+      <div class="step-title">🔐 접속 코드</div>
+      <div class="hint">다른 컴퓨터·폰에서 처음 들어올 때 묻는 코드예요. 새어나갔다 싶으면 여기서 바꾸세요. (바꾸면 다른 기기들은 새 코드를 한 번 다시 입력해야 해요)</div>
+      <div class="form-row"><label>지금 코드</label><input id="set-code-cur" type="password" autocomplete="off" placeholder="현재 접속 코드"></div>
+      <div class="form-row"><label>새 코드 (4~10자리 숫자·영문)</label><input id="set-code-new" autocomplete="off" placeholder="예: 731205"></div>
+      <button class="big-btn" onclick="changeAccessCode()">🔐 코드 바꾸기</button>
     </div>
     <div class="card">
       <div class="step-title">📝 구글시트 송장 자동 기록 ${s.sheetWebhookUrl ? '<span class="chip done">켜짐 ✓</span>' : '<span class="chip wait">꺼짐</span>'}</div>
