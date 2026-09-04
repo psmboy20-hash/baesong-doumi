@@ -465,7 +465,8 @@ function cafe24AuthUrl(db) {
     client_id: s.cafe24ClientId,
     state: cafe24State,
     redirect_uri: cafe24RedirectUri(db),
-    scope: 'mall.read_order,mall.write_order,mall.read_product'
+    // write_shipping: 송장 등록/삭제(배송처리)에 필요 — 없으면 insufficient_scope 로 실패
+    scope: 'mall.read_order,mall.write_order,mall.read_product,mall.read_shipping,mall.write_shipping'
   });
   return `https://${s.cafe24MallId}.cafe24api.com/api/v2/oauth/authorize?${p}`;
 }
