@@ -2,3 +2,10 @@ baesong.140.238.54.44.sslip.io {
     reverse_proxy 127.0.0.1:8899
     encode zstd gzip
 }
+# 옛 주소(http://공인IP:8899)로 들어오면 HTTPS로 자동 이동.
+# 공인 IP는 OCI NAT라 서버 안에서 바인딩 불가 → 내부 NIC IP(10.0.0.163)에만 붙여 앱의 127.0.0.1:8899와 공존시킨다.
+# (앱은 ham.service의 HAM_BIND=127.0.0.1 로 외부에서 직접 못 닿는다. /run/systemd/.../zz-public-http.conf 같은 런타임 드롭인이 있으면 지울 것)
+http://:8899 {
+    bind 10.0.0.163
+    redir https://baesong.140.238.54.44.sslip.io{uri} permanent
+}
