@@ -4,6 +4,15 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+// ── 은퇴 스위치 ─────────────────────────────────────────────────────────────
+// cloud.json 의 retireLocal 이 켜져 있으면, 클라우드 서버(HAM_CLOUD_WRITER=1)가 아닌 컴퓨터(매장 PC 등)에서
+// 켜진 서버는 주문 수집·우체국 접수를 일절 하지 않고 "새 주소로 이동" 안내만 띄운다.
+// (두 컴퓨터가 각자 장부로 같은 주문을 두 번 접수하던 사고 방지. 개발용 로컬 실행은 HAM_ALLOW_LOCAL=1)
+const __cloud = (() => { try { return JSON.parse(fs.readFileSync(path.join(__dirname, 'cloud.json'), 'utf8')); } catch (e) { return null; } })();
+if (__cloud && __cloud.retireLocal && process.env.HAM_CLOUD_WRITER !== '1' && process.env.HAM_ALLOW_LOCAL !== '1') {
+  require('./lib/retired').start(__cloud, Number(process.env.HAM_PORT) || 8899);
+  return; // 아래 본체는 실행하지 않는다
+}
 const https = require('https');
 const crypto = require('crypto');
 const { exec } = require('child_process');

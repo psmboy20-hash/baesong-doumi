@@ -1,3 +1,3 @@
 @echo off
-rem Store PC real screen via Tailscale (store PC must be ON)
-start http://100.112.253.21:8899
+rem 이제 매장·노트북·직원 모두 같은 클라우드 화면을 씁니다
+start "" "https://baesong.140.238.54.44.sslip.io"

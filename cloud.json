@@ -1,0 +1,6 @@
+{
+  "url": "https://baesong.140.238.54.44.sslip.io",
+  "retireLocal": true,
+  "since": "2026-09-04",
+  "note": "retireLocal=true 이면 클라우드(HAM_CLOUD_WRITER=1)가 아닌 컴퓨터에서 켜진 서버는 접수·동기화를 하지 않고 위 주소로 안내만 한다. 개발용으로 로컬에서 진짜로 띄우려면 HAM_ALLOW_LOCAL=1."
+}
