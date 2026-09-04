@@ -290,6 +290,9 @@ function shipmentSourceLabel(x) {
   if (x.exchange || x.sourceChannel === 'exchange') return '🔁 교환 재발송';
   if (x.sourceChannel === 'seeding' || x._kind === '시딩') return seedingSourceLabel(x);
   if (x.sourceChannel === 'direct') return '✍ 직접 등록';
+  if (x.sourceChannel === '29cm') return '🏬 29CM';
+  if (x.sourceChannel === 'musinsa') return '🏬 무신사';
+  if (x.sourceChannel === 'other') return '🏪 기타 채널';
   return '🛒 주문';
 }
 function externalSyncIssues() {
@@ -484,8 +487,11 @@ function dashGrid(all) {
   const ym = new Date().getFullYear() + '-' + String(new Date().getMonth() + 1).padStart(2, '0');
   // 채널 구분: 앞으로 29CM·무신사 등이 여기에 늘어난다
   const tagged = [...DB.orders, ...DB.seeding];
-  const channelName = x => ({ cafe24: '카페24', seeding: '시딩', exchange: '교환 재발송', direct: '직접 등록' }[x.sourceChannel] || '직접 등록');
-  const chans = ['카페24', '시딩', '교환 재발송', '직접 등록', '혼합 합포장'];
+  const channelName = x => ({ cafe24: '카페24', seeding: '시딩', exchange: '교환 재발송', direct: '직접 등록', '29cm': '29CM', musinsa: '무신사', other: '기타 채널' }[x.sourceChannel] || '직접 등록');
+  // 아직 주문이 없는 외부 채널은 '연결 준비 중'으로만 보여주고, 엑셀로 주문이 들어오기 시작하면 정식 줄로 올라온다
+  const extraChans = ['29CM', '무신사', '기타 채널'].filter(c => tagged.some(x => channelName(x) === c));
+  const soonChans = ['29CM', '무신사'].filter(c => !extraChans.includes(c));
+  const chans = ['카페24', '시딩', '교환 재발송', '직접 등록', '혼합 합포장', ...extraChans];
   const c24ok = SYNC_STATUS && SYNC_STATUS.cafe24 && SYNC_STATUS.cafe24.ok;
   const gooOk = SYNC_STATUS && SYNC_STATUS.google && SYNC_STATUS.google.ok;
   const epOk = SYNC_STATUS && SYNC_STATUS.epost && SYNC_STATUS.epost.connected;
@@ -540,8 +546,7 @@ function dashGrid(all) {
     <div class="card">
       <div class="dash-title">🛒 판매 채널 <button class="link-btn more" onclick="go('send')">보내기 →</button></div>
       ${chanRows}
-      <div class="chan-row soon"><span class="dot na"></span><span class="cname">29CM</span><span class="cstat muted">연결 준비 중</span></div>
-      <div class="chan-row soon"><span class="dot na"></span><span class="cname">무신사</span><span class="cstat muted">연결 준비 중</span></div>
+      ${soonChans.map(c => `<div class="chan-row soon" title="[보내기] 아래 '다른 판매채널 주문 엑셀 넣기'로 주문을 넣으면 여기에 집계돼요"><span class="dot na"></span><span class="cname">${c}</span><span class="cstat muted">엑셀로 넣기 가능</span></div>`).join('')}
     </div>
     <div class="card">
       <div class="dash-title">📈 최근 7일 택배 발송</div>
@@ -690,9 +695,19 @@ function renderSend() {
       <div class="hint">주문과 시딩 신청은 <b>5분마다 자동으로</b> 들어와요. 방금 들어온 걸 바로 보고 싶으면 버튼을 누르세요.<br>${c24line}${gline ? '<br>' + gline : ''}</div>
       <button class="big-btn" onclick="doSync()">🔄 지금 바로 확인하기</button>
       <details style="margin-top:1rem">
-        <summary style="font-size:1rem;cursor:pointer;color:#5a6478">카페24 주문 엑셀 파일로 직접 넣기 <span class="note-badge">⚠️ 자동 연동이 안 될 때만</span></summary>
-        <div class="dropzone" id="dz-cafe24" onclick="pickFile('cafe24')" style="margin-top:0.8rem">
-          📂 여기에 카페24 주문 엑셀 파일을 끌어다 놓으세요
+        <summary style="font-size:1rem;cursor:pointer;color:#5a6478">다른 판매채널 주문 엑셀 넣기 (29CM · 무신사 · 카페24 수동 · 기타)</summary>
+        <div class="hint" style="margin-top:0.6rem">채널 어드민에서 내려받은 <b>주문(배송) 엑셀</b>을 그대로 넣으면 돼요. 수령인·주소·상품·수량 열은 자동으로 알아봐요. 같은 주문번호는 두 번 안 들어가요.</div>
+        <div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;margin:0.5rem 0">
+          <label style="font-weight:700">판매채널</label>
+          <select id="upload-channel" style="font-size:1rem;padding:0.4rem 0.6rem;border:2px solid var(--line);border-radius:8px">
+            <option value="29cm">29CM</option>
+            <option value="musinsa">무신사</option>
+            <option value="cafe24">카페24 (자동 연동이 안 될 때만)</option>
+            <option value="other">기타 채널</option>
+          </select>
+        </div>
+        <div class="dropzone" id="dz-cafe24" onclick="pickFile('orders')" style="margin-top:0.4rem">
+          📂 여기에 주문 엑셀 파일을 끌어다 놓으세요
         </div>
       </details>
     </div>
@@ -704,7 +719,9 @@ function renderSend() {
         ${mergeSuggestions.map(s => {
           const spec = s.entries.map(entry => entry.kind + ':' + entry.x.id).join(',');
           const qty = productQuantity(s.entries, entry => entry.x);
-          return `<div style="margin-top:0.45rem"><b>${esc(s.name)}</b>님이 Cafe24에서 따로 주문한 ${s.orderNos.length}건이 있어요. 상품 ${qty}개를 한 비닐에 넣고 송장 1개로 보낼 수 있어요. <button class="big-btn orange" style="padding:0.35rem 0.8rem;font-size:0.88rem" onclick="packMerge('${spec}','${jsq(s.name)}')">한 비닐로 묶기</button></div>`;
+          const u = s.units || { orders: s.orderNos.length, seeding: 0 };
+          const what = [u.orders ? `주문 ${u.orders}건` : '', u.seeding ? `시딩 ${u.seeding}건` : ''].filter(Boolean).join(' + ');
+          return `<div style="margin-top:0.45rem"><b>${esc(s.name)}</b>님에게 따로 나갈 택배가 ${s.orderNos.length}건(${what}) 있어요. 상품 ${qty}개를 한 비닐에 넣고 송장 1개로 보낼 수 있어요. <button class="big-btn orange" style="padding:0.35rem 0.8rem;font-size:0.88rem" onclick="packMerge('${spec}','${jsq(s.name)}')">한 비닐로 묶기</button></div>`;
         }).join('')}
       </div>` : ''}
       <div class="hint">보낼 목록이에요. 빼고 싶은 사람은 체크를 풀면 돼요. (기본은 전체 선택)</div>
@@ -1634,7 +1651,8 @@ function renderInventory() {
     </div>
     <div style="margin-bottom:1rem; display:flex; gap:0.8rem; flex-wrap:wrap">
       <button class="big-btn" onclick="invAddForm()">➕ 새 제품 넣기</button>
-      <button class="big-btn" style="background:#5a6478" onclick="renderStockLog()">📜 입출고 내역</button>
+      <button class="big-btn green" onclick="invMoveForm()">📥📤 입고·출고 등록</button>
+      <button class="big-btn" style="background:#5a6478" onclick="renderStockLog()">📜 입출고 내역·수불부</button>
       ${DB.products && DB.products.length ? `<button class="big-btn orange" onclick="invImportProducts()">📥 카페24 제품 전부 불러오기</button>` : ''}
     </div>
     <div id="inv-form"></div>
@@ -1778,47 +1796,156 @@ async function undoSplit(orderNo, name) {
 }
 
 // ── 입출고 내역 ──
+// ── 재고수불: 입출고 구분 (서버 STOCK_MOVE_REASONS와 같은 이름) ──
 const STOCK_REASON = {
-  '출고': ['📤', '#c0392b'], '입고 (직접)': ['📥', '#1e7e46'], '차감 (직접)': ['✏️', '#8a6d1a'],
-  '접수 취소 복구': ['↩️', '#1e7e46'], '반품 입고': ['📥', '#1e7e46'], '교환 회수 입고': ['🔄', '#1e7e46']
+  '주문 출고': ['🛒', '#c0392b'], '시딩 출고': ['🎁', '#c0392b'], '교환 재발송 출고': ['🔁', '#c0392b'],
+  '샘플 출고': ['🧵', '#c0392b'], '본사 출고': ['🏢', '#c0392b'], '폐기·불량': ['🗑️', '#8a6d1a'],
+  '차감 (직접)': ['✏️', '#8a6d1a'], '재고 조정 (−)': ['⚖️', '#8a6d1a'], '출고': ['📤', '#c0392b'],
+  '본사 입고': ['🏢', '#1e7e46'], '반품 입고': ['↩️', '#1e7e46'], '교환 회수 입고': ['🔄', '#1e7e46'],
+  '입고 (직접)': ['📥', '#1e7e46'], '재고 조정 (+)': ['⚖️', '#1e7e46'], '접수 취소 복구': ['↩️', '#1e7e46']
 };
+const STOCK_IN_REASONS = ['본사 입고', '반품 입고', '교환 회수 입고', '입고 (직접)', '재고 조정 (+)'];
+const STOCK_OUT_REASONS = ['샘플 출고', '본사 출고', '폐기·불량', '차감 (직접)', '재고 조정 (−)']; // 주문·시딩·교환 출고는 접수할 때 자동
+const invLabel = i => esc(i.name) + (i.color ? ` <span class="muted">${esc(i.color)}</span>` : '') + (i.size ? ` <b>${esc(i.size)}</b>` : '');
+const stockRefLabel = e => {
+  if (!e.ref) return '<span class="muted">-</span>';
+  if (/^(SEED|SHIP|RMA)-/.test(e.ref) || /^\d{8}-\d{7}$/.test(e.ref)) return `<span class="muted" style="font-size:0.85rem">${esc(e.ref)}</span>`;
+  return esc(e.ref);
+};
+
+// 입고·출고 등록 폼 (재고 화면) — 본사 입고, 샘플 출고, 폐기 등 사람이 하는 수불
+function invMoveForm() {
+  const rows = [...DB.inventory].sort((a, b) => (a.name + a.size).localeCompare(b.name + b.size));
+  const opt = rows.map(i => `<option value="${i.id}">${esc(i.name)}${i.color ? ' / ' + esc(i.color) : ''}${i.size ? ' / ' + esc(i.size) : ''} (지금 ${i.qty}개)</option>`).join('');
+  $('#inv-form').innerHTML = `
+    <div class="card" style="border:2px solid #cfe0f5;background:#f7faff">
+      <div class="step-title">📥📤 입고·출고 등록</div>
+      <div class="form-row"><label>제품 / 사이즈</label><select id="mv-item" style="font-size:1rem;padding:0.5rem;border:2px solid var(--line);border-radius:8px;max-width:100%">${opt}</select></div>
+      <div class="form-row"><label>구분</label>
+        <select id="mv-reason" style="font-size:1rem;padding:0.5rem;border:2px solid var(--line);border-radius:8px">
+          <optgroup label="📥 입고 (재고가 늘어요)">${STOCK_IN_REASONS.map(r => `<option value="${r}">${STOCK_REASON[r][0]} ${r}</option>`).join('')}</optgroup>
+          <optgroup label="📤 출고 (재고가 줄어요)">${STOCK_OUT_REASONS.map(r => `<option value="${r}">${STOCK_REASON[r][0]} ${r}</option>`).join('')}</optgroup>
+        </select>
+      </div>
+      <div class="form-row"><label>수량</label><input id="mv-qty" type="number" value="1" min="1" style="width:6rem"></div>
+      <div class="form-row"><label>메모 (선택 — 예: 9월 2차 생산분, OO매거진 협찬)</label><input id="mv-memo" maxlength="80" placeholder="어디서 왔는지 / 어디로 갔는지"></div>
+      <div style="display:flex;gap:0.6rem;flex-wrap:wrap">
+        <button class="big-btn green" onclick="invMoveSave()">✔️ 기록하기</button>
+        <button class="big-btn gray" onclick="$('#inv-form').innerHTML=''">취소</button>
+      </div>
+      <div class="hint" style="margin-top:0.6rem">주문·시딩·교환 발송은 접수할 때 자동으로 출고되니 여기서 또 빼지 마세요. 반품·교환 회수는 [교환/반품]의 [물건 도착 확인]이 자동 입고해요.</div>
+    </div>`;
+  $('#mv-item').focus();
+}
+async function invMoveSave() {
+  const id = Number($('#mv-item').value);
+  const reason = $('#mv-reason').value;
+  const qty = Math.max(1, Math.floor(Number($('#mv-qty').value) || 0));
+  const memo = $('#mv-memo').value.trim();
+  const isIn = STOCK_IN_REASONS.includes(reason);
+  const item = DB.inventory.find(i => i.id === id);
+  if (!item) { toast('제품을 골라 주세요.'); return; }
+  if (!isIn && qty > item.qty && !confirm(`지금 재고가 ${item.qty}개인데 ${qty}개를 빼려고 해요.\n재고는 0개까지만 줄어요. 계속할까요?`)) return;
+  const r = await api('/api/inventory/adjust', { method: 'POST', body: JSON.stringify({ id, delta: isIn ? qty : -qty, reason, memo }) });
+  if (r.error && !r.ok) { toast('⚠️ ' + r.error, 5000); return; }
+  DB = r.db;
+  renderInventory();
+  toast(`✔️ ${reason} ${qty}개 기록했어요.` + (r.short ? ' ' + r.error : ''), 6000);
+}
+
+// ── 입출고 내역 · 수불부 ──
 async function renderStockLog() {
+  const now = new Date();
+  const thisYm = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+  const ym = window._slMonth || thisYm;
+  const tab = window._slTab || 'log';
+  const rf = window._slReason || 'all';
   const r = await api('/api/master/stocklog');
-  const log = (r && r.log) || [];
+  const all = (r && r.log) || [];
+  const inMonth = all.filter(e => (e.date || '').startsWith(ym));
+  const log = rf === 'all' ? inMonth : inMonth.filter(e => e.reason === rf);
+  const shiftMonth = (s, d) => { const [y, m] = s.split('-').map(Number); const x = new Date(y, m - 1 + d, 1); return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0'); };
+  // 요약: 입고/출고 합계 + 구분별 (칩을 누르면 그 구분만)
+  const inSum = inMonth.filter(e => e.delta > 0).reduce((s, e) => s + e.delta, 0);
+  const outSum = inMonth.filter(e => e.delta < 0).reduce((s, e) => s - e.delta, 0);
+  const byReason = new Map();
+  for (const e of inMonth) byReason.set(e.reason, (byReason.get(e.reason) || 0) + Math.abs(e.delta));
+  const reasonChips = [...byReason.entries()].sort((a, b) => b[1] - a[1]).map(([reason, n]) =>
+    `<button class="big-btn ${rf === reason ? '' : 'gray'}" style="padding:0.35rem 0.8rem;font-size:0.9rem" onclick="window._slReason='${reason}';renderStockLog()">${(STOCK_REASON[reason] || ['•'])[0]} ${esc(reason)} <b>${n}</b></button>`).join(' ');
+  // 내역 탭: 날짜별
   const byDate = new Map();
-  for (const e of log) {
-    if (!byDate.has(e.date)) byDate.set(e.date, []);
-    byDate.get(e.date).push(e);
-  }
-  const groups = [...byDate.entries()].map(([date, rows]) => {
+  for (const e of log) { if (!byDate.has(e.date)) byDate.set(e.date, []); byDate.get(e.date).push(e); }
+  const logHtml = [...byDate.entries()].map(([date, rows]) => {
     const outN = rows.filter(x => x.delta < 0).reduce((s, x) => s - x.delta, 0);
     const inN = rows.filter(x => x.delta > 0).reduce((s, x) => s + x.delta, 0);
     const lines = rows.map(e => {
-      const [icon, color] = STOCK_REASON[e.reason] || ['•', '#555'];
-      const prod = esc(e.name) + (e.size ? ` <b>${esc(e.size)}</b>` : '') + (e.color ? ` <span class="muted">${esc(e.color)}</span>` : '');
+      const [icon] = STOCK_REASON[e.reason] || ['•'];
       return `<tr>
         <td style="white-space:nowrap">${icon} ${esc(e.reason)}</td>
-        <td>${prod}</td>
+        <td>${invLabel(e)}</td>
         <td style="text-align:center;font-weight:800;color:${e.delta < 0 ? '#c0392b' : '#1e7e46'}">${e.delta > 0 ? '+' : ''}${e.delta}</td>
         <td style="text-align:center">${e.left}</td>
-        <td>${e.ref ? esc(e.ref) + '님' : '<span class="muted">-</span>'}</td>
+        <td>${stockRefLabel(e)}</td>
         <td class="muted" style="white-space:nowrap">${new Date(e.ts).toTimeString().slice(0, 5)}</td>
       </tr>`;
     }).join('');
-    return `
-    <div class="card">
+    return `<div class="card">
       <div class="step-title">📅 ${date} <span class="muted" style="font-weight:400;font-size:0.95rem">— 출고 ${outN}개 · 입고 ${inN}개</span></div>
       <div style="overflow-x:auto"><table>
-        <tr><th>구분</th><th>제품</th><th>변동</th><th>남음</th><th>누구</th><th>시각</th></tr>
-        ${lines}
-      </table></div>
-    </div>`;
+        <tr><th>구분</th><th>제품</th><th style="text-align:center">변동</th><th style="text-align:center">남음</th><th>상대·메모</th><th>시각</th></tr>${lines}
+      </table></div></div>`;
   }).join('');
+  // 수불부 탭: SKU별 기초 → 입고 → 출고 → 기말 (기말은 현재 재고에서 이후 변동을 되감아 계산)
+  const skuOf = e => e.sku || (e.name + '|' + (e.color || '') + '|' + (e.size || ''));
+  const ledger = new Map();
+  for (const i of DB.inventory) {
+    const k = i.sku || (i.name + '|' + (i.color || '') + '|' + (i.size || ''));
+    ledger.set(k, { name: i.name, color: i.color || '', size: i.size || '', now: Number(i.qty) || 0, inN: 0, outN: 0, after: 0, since: 0 });
+  }
+  const monthEnd = ym + '-31';
+  for (const e of all) {
+    const k = skuOf(e);
+    if (!ledger.has(k)) ledger.set(k, { name: e.name, color: e.color || '', size: e.size || '', now: Number(e.left) || 0, inN: 0, outN: 0, after: 0, since: 0 });
+    const row = ledger.get(k);
+    if (e.date > monthEnd) row.after += e.delta;
+    if (e.date >= ym + '-01') row.since += e.delta;
+    if ((e.date || '').startsWith(ym)) { if (e.delta > 0) row.inN += e.delta; else row.outN -= e.delta; }
+  }
+  const ledgerRows = [...ledger.values()].map(row => ({ ...row, end: row.now - row.after, start: row.now - row.since }))
+    .filter(row => row.inN || row.outN || row.end > 0)
+    .sort((a, b) => (b.inN + b.outN) - (a.inN + a.outN) || a.name.localeCompare(b.name));
+  const tot = ledgerRows.reduce((s, r2) => ({ start: s.start + r2.start, inN: s.inN + r2.inN, outN: s.outN + r2.outN, end: s.end + r2.end }), { start: 0, inN: 0, outN: 0, end: 0 });
+  const ledgerHtml = `<div class="card"><div style="overflow-x:auto"><table>
+    <tr><th>제품 / 사이즈</th><th style="text-align:center">기초</th><th style="text-align:center;color:#1e7e46">입고 +</th><th style="text-align:center;color:#c0392b">출고 −</th><th style="text-align:center">기말</th></tr>
+    ${ledgerRows.map(row => `<tr>
+      <td>${invLabel(row)}</td>
+      <td style="text-align:center">${row.start}</td>
+      <td style="text-align:center;color:#1e7e46;font-weight:${row.inN ? 800 : 400}">${row.inN || '<span class="muted">-</span>'}</td>
+      <td style="text-align:center;color:#c0392b;font-weight:${row.outN ? 800 : 400}">${row.outN || '<span class="muted">-</span>'}</td>
+      <td style="text-align:center;font-weight:800;${row.end <= 0 ? 'color:var(--red)' : ''}">${row.end}</td>
+    </tr>`).join('')}
+    <tr style="background:#eef1f7;font-weight:800"><td>합계 (${ledgerRows.length}종)</td><td style="text-align:center">${tot.start}</td><td style="text-align:center;color:#1e7e46">${tot.inN}</td><td style="text-align:center;color:#c0392b">${tot.outN}</td><td style="text-align:center">${tot.end}</td></tr>
+  </table></div>
+  <div class="hint" style="margin-top:0.6rem">기초 = 그 달 1일 시작 재고, 기말 = 말일 재고. 이번 달은 기말이 지금 재고와 같아요. 움직임이 없고 재고도 0인 제품은 숨겨요.</div></div>`;
+  const tabBtn = (key, label) => `<button class="big-btn ${tab === key ? '' : 'gray'}" style="padding:0.45rem 1rem" onclick="window._slTab='${key}';renderStockLog()">${label}</button>`;
   main().innerHTML = `
-    <h1>📜 입출고 내역</h1>
-    <div class="sub">재고가 바뀔 때마다 자동으로 적히는 장부예요. 옷을 보내면 <b style="color:#c0392b">출고 −</b>, ＋버튼·반품 도착은 <b style="color:#1e7e46">입고 +</b>.</div>
-    <div style="margin-bottom:1rem"><button class="big-btn gray" onclick="go('inventory')">← 재고로 돌아가기</button></div>
-    ${groups || '<div class="card"><div class="muted" style="font-size:1.1rem">아직 기록이 없어요. 이제부터 재고가 바뀔 때마다 여기에 쌓여요.</div></div>'}`;
+    <h1>📜 입출고 내역 · 수불부</h1>
+    <div class="sub">재고가 바뀔 때마다 자동으로 적히는 장부예요. 발송하면 <b style="color:#c0392b">출고 −</b>, 입고·반품 도착은 <b style="color:#1e7e46">입고 +</b>.</div>
+    <div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;margin-bottom:0.8rem">
+      <button class="big-btn gray" onclick="go('inventory')">← 재고</button>
+      <button class="big-btn gray" style="padding:0.45rem 0.8rem" onclick="window._slMonth='${shiftMonth(ym, -1)}';window._slReason='all';renderStockLog()">◀</button>
+      <b style="font-size:1.15rem">${ym.replace('-', '년 ')}월</b>
+      <button class="big-btn gray" style="padding:0.45rem 0.8rem" ${ym >= thisYm ? 'disabled style="opacity:0.4"' : ''} onclick="window._slMonth='${shiftMonth(ym, 1)}';window._slReason='all';renderStockLog()">▶</button>
+      <span style="flex:1"></span>
+      ${tabBtn('log', '📋 내역')} ${tabBtn('ledger', '📊 수불부')}
+    </div>
+    <div class="inv-stats" style="grid-template-columns:repeat(auto-fit,minmax(120px,1fr))">
+      <div class="stat"><div class="n" style="color:#1e7e46">+${inSum}</div><div class="l">이달 입고</div></div>
+      <div class="stat"><div class="n" style="color:#c0392b">−${outSum}</div><div class="l">이달 출고</div></div>
+      <div class="stat"><div class="n">${inMonth.length}</div><div class="l">기록 건수</div></div>
+    </div>
+    ${byReason.size ? `<div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-bottom:0.9rem"><button class="big-btn ${rf === 'all' ? '' : 'gray'}" style="padding:0.35rem 0.8rem;font-size:0.9rem" onclick="window._slReason='all';renderStockLog()">전체</button> ${reasonChips}</div>` : ''}
+    ${tab === 'ledger' ? ledgerHtml : (logHtml || '<div class="card"><div class="muted" style="font-size:1.05rem">이 달에는 기록이 없어요.</div></div>')}`;
   injectHelp();
 }
 async function invDel(id) {
@@ -2212,10 +2339,14 @@ async function uploadFile(which, file) {
     toast('⚠️ 파일이 너무 커요. 10MB 이하 엑셀 또는 CSV 파일을 골라 주세요.', 7000);
     return;
   }
+  // 주문 엑셀은 화면에서 고른 판매채널을 함께 보낸다 (옛 'cafe24' 드롭존 호출도 같은 경로)
+  const channelSel = document.getElementById('upload-channel');
+  const channel = (which === 'orders' || which === 'cafe24') ? (channelSel ? channelSel.value : 'cafe24') : '';
+  if (which === 'cafe24') which = 'orders';
   busy(true, '파일을 읽는 중…');
   try {
     const buf = await file.arrayBuffer();
-    const r = await api('/api/upload/' + which, {
+    const r = await api('/api/upload/' + which + (channel ? '?channel=' + encodeURIComponent(channel) : ''), {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream', 'X-File-Name': encodeURIComponent(file.name) },
       body: buf
@@ -2223,9 +2354,10 @@ async function uploadFile(which, file) {
     busy(false);
     if (r.error) { toast('⚠️ ' + r.error, 7000); return; }
     adoptDb(r.db);
-    if (which === 'cafe24') {
+    if (which === 'orders') {
       render();
-      toast(`✔️ 주문 ${r.added}건을 새로 가져왔어요.` + (r.total - r.added > 0 ? ` (이미 있던 ${r.total - r.added}건은 건너뜀)` : ''), 6000);
+      const chName = { cafe24: '카페24', '29cm': '29CM', musinsa: '무신사', other: '기타 채널' }[r.channel] || '';
+      toast(`✔️ ${chName} 주문 ${r.added}건을 새로 가져왔어요.` + (r.total - r.added > 0 ? ` (이미 있던 ${r.total - r.added}건은 건너뜀)` : ''), 6000);
     } else {
       render();
       const box = $('#invoice-result');

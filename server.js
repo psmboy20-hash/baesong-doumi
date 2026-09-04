@@ -1750,6 +1750,9 @@ function parseSeedingSheet(ws, schemaOut) {
 }
 
 // ---------- 주문 시트/카페24 엑셀 파싱 ----------
+// 엑셀로 넣을 수 있는 판매채널 (주문 수집 자동 연동은 카페24만; 나머지는 채널 어드민에서 내려받은 주문 엑셀)
+const ORDER_CHANNELS = { cafe24: '카페24', '29cm': '29CM', musinsa: '무신사', other: '기타 채널' };
+
 function parseOrderRows(rows) {
   // 헤더 행 찾기 (앞 10행 안에서 '수령인'류 + '주소'류가 함께 있는 행)
   let hIdx = -1;
@@ -1762,16 +1765,16 @@ function parseOrderRows(rows) {
   const H = rows[hIdx];
   const col = {
     orderNo: findCol(H, ['주문번호']),
-    name: findCol(H, ['수령인', '받는사람', '받는분', '수취인']),
-    phone: findCol(H, ['수령인휴대전화', '수취인휴대전화', '받는사람휴대전화', '수령인전화', '휴대전화', '핸드폰', '휴대폰', '연락처', '전화번호']),
+    name: findCol(H, ['수령인', '받는사람', '받는분', '수취인', '수령자', '수하인']),
+    phone: findCol(H, ['수령인휴대전화', '수취인휴대전화', '받는사람휴대전화', '수령인전화', '수취인연락처', '수령인연락처', '휴대전화', '핸드폰', '휴대폰', '연락처', '전화번호', '전화']),
     zip: findCol(H, ['수령인우편번호', '수취인우편번호', '우편번호']),
-    addr: findCol(H, ['수령인주소', '수취인주소', '받는사람주소', '배송지주소', '주소']),
-    product: findCol(H, ['제품명', '상품명', '품목', '주문상품']),
+    addr: findCol(H, ['수령인주소', '수취인주소', '받는사람주소', '배송지주소', '배송주소', '주소']),
+    product: findCol(H, ['제품명', '상품명', '품목', '주문상품', '상품']),
     color: findCol(H, ['컬러', '색상']),
     size: findCol(H, ['사이즈']),
-    option: findCol(H, ['옵션']),
-    qty: findCol(H, ['수량']),
-    msg: findCol(H, ['배송메시지', '배송메세지', '메시지', '메세지']),
+    option: findCol(H, ['옵션정보', '상품옵션', '옵션']),
+    qty: findCol(H, ['주문수량', '수량']),
+    msg: findCol(H, ['배송메시지', '배송메세지', '배송요청사항', '요청사항', '메시지', '메세지']),
     courier: findCol(H, ['택배사', '배송사']),
     invoice: findCol(H, ['운송장', '송장번호']),
     sentDate: findCol(H, ['발송일', '배송일'])
@@ -2238,6 +2241,16 @@ function prepareReturnCompletion(db, ret, restock) {
 }
 
 // 재고 변동 장부: 입고/출고/복구가 일어날 때마다 한 줄씩 남긴다 (입출고 내역 화면·마스터 API용)
+// 재고수불 구분 — 화면·수불부·마스터 API가 같은 이름을 쓴다
+const STOCK_MOVE_REASONS = {
+  in: ['본사 입고', '반품 입고', '교환 회수 입고', '입고 (직접)', '재고 조정 (+)'],
+  out: ['주문 출고', '시딩 출고', '교환 재발송 출고', '샘플 출고', '본사 출고', '폐기·불량', '차감 (직접)', '재고 조정 (−)']
+};
+function shipmentStockReason(type, item) {
+  if (type === 'seeding' || (item && item.sourceChannel === 'seeding')) return '시딩 출고';
+  if (item && (item.exchange || item.sourceChannel === 'exchange')) return '교환 재발송 출고';
+  return '주문 출고';
+}
 function logStock(db, inv, delta, reason, ref) {
   if (!db.stockLog) db.stockLog = [];
   db.stockLog.push({
@@ -2509,7 +2522,7 @@ async function postProcessShipped(db, matchedItems) {
       if (!deduction.deducted) continue;
       row.inv.qty = deduction.left;
       results.stock.push({ sku, name: [row.inv.name, row.inv.color, row.inv.size].filter(Boolean).join(' '), minus: deduction.deducted, left: row.inv.qty });
-      logStock(db, row.inv, -deduction.deducted, '출고', stockLedgerRef(item, type));
+      logStock(db, row.inv, -deduction.deducted, shipmentStockReason(type, item), stockLedgerRef(item, type));
       recordStockDeduction(item, sku, deduction.deducted);
     }
     item.stockDeducted = getStockDeductions(item).length > 0;
@@ -2761,7 +2774,15 @@ const server = http.createServer((req, res) => {
         }
       }
       const applied = inv.qty - before;
-      if (applied) logStock(db, inv, applied, applied > 0 ? '입고 (직접)' : '차감 (직접)', '');
+      // 입출고 구분(본사 입고·샘플 출고 등)과 메모는 화면에서 고른 값을 쓰고, 없으면 직접 입고/차감으로
+      const wanted = String(b.reason || '').trim();
+      const allowedReasons = applied > 0 ? STOCK_MOVE_REASONS.in : STOCK_MOVE_REASONS.out;
+      const reason = allowedReasons.includes(wanted) ? wanted : (applied > 0 ? '입고 (직접)' : '차감 (직접)');
+      if (applied) logStock(db, inv, applied, reason, String(b.memo || '').trim().slice(0, 80));
+      if (Math.abs(applied) < Math.abs(d)) {
+        saveDb(db);
+        return sendJson(res, 200, { ok: true, db, short: true, applied, error: `재고가 ${before}개뿐이라 ${Math.abs(applied)}개만 뺐어요.` });
+      }
       saveDb(db);
       audit('inventory.adjust', { ref: inv.sku || inventorySku(inv), count: applied, rev: db.rev });
       return sendJson(res, 200, { ok: true, db });
@@ -3018,8 +3039,10 @@ const server = http.createServer((req, res) => {
       const resolved = resolvePackingMergeSelection(db, b.selected || []);
       if (resolved.error) return sendJson(res, 200, { error: resolved.error });
       const picked = resolved.picked;
+      // 화면(item-lines normalizedRecipient)과 같은 기준: 우편번호 표기·모든 공백 제거 (띄어쓰기 차이로 합포가 거절되지 않게)
+      const mergeAddr = a => String(a || '').replace(/\((\d{5})\)/g, '').replace(/\(우\)?\s*\d{5}\)?/g, '').replace(/우편번호[:\s]*\d{5}/g, '').replace(/\s+/g, '').trim();
       const recipientKeys = new Set(picked.map(({ item }) =>
-        normName(item.name) + '|' + phoneDigits(item.phone) + '|' + cleanAddr(item.addr)
+        normName(item.name) + '|' + phoneDigits(item.phone) + '|' + mergeAddr(item.addr)
       ));
       if (recipientKeys.size !== 1) return sendJson(res, 200, { error: '받는 사람·연락처·주소가 모두 같은 것만 한 비닐로 묶을 수 있어요.' });
       const packGroupId = 'PACK-' + Date.now().toString(36).toUpperCase();
@@ -3622,7 +3645,10 @@ const server = http.createServer((req, res) => {
       saveDb(db);
       return sendJson(res, 200, { ok: true });
     }
-    if (url.pathname === '/api/upload/cafe24' && req.method === 'POST') {
+    if ((url.pathname === '/api/upload/cafe24' || url.pathname === '/api/upload/orders') && req.method === 'POST') {
+      // 판매채널 주문 엑셀 넣기 — 카페24(자동 연동 안 될 때) · 29CM · 무신사 · 기타 (열 이름은 자동 인식)
+      const channel = String(url.searchParams.get('channel') || 'cafe24').toLowerCase();
+      if (!ORDER_CHANNELS[channel]) return sendJson(res, 400, { error: '알 수 없는 판매채널이에요.' });
       const buf = await readBody(req, 10 * 1024 * 1024);
       let fileName = '';
       try { fileName = decodeURIComponent(String(req.headers['x-file-name'] || '')); } catch (e) { fileName = ''; }
@@ -3636,10 +3662,16 @@ const server = http.createServer((req, res) => {
       const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
       const parsed = parseOrderRows(rows);
       if (parsed.error) return sendJson(res, 200, { error: parsed.error });
+      for (const item of parsed.items) {
+        item.sourceChannel = channel;
+        // 채널마다 주문번호 체계가 달라 겹칠 수 있으니 채널 접두어로 구분 (카페24는 기존 그대로)
+        if (channel !== 'cafe24' && item.orderNo && !item.orderNo.startsWith(channel.toUpperCase() + '-')) item.orderNo = channel.toUpperCase() + '-' + item.orderNo;
+      }
       const db = loadDb();
       const r = mergeOrders(db, parsed.items);
       saveDb(db);
-      return sendJson(res, 200, { ok: true, added: r.added, updated: r.updated, total: parsed.items.length, db });
+      audit('orders.upload', { channel, added: r.added, total: parsed.items.length });
+      return sendJson(res, 200, { ok: true, channel, added: r.added, updated: r.updated, total: parsed.items.length, db });
     }
     if (url.pathname === '/api/upload/invoice' && req.method === 'POST') {
       const buf = await readBody(req, 10 * 1024 * 1024);

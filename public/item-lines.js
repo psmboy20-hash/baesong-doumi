@@ -158,40 +158,54 @@
     return name && phone && addr ? name + '|' + phone + '|' + addr : '';
   }
 
+  // 받는 사람이 같은데 따로 나갈 택배(주문끼리 · 시딩끼리 · 주문+시딩)를 찾아 합포장을 권한다
+  // 단위: 카페24 주문은 주문번호, 시딩은 시트 행(건) 하나
+  function mergeUnitOf(entry) {
+    const item = entry && entry.x;
+    if (!item) return '';
+    if (entry.kind === 'orders' && item.orderNo) return 'order:' + String(item.orderNo).trim();
+    if (entry.kind === 'seeding') return 'seeding:' + String(item.id);
+    return '';
+  }
   function cafe24MergeSuggestions(entries, allEntries) {
-    const blockedOrderNos = new Set();
+    const blocked = new Set();
     for (const entry of (allEntries || entries || [])) {
       const item = entry && entry.x;
-      if (!item || entry.kind !== 'orders' || !item.orderNo || item.status === '취소됨') continue;
+      const unit = mergeUnitOf(entry);
+      if (!item || !unit || item.status === '취소됨') continue;
       if (item.packGroupId || item.parcelSplitId || item.shippingHold ||
           String(item.status || '대기') !== '대기' || item.epost || item.invoice ||
           item.epostOp && ['pending', 'unknown'].includes(item.epostOp.state)) {
-        blockedOrderNos.add(String(item.orderNo).trim());
+        blocked.add(unit);
       }
     }
     const recipients = new Map();
     for (const entry of (entries || [])) {
       const item = entry && entry.x;
-      if (!item || entry.kind !== 'orders' || !item.orderNo || blockedOrderNos.has(String(item.orderNo).trim())) continue;
+      const unit = mergeUnitOf(entry);
+      if (!item || !unit || blocked.has(unit)) continue;
       if (String(item.status || '대기') !== '대기' || item.epost || item.invoice) continue;
       if (item.epostOp && ['pending', 'unknown'].includes(item.epostOp.state)) continue;
       const recipient = normalizedRecipient(item);
       if (!recipient) continue;
       if (!recipients.has(recipient)) recipients.set(recipient, new Map());
-      const orders = recipients.get(recipient);
-      const orderNo = String(item.orderNo).trim();
-      if (!orders.has(orderNo)) orders.set(orderNo, []);
-      orders.get(orderNo).push(entry);
+      const units = recipients.get(recipient);
+      if (!units.has(unit)) units.set(unit, []);
+      units.get(unit).push(entry);
     }
     const suggestions = [];
-    for (const [recipientKey, orders] of recipients) {
-      if (orders.size < 2) continue;
-      const orderNos = [...orders.keys()];
-      const groupedEntries = orderNos.flatMap(orderNo => orders.get(orderNo));
+    for (const [recipientKey, units] of recipients) {
+      if (units.size < 2) continue;
+      const unitKeys = [...units.keys()];
+      const groupedEntries = unitKeys.flatMap(key => units.get(key));
       suggestions.push({
         recipientKey,
         name: groupedEntries[0].x.name || '',
-        orderNos,
+        orderNos: unitKeys,
+        units: {
+          orders: unitKeys.filter(key => key.startsWith('order:')).length,
+          seeding: unitKeys.filter(key => key.startsWith('seeding:')).length
+        },
         entries: groupedEntries
       });
     }

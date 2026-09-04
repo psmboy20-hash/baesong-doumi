@@ -151,7 +151,7 @@ test('분리배송 번호가 우연히 같아도 다른 주문이나 시딩은 �
   assert.equal(fulfillmentKey('seeding', seed), 'seeding|3');
 });
 
-test('같은 수취인의 서로 다른 Cafe24 주문만 합포를 권유한다', () => {
+test('같은 수취인에게 따로 나갈 택배(주문·시딩)가 2건 이상이면 합포를 권유한다', () => {
   const common = { name: '고객', phone: '010-1111-2222', addr: '서울시 같은 주소', status: '대기' };
   const suggestions = cafe24MergeSuggestions([
     { kind: 'orders', x: { ...common, id: 1, orderNo: 'ORDER-A', product: 'Clara' } },
@@ -160,8 +160,19 @@ test('같은 수취인의 서로 다른 Cafe24 주문만 합포를 권유한다'
     { kind: 'orders', x: { ...common, id: 4, orderNo: 'ORDER-A', product: 'June' } }
   ]);
   assert.equal(suggestions.length, 1);
-  assert.deepEqual(suggestions[0].orderNos, ['ORDER-A', 'ORDER-B']);
-  assert.deepEqual(suggestions[0].entries.map(entry => entry.x.id), [1, 4, 2]);
+  // 단위: 주문은 주문번호, 시딩은 행(건) — 같은 주문의 두 줄(1·4)은 한 단위
+  assert.deepEqual(suggestions[0].orderNos, ['order:ORDER-A', 'order:ORDER-B', 'seeding:3']);
+  assert.deepEqual(suggestions[0].units, { orders: 2, seeding: 1 });
+  assert.deepEqual(suggestions[0].entries.map(entry => entry.x.id), [1, 4, 2, 3]);
+  // 시딩 한 건뿐이면 합칠 상대가 없으니 권유하지 않는다
+  assert.deepEqual(cafe24MergeSuggestions([{ kind: 'seeding', x: { ...common, id: 9, product: 'Solo' } }]), []);
+  // 시딩 + 주문 1건씩이어도 택배 2건이므로 권유한다
+  const mixed = cafe24MergeSuggestions([
+    { kind: 'seeding', x: { ...common, id: 5, product: 'June' } },
+    { kind: 'orders', x: { ...common, id: 6, orderNo: 'ORDER-C', product: 'Clara' } }
+  ]);
+  assert.equal(mixed.length, 1);
+  assert.deepEqual(mixed[0].units, { orders: 1, seeding: 1 });
 });
 
 test('한 품목이라도 분리한 주문 전체는 다른 주문과 합포로 권유하지 않는다', () => {
