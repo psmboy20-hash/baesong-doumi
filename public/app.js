@@ -372,6 +372,7 @@ function render() {
   else if (PAGE === 'shipping') renderShipping();
   else if (PAGE === 'returns') renderReturns();
   else if (PAGE === 'inventory') renderInventory();
+  else if (PAGE === 'stocklog') renderStockLog(); // 페이지로 등록해야 30초 자동 새로고침에 재고 화면으로 튕기지 않는다
   else if (PAGE === 'settings') renderSettings();
   injectHelp();
   updateNavBadge();
@@ -562,7 +563,7 @@ function dashGrid(all) {
       ${retRows || '<div class="muted" style="font-size:0.92rem;padding:0.3rem 0">진행 중인 건이 없어요. ✓</div>'}
     </div>
     <div class="card">
-      <div class="dash-title">📜 최근 입출고 <button class="link-btn more" onclick="renderStockLog()">전체 →</button></div>
+      <div class="dash-title">📜 최근 입출고 <button class="link-btn more" onclick="go('stocklog')">전체 →</button></div>
       ${logRows || '<div class="muted" style="font-size:0.92rem;padding:0.3rem 0">아직 기록이 없어요.</div>'}
     </div>
     <div class="card">
@@ -1652,7 +1653,7 @@ function renderInventory() {
     <div style="margin-bottom:1rem; display:flex; gap:0.8rem; flex-wrap:wrap">
       <button class="big-btn" onclick="invAddForm()">➕ 새 제품 넣기</button>
       <button class="big-btn green" onclick="invMoveForm()">📥📤 입고·출고 등록</button>
-      <button class="big-btn" style="background:#5a6478" onclick="renderStockLog()">📜 입출고 내역·수불부</button>
+      <button class="big-btn" style="background:#5a6478" onclick="go('stocklog')">📜 입출고 내역·수불부</button>
       ${DB.products && DB.products.length ? `<button class="big-btn orange" onclick="invImportProducts()">📥 카페24 제품 전부 불러오기</button>` : ''}
     </div>
     <div id="inv-form"></div>
@@ -1855,6 +1856,8 @@ async function invMoveSave() {
 
 // ── 입출고 내역 · 수불부 ──
 async function renderStockLog() {
+  PAGE = 'stocklog';
+  document.querySelectorAll('nav button').forEach(b => b.classList.toggle('active', b.dataset.page === 'inventory')); // 재고 메뉴의 하위 화면
   const now = new Date();
   const thisYm = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
   const ym = window._slMonth || thisYm;
