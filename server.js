@@ -1583,6 +1583,9 @@ async function syncAll() {
           changed = true;
         }
       }
+      // 발송은 됐는데 카페24 송장 등록이 실패/불확실로 남은 건 — 기존 송장 조회 후 안전하게 재시도
+      try { if (await retryCafe24Shipments(db)) changed = true; }
+      catch (error) { console.error('카페24 송장 재시도 실패:', error.message); }
       for (const ret of db.returns.filter(row => row.sourceChannel === 'cafe24' && row.syncOps)) {
         const stage = cafe24ClaimStage(ret.cafe24OrderStatus);
         const resolved = {
@@ -2031,11 +2034,26 @@ function buildParcelGroups(db, selected) {
           String(o.product || '').trim() === String(item.product || '').trim());
       }
       if (prev) {
-        dups.push({ type: sel.type, id: item.id, name: item.name, product: String(item.product || '').split('\n')[0], prevInvoice: prev.invoice || '' });
+        dups.push({ type: sel.type, id: item.id, key: fulfillmentKey(itemType, item), name: item.name, product: String(item.product || '').split('\n')[0], prevInvoice: prev.invoice || '' });
         continue;
       }
     }
     pick.push({ type: sel.type, item });
+  }
+  // 중복으로 막힌 상품이 있는 포장은 통째로 멈춘다 — 형제 상품만 빠진 택배가 나가지 않게
+  const dupKeys = new Set(dups.map(d => d.key));
+  if (dupKeys.size) {
+    const kept = [];
+    const blockedNames = new Map();
+    for (const entry of pick) {
+      const k = fulfillmentKey(entry.type === 'seeding' ? 'seeding' : 'order', entry.item);
+      if (dupKeys.has(k)) { if (!blockedNames.has(k)) blockedNames.set(k, entry.item.name); continue; }
+      kept.push(entry);
+    }
+    pick.length = 0; pick.push(...kept);
+    for (const [k, name] of blockedNames) {
+      conflicts.push({ key: k, name, reason: '같은 포장에 이미 보낸 것과 같은 상품이 있어 포장 전체를 접수하지 않았어요. 그 상품을 [한 번 더 보내기]로 확인하거나 목록에서 빼 주세요.' });
+    }
   }
   for (const { type, item } of pick) {
     const itemType = type === 'seeding' ? 'seeding' : 'order';
@@ -2498,8 +2516,16 @@ async function postProcessShipped(db, matchedItems) {
     item.stockDeductionIncomplete = missing;
   }
 
-  // 2) 카페24에 송장번호 자동 등록 + 배송중 처리 (주문건만)
-  results.cafe24 = [];
+  // 2) 카페24에 송장번호 자동 등록 + 배송중 처리 (주문건만) — 실패분은 syncAll이 같은 함수로 재시도
+  results.cafe24 = await pushCafe24Shipments(db, matchedItems);
+
+  // 3) 구글시트에 송장 자동 기록 (시딩건만, 웹훅 설정 시)
+  return await finishPostProcessShipped(db, matchedItems, results);
+}
+
+// 카페24 송장 등록 (등록 전에 기존 송장을 조회해 같은 구성이면 성공으로 대사 → 재시도해도 중복 등록 없음)
+async function pushCafe24Shipments(db, matchedItems) {
+  const results = [];
   if (cafe24Configured(db) && db.cafe24Token) {
     const groupedOrders = groupCafe24ShipmentItems(matchedItems);
     for (const { orderNo, invoice, items } of groupedOrders) {
@@ -2508,12 +2534,12 @@ async function postProcessShipped(db, matchedItems) {
       if (!cafe24ShipmentItemsReady(items)) {
         const message = '이 송장에 카페24 품목코드가 없는 상품이 있어 전체 자동 배송처리를 멈췄어요.';
         for (const item of items) setExternalSyncState(item, 'cafe24', 'shipment', 'failed', message, operationKey);
-        results.cafe24.push({ orderNo, ok: false, error: message });
+        results.push({ orderNo, ok: false, error: message });
         continue;
       }
       if (items.every(item => item.syncOps && item.syncOps.cafe24Shipment &&
         item.syncOps.cafe24Shipment.key === operationKey && item.syncOps.cafe24Shipment.state === 'success')) {
-        results.cafe24.push({ orderNo, ok: true, itemCount: itemCodes.length, skipped: true });
+        results.push({ orderNo, ok: true, itemCount: itemCodes.length, skipped: true });
         continue;
       }
       for (const item of items) setExternalSyncState(item, 'cafe24', 'shipment', 'pending', '', operationKey);
@@ -2524,20 +2550,41 @@ async function postProcessShipped(db, matchedItems) {
         for (const o of db.orders) {
           if (o.orderNo !== orderNo || !completedCodes.has(String(o.orderItemCode || ''))) continue;
           o.cafe24Shipped = true;
+          delete o.cafe24ShipRetries;
           clearExternalSyncState(o, 'cafe24', 'shipment', operationKey);
         }
-        results.cafe24.push({ orderNo, ok: true, itemCount: itemCodes.length });
+        results.push({ orderNo, ok: true, itemCount: itemCodes.length });
       } catch (e) {
         const state = e.responseReceived ? 'failed' : 'unknown';
         const message = state === 'unknown'
-          ? '카페24 응답이 중간에 끊겨 송장 등록 여부를 확인 중이에요. 중복 방지를 위해 바로 다시 등록하지 않습니다.'
-          : e.message;
+          ? '카페24 응답이 중간에 끊겨 송장 등록 여부를 확인 중이에요. 다음 동기화 때 기존 송장을 조회한 뒤 안전하게 다시 시도합니다.'
+          : e.message + ' (다음 동기화 때 자동으로 다시 시도해요)';
         for (const item of items) setExternalSyncState(item, 'cafe24', 'shipment', state, message, operationKey);
-        results.cafe24.push({ orderNo, ok: false, error: e.message });
+        results.push({ orderNo, ok: false, error: e.message });
       }
     }
   }
+  return results;
+}
 
+// 카페24 송장 등록이 실패/불확실로 남은 발송 건을 골라 다시 시도 (30분 간격, 최대 20회)
+async function retryCafe24Shipments(db) {
+  if (!(cafe24Configured(db) && db.cafe24Token)) return 0;
+  const now = Date.now();
+  const due = (db.orders || []).filter(o => {
+    if (o.status !== '발송완료' || !o.invoice || !o.orderNo || o.cafe24Shipped) return false;
+    const op = o.syncOps && o.syncOps.cafe24Shipment;
+    if (!op || !['failed', 'unknown'].includes(op.state)) return false;
+    if ((o.cafe24ShipRetries || 0) >= 20) return false;
+    return now - (Date.parse(op.at) || 0) >= 30 * 60 * 1000;
+  }).slice(0, 5);
+  if (!due.length) return 0;
+  for (const o of due) o.cafe24ShipRetries = (o.cafe24ShipRetries || 0) + 1;
+  await pushCafe24Shipments(db, due.map(item => ({ type: 'order', item })));
+  return due.length;
+}
+
+async function finishPostProcessShipped(db, matchedItems, results) {
   // 3) 구글시트에 송장 자동 기록 (시딩건만, 웹훅 설정 시)
   results.sheet = null;
   const wh = (db.settings.sheetWebhookUrl || '').trim();

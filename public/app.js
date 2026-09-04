@@ -413,13 +413,27 @@ function renderHome() {
   const retThis = (DB.returns || []).filter(x => (x.regDate || '').startsWith(ym) && x.status !== '취소됨').length;
   const lowStock = DB.inventory.filter(i => i.qty <= 2).length;
   const syncIssues = externalSyncIssues();
-  const syncIssueCard = syncIssues.length ? `
+  // 처리가 필요한 것 허브 — 알림을 앱 안에서만 받기로 했으니, 사람이 봐야 할 일은 전부 여기 모은다
+  const daysSince = d => d ? Math.floor((Date.now() - new Date(d)) / 86400000) : 0;
+  const attention = [];
+  for (const { item, issue } of syncIssues) attention.push({ icon: '🔌', page: 'shipping', who: item.name || item.orderNo || '배송건', what: ({ cafe24: '카페24', sheet: '구글시트', epost: '우체국' }[issue.system] || issue.system) + ' · ' + issue.message });
+  for (const x of all) {
+    if (x.status !== '발송완료' || x.delivered) continue;
+    const d = daysSince(x.sentDate);
+    if (x.epost && ['00', '01', '02'].includes(x.epost.stus) && d >= 3) attention.push({ icon: '📦', page: 'epost', who: x.name, what: `접수 ${d}일째인데 기사님이 아직 안 가져갔어요 — 상자가 매장에 있는지 확인` });
+    else if (d >= 7) attention.push({ icon: '⏰', page: 'shipping', who: x.name, what: `보낸 지 ${d}일째 배달 확인이 안 돼요 — 받았다면 [배달 끝 처리]` });
+    if (x.epostOp && ['pending', 'unknown'].includes(x.epostOp.state)) attention.push({ icon: '❓', page: 'epost', who: x.name, what: '우체국 접수 결과를 확인 중이에요 — [진행상태 새로고침]' });
+  }
+  for (const r of (DB.returns || [])) {
+    if (r.status === '회수중' && daysSince(r.regDate) >= 7) attention.push({ icon: '🔁', page: 'returns', who: r.name, what: `회수 신청 ${daysSince(r.regDate)}일째 — 물건이 왔으면 [물건 도착 확인]` });
+  }
+  const syncIssueCard = attention.length ? `
     <div class="card" style="border:2px solid #f4b942;background:#fffaf0;margin-top:1rem">
-      <div class="step-title">⚠️ 연동 확인이 필요한 것 ${syncIssues.length}건</div>
-      <div class="hint" style="margin-bottom:0.7rem">우체국 접수는 끝났지만 카페24나 시트 기록을 다시 확인해야 해요. 중복 접수는 막아 두었습니다.</div>
-      ${syncIssues.slice(0, 6).map(({ item, issue }) => `<div class="mini-row">
-        <span class="grow"><b>${esc(item.name || item.orderNo || '배송건')}</b> · ${{ cafe24: '카페24', sheet: '구글시트', epost: '우체국' }[issue.system] || esc(issue.system)}<br><span class="muted">${esc(issue.message)}</span></span>
+      <div class="step-title">⚠️ 처리가 필요한 것 ${attention.length}건</div>
+      ${attention.slice(0, 8).map(a => `<div class="mini-row" style="cursor:pointer" onclick="go('${a.page}')">
+        <span>${a.icon}</span><span class="grow"><b>${esc(a.who)}</b> · <span class="muted">${esc(a.what)}</span></span><span class="muted">→</span>
       </div>`).join('')}
+      ${attention.length > 8 ? `<div class="muted" style="font-size:0.9rem;margin-top:0.3rem">외 ${attention.length - 8}건</div>` : ''}
       <button class="big-btn" style="margin-top:0.8rem" onclick="doSync()">🔄 지금 다시 확인하기</button>
     </div>` : '';
   main().innerHTML = `
