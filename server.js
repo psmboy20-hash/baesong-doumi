@@ -2537,6 +2537,32 @@ async function postProcessShipped(db, matchedItems) {
   return await finishPostProcessShipped(db, matchedItems, results);
 }
 
+// 접수 직전 이중 접수 방지: 카페24에 이미 이 주문의 송장이 있으면(매장 PC 등 다른 곳에서 먼저 접수) 여기서 또 접수하지 않는다
+async function cafe24ExistingShipment(db, orderNo) {
+  if (!(cafe24Configured(db) && db.cafe24Token) || !orderNo) return null;
+  const token = await cafe24EnsureToken(db);
+  const r = await cafe24Fetch(db, token, `/api/v2/admin/orders/${orderNo}/shipments`);
+  if (r.status !== 200 || !r.json) throw new Error('카페24 송장 확인 실패(' + r.status + ')');
+  const hit = (r.json.shipments || []).find(s => String(s.tracking_no || '').replace(/\D/g, ''));
+  if (!hit) return null;
+  return { tracking: String(hit.tracking_no).replace(/\D/g, ''), carrierCode: String(hit.shipping_company_code || ''), updatedAt: hit.tracking_no_updated_date || '' };
+}
+// 다른 곳에서 이미 접수된 주문을 그 송장으로 '보냄' 처리 (우리 접수는 하지 않음)
+function adoptExternalShipment(db, g, found) {
+  const courier = found.carrierCode === '0012' ? '우체국' : '기타';
+  for (const { type, item } of g.items) {
+    if (type !== 'order') continue;
+    item.invoice = found.tracking;
+    item.courier = courier;
+    item.status = '발송완료';
+    item.sentDate = today();
+    item.cafe24Shipped = true;
+    item.deliverySource = 'external';
+    item.externalShipmentNote = '카페24에 이미 등록된 송장으로 정리 (다른 곳에서 접수됨)';
+    delete item.resendOk;
+  }
+}
+
 // 카페24 송장 등록 (등록 전에 기존 송장을 조회해 같은 구성이면 성공으로 대사 → 재시도해도 중복 등록 없음)
 async function pushCafe24Shipments(db, matchedItems) {
   const results = [];
@@ -2963,6 +2989,18 @@ const server = http.createServer((req, res) => {
       for (const g of groups.values()) {
         idx++;
         const orderNo = 'HAM' + Date.now() + '-' + idx;
+        // 접수 전 검증 0: 카페24에 이미 이 주문의 송장이 있으면(다른 컴퓨터·매장 PC에서 먼저 접수) 이중 접수 금지
+        const c24OrderNos = [...new Set(g.items.filter(({ type, item }) => type === 'order' && item.orderNo && /^\d{8}-\d{7}$/.test(String(item.orderNo))).map(({ item }) => String(item.orderNo)))];
+        let external = null;
+        for (const no of c24OrderNos) {
+          try { external = await cafe24ExistingShipment(db, no); if (external) break; }
+          catch (e) { console.error('카페24 기존 송장 확인 실패:', e.message); }
+        }
+        if (external) {
+          adoptExternalShipment(db, g, external);
+          out.push({ name: g.name, ok: false, safeStop: true, external: true, error: `카페24에 이미 송장 ${external.tracking}이 등록돼 있어요 — 다른 컴퓨터(매장 PC 등)에서 먼저 접수한 건이라 여기서 또 접수하지 않고 그 송장으로 [보냄] 처리했어요.` });
+          continue;
+        }
         // 접수 전 검증: 우편번호 5자리 필수
         let zipChk = String(g.zip || '').trim() || extractZip(g.addr);
         if (!/^\d{5}$/.test(zipChk)) {
