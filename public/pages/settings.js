@@ -176,12 +176,14 @@ async function cstkPreview() {
   if (!box) return;
   if (!r || !r.ok) { box.innerHTML = `<div class="hint">${esc(cstkErrorMsg(r))}</div>`; return; }
   const rows = (r.plan && r.plan.rows) || [];
-  if (!rows.length) { box.innerHTML = '<div class="hint">지금 반영할 차이가 없어요.</div>'; return; }
+  const unverified = Number(r.plan && r.plan.skipped && r.plan.skipped.unverified) || 0;
+  const unverifiedNote = unverified ? `<div class="hint">확인하지 않은 옵션 ${unverified}개는 반영하지 않아요. 재고 화면에서 실사하거나 [카페24 수량 가져오기]로 채우면 대상이 돼요.</div>` : '';
+  if (!rows.length) { box.innerHTML = '<div class="hint">지금 반영할 차이가 없어요.</div>' + unverifiedNote; return; }
   box.innerHTML = `<div class="table-wrap"><table class="tbl">
       <thead><tr><th>상품 · 사이즈</th><th class="num">실물</th><th class="num">주문 대기</th><th class="num">가용</th><th class="num">카페24</th><th class="num">차이</th></tr></thead>
       <tbody>${rows.map(cstkPreviewRowHtml).join('')}</tbody>
     </table></div>
-    <div class="hint" style="margin-top:8px">${rows.length}개 옵션이 카페24와 달라요.</div>`;
+    <div class="hint" style="margin-top:8px">${rows.length}개 옵션이 카페24와 달라요.</div>${unverifiedNote}`;
 }
 async function cstkPushAll() {
   const r = await api('/api/channel-stock/preview');

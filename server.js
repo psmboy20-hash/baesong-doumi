@@ -3032,6 +3032,7 @@ const server = http.createServer((req, res) => {
       const before = Number(inv.qty) || 0;
       inv.qty = Math.max(0, before + d);
       inv.needsCount = false;
+      inv.stockVerifiedAt = new Date().toISOString(); // 사람이 직접 수량을 만진 줄 — 채널 반영 대상 표식
       if (inv.variantCode && inv.productNo) {
         const variants = db.inventory.filter(i => String(i.productNo || '') === String(inv.productNo) && i.variantCode);
         for (const aggregate of db.inventory.filter(i =>

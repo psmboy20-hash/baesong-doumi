@@ -23,8 +23,8 @@ function baseDb() {
   return {
     settings: { channelStock: { enabled: true, cafe24: true, reserve: 0, autoAfterChange: true } },
     inventory: [
-      { id: 1, name: 'Margot Denim Pants', color: '인디고', size: 'S', qty: 10, sku: 'C24V-11', productNo: 5, variantCode: '000A', cafe24StockTracked: true, cafe24Qty: 10 },
-      { id: 2, name: 'Margot Denim Pants', color: '인디고', size: 'M', qty: 4, sku: 'C24V-12', productNo: 5, variantCode: '000B', cafe24StockTracked: true, cafe24Qty: 9 },
+      { id: 1, name: 'Margot Denim Pants', color: '인디고', size: 'S', qty: 10, sku: 'C24V-11', productNo: 5, variantCode: '000A', cafe24StockTracked: true, cafe24Qty: 10, lastCountedAt: '2026-09-01T00:00:00.000Z' },
+      { id: 2, name: 'Margot Denim Pants', color: '인디고', size: 'M', qty: 4, sku: 'C24V-12', productNo: 5, variantCode: '000B', cafe24StockTracked: true, cafe24Qty: 9, stockInitAt: '2026-09-01T00:00:00.000Z' },
       { id: 3, name: 'Margot Denim Pants', color: '인디고', size: 'L', qty: 7, sku: 'C24V-13', productNo: 5, variantCode: '000C', cafe24StockTracked: true, cafe24Qty: 7, needsCount: true }
     ],
     orders: [],
@@ -77,7 +77,7 @@ test('예약: 옵션품번이 없어도 이름+컬러+사이즈로 재고 줄을
 
 // ── 2. 가용 수량 ────────────────────────────────────────────────────────────
 test('가용: 실물 − 예약 − 예비, 음수는 0으로 자른다', () => {
-  const inv = { id: 1, qty: 10 };
+  const inv = { id: 1, qty: 10, lastCountedAt: '2026-09-01T00:00:00.000Z' };
   assert.equal(availableQty(inv, 3, { reserve: 0 }), 7);
   assert.equal(availableQty(inv, 3, { reserve: 2 }), 5);
   assert.equal(availableQty(inv, 12, { reserve: 2 }), 0);
@@ -103,13 +103,13 @@ test('설정: 기본값과 예비 수량 0~99 자르기', () => {
 test('계획: 수량이 같은 줄·미추적 줄·옵션품번 없는 줄은 건너뛴다', () => {
   const db = baseDb();
   db.inventory.push(
-    { id: 4, name: '로컬상품', color: '', size: '', qty: 3, sku: 'LOCAL-X-NONE-NONE' },                                     // 옵션품번 없음
-    { id: 5, name: '재고관리안함', color: '', size: '', qty: 3, sku: 'C24V-15', productNo: 6, variantCode: '000E', cafe24StockTracked: false },
-    { id: 6, name: '없어진옵션', color: '', size: '', qty: 3, sku: 'C24V-16', productNo: 6, variantCode: '000F', cafe24StockTracked: true, cafe24VariantActive: false }
+    { id: 4, name: '로컬상품', color: '', size: '', qty: 3, sku: 'LOCAL-X-NONE-NONE', stockVerifiedAt: '2026-09-01T00:00:00.000Z' },                                     // 옵션품번 없음
+    { id: 5, name: '재고관리안함', color: '', size: '', qty: 3, sku: 'C24V-15', productNo: 6, variantCode: '000E', cafe24StockTracked: false, stockVerifiedAt: '2026-09-01T00:00:00.000Z' },
+    { id: 6, name: '없어진옵션', color: '', size: '', qty: 3, sku: 'C24V-16', productNo: 6, variantCode: '000F', cafe24StockTracked: true, cafe24VariantActive: false, stockVerifiedAt: '2026-09-01T00:00:00.000Z' }
   );
   const plan = planCafe24Push(db, channelStockPolicy(db));
   assert.deepEqual(plan.rows.map(r => r.id), [2]); // 1은 같은 값(10=10), 3은 실사 필요
-  assert.deepEqual(plan.skipped, { noVariant: 2, notTracked: 1, needsCount: 1, same: 1 });
+  assert.deepEqual(plan.skipped, { noVariant: 2, notTracked: 1, needsCount: 1, unverified: 0, same: 1 });
   assert.deepEqual(plan.rows[0], {
     id: 2, sku: 'C24V-12', name: 'Margot Denim Pants', color: '인디고', size: 'M',
     physical: 4, reserved: 0, available: 4, cafe24Qty: 9, delta: -5
@@ -142,8 +142,9 @@ test('초기화 가드: 실물 합계 0 + 실사 기록 없음이면 false', () 
 });
 
 test('초기화 가드: 실물이 있거나 실사 기록이 1건이라도 있으면 true', () => {
-  assert.equal(stockInitialized({ inventory: [{ qty: 0 }, { qty: 2 }] }), true);
-  assert.equal(stockInitialized({ inventory: [{ qty: 0 }], stocktakes: [{ at: NOW.toISOString() }] }), true);
+  assert.equal(stockInitialized({ inventory: [{ qty: 0 }, { qty: 2 }] }), false); // 수량만 있고 확인 표식이 없으면 초기화 아님
+  assert.equal(stockInitialized({ inventory: [{ qty: 0 }, { qty: 2, stockVerifiedAt: NOW.toISOString() }] }), true);
+  assert.equal(stockInitialized({ inventory: [{ qty: 0, lastCountedAt: NOW.toISOString() }], stocktakes: [{ at: NOW.toISOString() }] }), true);
 });
 
 // ── 5. 카페24 반영 (send 주입) ──────────────────────────────────────────────
@@ -241,7 +242,7 @@ test('반영: 한 번에 최대 100건까지만 보낸다', async () => {
   const db = { inventory: [], settings: {} };
   const rows = [];
   for (let i = 1; i <= 130; i++) {
-    db.inventory.push({ id: i, name: '상품' + i, qty: 1, sku: 'C24V-' + i, productNo: 1, variantCode: 'V' + i, cafe24StockTracked: true, cafe24Qty: 0 });
+    db.inventory.push({ id: i, name: '상품' + i, qty: 1, sku: 'C24V-' + i, productNo: 1, variantCode: 'V' + i, cafe24StockTracked: true, cafe24Qty: 0, lastCountedAt: NOW.toISOString() });
     rows.push({ id: i, sku: 'C24V-' + i, available: 1 });
   }
   let sent = 0;
@@ -261,7 +262,7 @@ function fixtureDb(initialized) {
   db.returns = [];
   db.inventoryHidden = [];
   db.settings = Object.assign({ channelStock: { enabled: false, cafe24: true, reserve: 0, autoAfterChange: true } });
-  if (!initialized) for (const inv of db.inventory) inv.qty = 0;
+  if (!initialized) for (const inv of db.inventory) { inv.qty = 0; delete inv.lastCountedAt; delete inv.stockInitAt; delete inv.stockVerifiedAt; } // 확인 표식까지 지워야 '미초기화'
   return db;
 }
 
@@ -366,4 +367,15 @@ test('라우트: 채널 재고 엑셀은 알 수 없는 채널을 거절한다',
     assert.match(ok.headers.get('content-type'), /spreadsheetml/);
     assert.ok((await ok.arrayBuffer()).byteLength > 0);
   } finally { await server.stop(); }
+});
+
+test('한 번도 확인하지 않은 줄(qty 0 기본값)은 카페24로 절대 밀지 않는다 — unverified 로 집계', () => {
+  const db = { inventory: [
+    { id: 1, name: 'A', qty: 0, sku: 'C24V-A', productNo: 1, variantCode: 'VA', cafe24StockTracked: true, cafe24Qty: 38 },
+    { id: 2, name: 'B', qty: 0, sku: 'C24V-B', productNo: 1, variantCode: 'VB', cafe24StockTracked: true, cafe24Qty: 5, lastCountedAt: '2026-09-06T00:00:00.000Z' }
+  ], orders: [], seeding: [] };
+  const plan = planCafe24Push(db, {});
+  assert.equal(plan.skipped.unverified, 1);
+  assert.deepEqual(plan.rows.map(r => r.id), [2]); // 실사로 0 을 확인한 줄만 0 으로 반영
+  assert.equal(stockInitialized({ inventory: [db.inventory[0]] }), false);
 });
