@@ -15,8 +15,7 @@ deployed_sha="$(cat "$DEPLOYED_SHA_FILE" 2>/dev/null || true)"
 [ "$local_sha" = "$remote_sha" ] || git merge --ff-only -q origin/main
 npm ci --omit=dev --no-fund --no-audit
 node --check server.js
-node --check public/app.js
-node --check public/item-lines.js
+for f in public/*.js public/pages/*.js; do node --check "$f"; done
 sudo systemctl restart ham
 curl --fail --silent --show-error --retry 10 --retry-delay 1 --retry-connrefused http://127.0.0.1:8899/healthz >/dev/null
 marker_tmp="${DEPLOYED_SHA_FILE}.tmp.$$"
