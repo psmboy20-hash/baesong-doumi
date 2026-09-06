@@ -33,7 +33,7 @@ async function saveDb() {
     // 그 사이 자동 동기화가 저장함 — 서버 최신본을 받고 사용자에게 다시 하라고 안내
     adoptDb(r.db);
     render();
-    toast('⚠️ 새 데이터가 들어와서 겹쳤어요. 방금 한 일을 한 번만 다시 해주세요.', 6000);
+    toast('새 데이터가 들어와서 겹쳤어요. 방금 한 일을 한 번만 다시 해주세요.', 6000);
     return false;
   }
   if (r && r.rev != null) DB.rev = r.rev;
@@ -120,9 +120,11 @@ function selectedShipmentCount(selected) {
   return shipmentCount(items);
 }
 function chip(status) {
-  const map = { '대기': ['wait', '보낼 준비'], '접수중': ['processing', '엑셀 접수 중 ⚠️'], '발송완료': ['done', '보냄 ✓'], '배달완료': ['done', '배달 끝 ✓✓'], '취소됨': ['wait', '취소됨 ✕'] };
-  const [cls, label] = map[status] || ['wait', status];
-  return `<span class="chip ${cls}">${label}</span>`;
+  // kind는 새 칩 어휘(warn/processing/done/idle)를 쓴다 — 재고 화면 등이 이미 쓰고 있는
+  // .chip.wait(문제/빨강) 의 색 의미를 건드리지 않기 위해 '대기'는 wait 대신 warn으로 매핑한다.
+  const map = { '대기': ['warn', '보낼 준비'], '접수중': ['processing', '접수 처리 중'], '발송완료': ['done', '발송 완료'], '배달완료': ['done', '배달 끝'], '취소됨': ['idle', '취소됨'] };
+  const [kind, label] = map[status] || ['idle', status];
+  return chipEl(kind, label);
 }
 // ---- 제품 매칭: 자유 텍스트(구글폼)를 카페24 실제 제품(품번+사진)과 연결 ----
 function lettersOnly(s) { return String(s || '').toLowerCase().replace(/[^a-z가-힣]/g, ''); }
@@ -211,51 +213,35 @@ function imgPrevHide() {
   if (d) d.classList.add('hidden');
 }
 function prodImgTag(src) {
-  return `<img src="${esc(src)}" class="pimg" onmouseenter="imgPrev(event,'${esc(src)}')" onmousemove="imgPrevMove(event)" onmouseleave="imgPrevHide()" onerror="this.style.display='none'">`;
+  return `<img src="${esc(src)}" class="pimg" onmouseenter="imgPrev(event,'${jsq(src)}')" onmousemove="imgPrevMove(event)" onmouseleave="imgPrevHide()" onerror="this.style.display='none'">`;
 }
 function singleProductParts(x) {
+  // 한 제품 = 한 블록(사진 + 이름 + 옵션×수량) — 표 한 칸에 세로로 쌓인다
   const { color, size } = parseOption(x);
   const matches = matchProducts(x.product);
   const qty = Number(x.qty) || 1;
-  const qtyTag = qty > 1 ? ` <span style="color:var(--red);font-weight:900">×${qty}개</span>` : '';
-  if (!matches.length) {
-    const parts = [color, size].filter(Boolean);
-    const optTxt = (parts.length ? '<b>' + esc(parts.join(', ')) + '</b>' : '') + qtyTag;
-    return { name: esc(x.product), opt: optTxt };
-  }
-  // 제품 칸에는 이름만, 옵션 칸에는 제품마다 자기 "색상, 사이즈"가 같은 줄 높이로 나란히
+  const qtyTag = qty > 1 ? ` <b class="pqty">×${qty}</b>` : '';
+  const block = (img, nameHtml, optParts) => `
+    <div class="pline">${img || '<span class="pthumb"></span>'}<div class="pmeta"><div class="pname">${nameHtml}</div><div class="sub">${optParts.length ? esc(optParts.join(', ')) : '-'}${qtyTag}</div></div></div>`;
+  if (!matches.length) return { name: block('', esc(x.product), [color, size].filter(Boolean)), opt: '' };
   const single = matches.length === 1;
   const name = matches.map(p => {
-    const { base } = splitColor(p.name);
-    return `
-    <div style="display:flex;align-items:center;gap:0.4rem;height:36px;margin:0.1rem 0;line-height:1.2;overflow:hidden">
-      ${p.img ? prodImgTag(p.img) : ''}
-      <span class="pname-link" style="white-space:nowrap" onclick="window.open('${saleUrl(p.no)}','_blank')" title="판매 페이지 열기"><b>${esc(base)}</b></span>
-    </div>`;
-  }).join('');
-  const opt = matches.map(p => {
-    const c = splitColor(p.name).color;
+    const { base, color: c } = splitColor(p.name);
     const parts = [];
     if (c) parts.push(c);
     if (single && color && (!c || normOpt(color) !== normOpt(c))) parts.push(color);
     if (size) parts.push(size);
-    return `<div style="display:flex;align-items:center;height:36px;margin:0.1rem 0;white-space:nowrap">${parts.length ? '<b>' + esc(parts.join(', ')) + '</b>' : '<span class="muted">-</span>'}${qtyTag}</div>`;
+    const nameHtml = `<span class="pname-link" onclick="window.open('${saleUrl(p.no)}','_blank')" title="판매 페이지 열기">${esc(base)}</span>`;
+    return block(p.img ? prodImgTag(p.img) : '', nameHtml, parts);
   }).join('');
-  return { name, opt };
+  return { name, opt: '' };
 }
 function productParts(x) {
   const lines = shipmentLineItems(x);
   if (lines.length <= 1) return singleProductParts(lines[0] || x);
-  const rendered = lines.map(singleProductParts);
-  return {
-    name: rendered.map(row => row.name).join(''),
-    opt: rendered.map(row => row.opt || '<div style="height:36px" class="muted">-</div>').join('')
-  };
+  return { name: lines.map(l => singleProductParts(l).name).join(''), opt: '' };
 }
-function productCell(x) {
-  const { name, opt } = productParts(x);
-  return name + (opt || '');
-}
+function productCell(x) { return productParts(x).name; }
 // 택배사별 배송조회 주소 (courier 필드나 송장 문자열에서 택배사 판별)
 function trackUrl(inv, courier) {
   const digits = String(inv || '').replace(/\D/g, '');
@@ -274,12 +260,12 @@ function invoiceCell(inv, courier) {
   const url = trackUrl(inv, courier);
   if (url) {
     const label = (courier && !String(inv).includes(courier) ? courier + ' ' : '') + inv;
-    return `<a class="track-link" target="_blank" href="${url}">배송조회 🔍</a><div class="muted" style="font-size:0.8rem">${esc(label)}</div>`;
+    return `<a class="track-link" target="_blank" href="${url}">배송조회</a><div class="muted" style="font-size:0.8rem">${esc(label)}</div>`;
   }
   return `<span class="muted" style="font-size:0.9rem">${esc(inv)}</span>`;
 }
 function seedingSourceLabel(x) {
-  return /패키지/.test(String(x && x.packType || '')) ? '🎁 패키지 시딩' : '🎁 시딩';
+  return /패키지/.test(String(x && x.packType || '')) ? '패키지 시딩' : '시딩';
 }
 function epostOperationUnresolved(x) {
   return !!(x && x.epostOp && ['pending', 'unknown'].includes(x.epostOp.state));
@@ -294,13 +280,13 @@ function shipmentMemoHtml(x) {
   return lines.join('');
 }
 function shipmentSourceLabel(x) {
-  if (x.exchange || x.sourceChannel === 'exchange') return '🔁 교환 재발송';
+  if (x.exchange || x.sourceChannel === 'exchange') return '교환 재발송';
   if (x.sourceChannel === 'seeding' || x._kind === '시딩') return seedingSourceLabel(x);
-  if (x.sourceChannel === 'direct') return '✍ 직접 등록';
-  if (x.sourceChannel === '29cm') return '🏬 29CM';
-  if (x.sourceChannel === 'musinsa') return '🏬 무신사';
-  if (x.sourceChannel === 'other') return '🏪 기타 채널';
-  return '🛒 주문';
+  if (x.sourceChannel === 'direct') return '직접 등록';
+  if (x.sourceChannel === '29cm') return '29CM';
+  if (x.sourceChannel === 'musinsa') return '무신사';
+  if (x.sourceChannel === 'other') return '기타 채널';
+  return '주문';
 }
 function externalSyncIssues() {
   const rows = [];
@@ -327,7 +313,7 @@ function go(page, sub) {
   PAGE = page;
   if (page === 'shipping') window._shipFilter = sub || 'all'; // 홈 타일에서 오면 그 단계만 보이게
   if (page === 'epost') window._epostFilter = sub || 'all';
-  document.querySelectorAll('nav button').forEach(b => b.classList.toggle('active', b.dataset.page === page));
+  document.querySelectorAll('.side a[data-page]').forEach(a => a.classList.toggle('on', a.dataset.page === page));
   render();
   window.scrollTo(0, 0);
 }
@@ -336,38 +322,38 @@ function processingOf(list) { return list.filter(x => x.status === '접수중');
 
 // ---------- 도움말 말풍선 ----------
 const HELP = {
-  home: `여기는 <b>전체 요약</b> 화면이에요.<br>칸들은 물건이 지금 어느 단계에 몇 건 있는지 보여줘요. 칸을 누르면 그 화면으로 이동합니다.<br>아래엔 이번 달 통계(보낸 택배·택배비)와 재고 요약이 있어요.`,
-  send: `주문(🛒)과 시딩(🎁)은 <b>5분마다 자동으로</b> 들어와요. 직접 입력할 필요 없어요.<br>
+  home: `여기는 <b>전체 요약</b> 화면이에요.<br>오늘 할 일 목록은 물건이 지금 어느 단계에 몇 건 있는지 보여줘요. 버튼을 누르면 그 화면으로 이동합니다.<br>아래엔 보낼 준비·수거 기다림·가는 중·이달 배달 끝 숫자와 연결 상태가 있어요.`,
+  send: `주문과 시딩은 <b>5분마다 자동으로</b> 들어와요. 직접 입력할 필요 없어요.<br>
 ① 목록에서 보낼 사람이 맞는지 체크 확인<br>
-② <b>[🚀 우체국 바로 접수]</b> — 송장번호가 그 자리에서 나와요. 인쇄는 [📦 우체국 접수]에서<br>
-③ 우체국 창구 등 <b>앱 밖에서 이미 보낸 건</b>은 그 줄의 <b>[따로 보냈어요]</b>를 누르면 정리돼요<br>
-④ 안 보낼 건은 <b>[안 보내요 ✕]</b> — 마음이 바뀌면 [🚚 배송 확인]에서 <b>[다시 보내기]</b>로 되돌려요<br>
-⑤ <b>⚠️ 우편번호 없음</b>이 뜬 줄은 5자리를 넣고 [저장] — 옷 꺼낼 땐 <b>[📋 오늘 쌀 목록 인쇄]</b>가 편해요`,
+② <b>[우체국 바로 접수]</b> — 송장번호가 그 자리에서 나와요. 인쇄는 [우체국 접수]에서<br>
+③ 우체국 창구 등 <b>앱 밖에서 이미 보낸 건</b>은 그 줄의 <b>[직접 보냄으로 표시]</b>를 누르면 정리돼요<br>
+④ 안 보낼 건은 <b>[보내지 않음]</b> — 마음이 바뀌면 [배송 확인]에서 <b>[다시 보내기]</b>로 되돌려요<br>
+⑤ <b>우편번호 없음</b>이 뜬 줄은 5자리를 넣고 저장 — 옷 꺼낼 땐 <b>[오늘 쌀 목록 인쇄]</b>가 편해요`,
   epost: `앱으로 우체국에 접수한 택배 목록이에요.<br>
-· <b>[🖨 인쇄]</b> — 라벨기로 운송장을 뽑아 상자에 붙여요<br>
-· <b>[🔄 새로고침]</b> — 예약·수거가 어디까지 됐는지 우체국에 물어봐요<br>
+· <b>[인쇄]</b> — 라벨기로 운송장을 뽑아 상자에 붙여요<br>
+· <b>[새로고침]</b> — 예약·수거가 어디까지 됐는지 우체국에 물어봐요<br>
 · <b>[취소]</b> — 기사님이 가져가기 전까지 할 수 있어요. 취소 버튼이 보이면 아직 가능하다는 뜻이에요. 취소하면 [보내기]로 돌아갑니다`,
   shipping: `보낸 물건 전체 기록이에요.<br>
-· <b>파란 송장번호</b>를 누르면 지금 어디쯤 가는지 우체국 페이지가 열려요<br>
-· 배달이 끝나면 <b>배달완료 ✓✓</b>가 자동으로 붙어요 (5분마다 확인)<br>
-· 고객이 교환·반품을 원하면 그 줄의 <b>[🔁 교환/반품]</b>을 누르세요 — 정보가 자동으로 채워져요`,
+· <b>송장번호</b>를 누르면 지금 어디쯤 가는지 우체국 페이지가 열려요<br>
+· 배달이 끝나면 <b>배달 끝</b>이 자동으로 붙어요 (5분마다 확인)<br>
+· 고객이 교환·반품을 원하면 그 줄의 <b>[교환/반품]</b>을 누르세요 — 정보가 자동으로 채워져요`,
   returns: `카페24·우체국·배송도우미의 교환/반품을 <b>RMA 번호 하나</b>로 연결해요.<br>
 ① 카페24에서 신청되거나 여기서 등록하면 같은 목록에 나타나요<br>
-② <b>[🚚 우체국 회수 신청]</b> — 기사님이 송장을 들고 고객 집으로 방문해요<br>
-③ <b>[📦 물건 도착 확인]</b> — 검수·재고 복귀, 교환 재발송까지 이어져요<br>
+② <b>[우체국 회수 신청]</b> — 기사님이 송장을 들고 고객 집으로 방문해요<br>
+③ <b>[물건 도착 확인]</b> — 검수·재고 복귀, 교환 재발송까지 이어져요<br>
 · <b>회수만 취소</b>는 기사님 방문만 취소하고, <b>전체 취소</b>는 카페24 접수까지 함께 취소해요<br>
 · 반품 환불 결제는 자동 승인하지 않으며 카페24 환불 완료 상태를 받아 최종 완료로 표시해요`,
   inventory: `남은 옷 개수예요.<br>
 · 택배를 보내면 <b>자동으로 −</b>, 교환·반품으로 돌아오면 <b>자동으로 +</b> 돼요<br>
 · 새 옷이 들어왔을 때만 ＋를 직접 눌러 채우세요<br>
-· <span style="color:var(--red)"><b>빨간 숫자</b></span>는 2개 이하 — 곧 떨어진다는 뜻이에요!`,
-  settings: `구글시트·카페24·우체국 연결과 알림·백업을 관리해요.<br>한 번 해두면 계속 유지되니 평소엔 들어올 일이 없어요.<br>무언가 "연결이 필요해요"라고 뜨면 여기서 🔗 로 시작하는 파란 버튼만 다시 누르면 됩니다.<br>장부는 💾 <b>하루 한 번 자동 백업</b>되고, 잘못됐을 땐 여기서 예전 날짜로 되돌릴 수 있어요.`
+· <span style="color:var(--bad)"><b>빨간 숫자</b></span>는 2개 이하 — 곧 떨어진다는 뜻이에요`,
+  settings: `구글시트·카페24·우체국 연결과 알림·백업을 관리해요.<br>한 번 해두면 계속 유지되니 평소엔 들어올 일이 없어요.<br>무언가 "연결이 필요해요"라고 뜨면 여기서 파란 버튼만 다시 누르면 됩니다.<br>장부는 <b>하루 한 번 자동 백업</b>되고, 잘못됐을 땐 여기서 예전 날짜로 되돌릴 수 있어요.`
 };
 function injectHelp() {
   if (document.getElementById('help-box')) return;
   const h1 = document.querySelector('#main h1');
   if (!h1 || !HELP[PAGE]) return;
-  h1.insertAdjacentHTML('beforeend', ` <button class="help-btn" onclick="toggleHelp()">❓ 도움말</button>`);
+  h1.insertAdjacentHTML('beforeend', ' ' + helpBtn());
   h1.insertAdjacentHTML('afterend', `<div id="help-box" class="help-box hidden">${HELP[PAGE]}</div>`);
 }
 function toggleHelp() {
@@ -397,7 +383,7 @@ async function doSync() {
   try {
     const r = await api('/api/sync', { method: 'POST' });
     busy(false);
-    if (r.error) { toast('⚠️ ' + r.error, 6000); return; }
+    if (r.error) { toast(r.error, 6000); return; }
     adoptDb(r.db);
     SYNC_STATUS = r.status || SYNC_STATUS;
     const c24added = r.cafe24 ? r.cafe24.added : 0;
@@ -405,11 +391,13 @@ async function doSync() {
     const msg = `새로 가져옴: 시딩 ${r.seeding.added}건, 주문 ${r.orders.added + c24added}건` +
       (r.seeding.updated + r.orders.updated ? ` (내용 바뀐 것 ${r.seeding.updated + r.orders.updated}건)` : '') +
       (cxl ? ` / 취소 반영 ${cxl}건` : '');
-    toast('✔️ ' + msg, 5000);
+    toast(msg, 5000);
+    LAST_SYNC_AT = new Date();
+    updateSideStatus();
     render();
   } catch (e) {
     busy(false);
-    toast('⚠️ 인터넷 연결을 확인해 주세요.', 6000);
+    toast('인터넷 연결을 확인해 주세요.', 6000);
   }
 }
 
@@ -426,8 +414,8 @@ async function enableNotify() {
   if (!('Notification' in window)) { toast('이 브라우저는 알림을 지원하지 않아요.'); return; }
   const p = await Notification.requestPermission();
   toast(p === 'granted'
-    ? '✔️ 알림을 켰어요! 창을 안 보고 있어도 새 주문이 오면 알려드릴게요.'
-    : '알림이 허용되지 않았어요. 주소창 왼쪽 자물쇠 🔒를 눌러 알림을 [허용]으로 바꿔 주세요.', 7000);
+    ? '알림을 켰어요! 창을 안 보고 있어도 새 주문이 오면 알려드릴게요.'
+    : '알림이 허용되지 않았어요. 주소창 왼쪽 자물쇠를 눌러 알림을 [허용]으로 바꿔 주세요.', 7000);
   if (PAGE === 'settings') renderSettings();
 }
 // 출고 마감 1시간 전, 아직 안 보낸 게 있으면 하루 한 번 알림
@@ -441,10 +429,27 @@ function deadlineCheck() {
   const key = 'dlAlert-' + now.getFullYear() + '-' + (now.getMonth() + 1) + '-' + now.getDate();
   if (nowMin >= dlMin - 60 && nowMin < dlMin && pendingN > 0 && !localStorage.getItem(key)) {
     localStorage.setItem(key, '1');
-    const msg = `⏰ 기사님이 ${Number(dl[0])}시에 오세요! 아직 안 보낸 것이 ${pendingN}건 있어요.`;
+    const msg = `기사님이 ${Number(dl[0])}시에 오세요. 아직 안 보낸 것이 ${pendingN}건 있어요.`;
     toast(msg, 12000);
     notify('배송 도우미', msg);
   }
+}
+
+// ---------- 사이드바 하단 상태 줄 ----------
+let LAST_SYNC_AT = null;
+function timeAgo(d) {
+  const sec = Math.floor((Date.now() - d) / 1000);
+  if (sec < 60) return '방금 전';
+  if (sec < 3600) return Math.floor(sec / 60) + '분 전';
+  if (sec < 86400) return Math.floor(sec / 3600) + '시간 전';
+  return Math.floor(sec / 86400) + '일 전';
+}
+function updateSideStatus() {
+  const el = document.getElementById('side-status');
+  if (!el) return;
+  const mode = window._VIEW ? '보기 모드' : '누솔베르 · 클라우드';
+  const when = LAST_SYNC_AT ? '마지막 확인 ' + timeAgo(LAST_SYNC_AT) : '';
+  el.innerHTML = esc(mode) + (when ? '<br>' + esc(when) : '');
 }
 
 // ---------- 자동 새로고침 (30초마다 확인) ----------
@@ -454,7 +459,9 @@ async function refreshStatus(force) {
     SYNC_STATUS = r.status;
     window._VIEW = !!r.viewOnly;
     window._C24OWNER = r.c24Owner !== false;
-    if (r.version) { const v = document.getElementById('ver'); if (v) v.textContent = 'v' + r.version + (r.viewOnly ? ' · 👁 보기 모드' : ''); }
+    if (r.version) { const v = document.getElementById('ver'); if (v) v.textContent = 'v' + r.version; }
+    LAST_SYNC_AT = new Date();
+    updateSideStatus();
     if (force || (DB && r.rev !== DB.rev)) {
       const before = DB ? pendingOf(DB.seeding).length + pendingOf(DB.orders).length : 0;
       const retBefore = DB ? (DB.returns || []).filter(x => ['requested', 'accepted'].includes(x.flowState)).length : 0;
@@ -466,15 +473,15 @@ async function refreshStatus(force) {
       const formOpen = PAGE === 'settings' || document.querySelector('#inv-form input') ||
         document.querySelector('#export-result .result-box') || document.querySelector('#ret-form input') ||
         (PAGE === 'inventory' && window._invCount) ||
-        (PAGE === 'stocklog' && typing); // 수불부 검색어를 치는 중이면 30초 재렌더가 포커스를 뺏지 않게
+        (['stocklog', 'send', 'shipping', 'inventory', 'returns', 'epost'].includes(PAGE) && typing); // 검색어·입력 중이면 30초 재렌더가 포커스를 뺏지 않게
       if (!formOpen) render();
       if (after > before) {
-        toast(`🔔 새로 들어온 것이 ${after - before}건 있어요!`, 6000);
-        notify('배송 도우미', `🔔 새 주문·시딩이 ${after - before}건 들어왔어요!`);
+        toast(`새로 들어온 것이 ${after - before}건 있어요.`, 6000);
+        notify('배송 도우미', `새 주문·시딩이 ${after - before}건 들어왔어요.`);
       }
       if (retAfter > retBefore) {
-        toast(`🔁 교환/반품 신청이 ${retAfter - retBefore}건 들어왔어요!`, 8000);
-        notify('배송 도우미', `🔁 교환/반품 신청 ${retAfter - retBefore}건 — 확인해 주세요`);
+        toast(`교환/반품 신청이 ${retAfter - retBefore}건 들어왔어요.`, 8000);
+        notify('배송 도우미', `교환/반품 신청 ${retAfter - retBefore}건 — 확인해 주세요`);
       }
     }
   } catch (e) { /* 서버 꺼짐 등은 조용히 넘어감 */ }

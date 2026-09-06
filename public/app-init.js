@@ -10,8 +10,8 @@ window.addEventListener('message', async event => {
 (async function init() {
   DB = await api('/api/db');
   if (DB && DB.error) {
-    main().innerHTML = `<div class="result-box err" style="margin-top:3rem; font-size:1.2rem">⚠️ ${esc(DB.error)}<br><br>
-      <button class="big-btn" onclick="location.reload()">🔄 다시 시도</button></div>`;
+    main().innerHTML = `<div class="result-box err" style="margin-top:3rem; font-size:1.1rem">${icon('alert', 20)} ${esc(DB.error)}<br><br>
+      ${btn({ label: '다시 시도', onclick: 'location.reload()', kind: 'primary', icon: 'refresh' })}</div>`;
     return;
   }
   await refreshStatus(false);
