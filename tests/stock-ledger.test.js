@@ -262,3 +262,20 @@ test('CSV: 엑셀 수식으로 읽힐 문자열만 앞에 따옴표를 붙이고
   const lines = csv.slice(1).trim().split('\r\n');
   assert.equal(lines[1], "'=1+1,'@here,-3,0", '음수 숫자는 그대로');
 });
+
+test('기초재고 가져오기: 카페24 수량에 아직 안 보낸 카페24 주문을 더한다 (시딩·타채널 대기는 더하지 않음)', () => {
+  const db = {
+    inventory: [{ id: 1, name: 'Margot Denim Pants', color: '인디고', size: 'M', qty: 0, sku: 'C24V-M', productNo: 5, variantCode: '000B', cafe24StockTracked: true, cafe24Qty: 9 }],
+    orders: [
+      { id: 10, orderNo: '20260906-0000001', sourceChannel: 'cafe24', status: '대기', product: 'Margot Denim Pants (인디고)', color: '인디고', size: 'M', qty: 2, variantCode: '000B' },
+      { id: 11, orderNo: '29CM-1', sourceChannel: '29cm', status: '대기', product: 'Margot Denim Pants (인디고)', color: '인디고', size: 'M', qty: 1, variantCode: '000B' },
+      { id: 12, orderNo: '20260901-0000009', sourceChannel: 'cafe24', status: '발송완료', product: 'Margot Denim Pants (인디고)', color: '인디고', size: 'M', qty: 3, variantCode: '000B' }
+    ],
+    seeding: [{ id: 20, status: '대기', product: 'Margot Denim Pants (인디고)', color: '인디고', size: 'M', qty: 1, variantCode: '000B' }],
+    stockLog: []
+  };
+  const r = initFromCafe24(db, { now: new Date('2026-09-07T00:00:00Z') });
+  assert.equal(r.applied, 1);
+  assert.equal(db.inventory[0].qty, 11); // 9 + 카페24 대기 2 (29CM 1·시딩 1 은 카페24가 안 뺀 물량이라 더하지 않음)
+  assert.ok(db.inventory[0].stockInitAt);
+});
