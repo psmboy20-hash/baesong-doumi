@@ -80,6 +80,7 @@ const {
   availableList,
   planCafe24Push,
   channelDirtyCount,
+  clearSettledDirty,
   channelFailedCount,
   lastPushAt,
   pushCafe24Stock,
@@ -2427,7 +2428,8 @@ function scheduleChannelPush() {
       if (!stockInitialized(db) || !channelPushReady(db)) return;
       const plan = planCafe24Push(db, policy);
       const result = await runChannelPush(db, plan.rows, 'auto');
-      if (result.pushed || result.failed.length || result.scopeMissing) saveDb(db);
+      const cleared = clearSettledDirty(db, policy);
+      if (result.pushed || result.failed.length || result.scopeMissing || cleared) saveDb(db);
     }).catch(e => console.error('채널 재고 자동 반영 실패:', e.message));
   }, 3000);
   if (channelPushTimer.unref) channelPushTimer.unref();
@@ -2440,7 +2442,7 @@ async function reconcileChannelStock(db) {
   if (!stockInitialized(db) || !channelPushReady(db)) return 0;
   const plan = planCafe24Push(db, policy);
   const result = await runChannelPush(db, plan.rows, 'reconcile');
-  return result.pushed + result.failed.length;
+  return result.pushed + result.failed.length + clearSettledDirty(db, policy);
 }
 
 function restoreShipmentStock(db, item, type, reason) {
@@ -3137,8 +3139,9 @@ const server = http.createServer((req, res) => {
       const plan = planCafe24Push(db, policy);
       const ids = Array.isArray(b.ids) ? new Set(b.ids.map(Number).filter(Number.isFinite)) : null;
       const rows = b.all === true || !ids ? plan.rows : plan.rows.filter(row => ids.has(Number(row.id)));
-      if (!rows.length) return sendJson(res, 200, { ok: true, pushed: 0, failed: [], db, code: 'same' });
+      if (!rows.length) { if (clearSettledDirty(db, policy)) saveDb(db); return sendJson(res, 200, { ok: true, pushed: 0, failed: [], db, code: 'same' }); }
       const result = await runChannelPush(db, rows, String(b.trigger || 'manual') === 'auto' ? 'auto' : 'manual');
+      clearSettledDirty(db, policy);
       saveDb(db);
       audit('channelStock.push', { count: result.pushed, ref: 'cafe24', rev: db.rev });
       return sendJson(res, 200, {
@@ -3167,6 +3170,7 @@ const server = http.createServer((req, res) => {
       };
       saveDb(db);
       audit('channelStock.settings', { ref: enabled ? 'on' : 'off', count: reserve, rev: db.rev });
+      if (enabled) scheduleChannelPush(); // 켜자마자 한 번 대조해 밀린 변동을 반영
       return sendJson(res, 200, { ok: true, db });
     }
     if (url.pathname === '/api/channel-stock/log' && req.method === 'GET') {

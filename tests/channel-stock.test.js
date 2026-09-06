@@ -13,8 +13,7 @@ const {
   planCafe24Push,
   channelDirtyCount,
   channelFailedCount,
-  pushCafe24Stock
-} = require('../lib/channel-stock');
+  pushCafe24Stock, clearSettledDirty } = require('../lib/channel-stock');
 
 const NOW = new Date('2026-09-07T09:00:00+09:00');
 
@@ -378,4 +377,17 @@ test('한 번도 확인하지 않은 줄(qty 0 기본값)은 카페24로 절대 
   assert.equal(plan.skipped.unverified, 1);
   assert.deepEqual(plan.rows.map(r => r.id), [2]); // 실사로 0 을 확인한 줄만 0 으로 반영
   assert.equal(stockInitialized({ inventory: [db.inventory[0]] }), false);
+});
+
+test('clearSettledDirty: 카페24와 같은 값·반영 대상 아님인 줄의 반영 대기 표식을 지운다', () => {
+  const db = { inventory: [
+    { id: 1, name: 'A', qty: 5, sku: 'C24V-A', productNo: 1, variantCode: 'VA', cafe24StockTracked: true, cafe24Qty: 5, lastCountedAt: NOW.toISOString(), channelDirty: true },
+    { id: 2, name: 'B', qty: 5, sku: 'C24V-B', productNo: 1, variantCode: 'VB', cafe24StockTracked: true, cafe24Qty: 9, lastCountedAt: NOW.toISOString(), channelDirty: true },
+    { id: 3, name: 'C', qty: 5, sku: 'LOCAL-C', channelDirty: true }
+  ], orders: [], seeding: [] };
+  const cleared = clearSettledDirty(db, {});
+  assert.equal(cleared, 2);
+  assert.equal(db.inventory[0].channelDirty, undefined);
+  assert.equal(db.inventory[1].channelDirty, true); // 차이가 있는 줄은 그대로 대기
+  assert.equal(db.inventory[2].channelDirty, undefined);
 });
