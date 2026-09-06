@@ -75,6 +75,17 @@ const {
 const { writeJsonAtomic, appendAudit, createMutationQueue } = require('./lib/storage');
 const { buildWorkbookBuffer, xlsxDownloadHeaders } = require('./lib/spreadsheet-export');
 const {
+  channelStockPolicy,
+  stockInitialized,
+  availableList,
+  planCafe24Push,
+  channelDirtyCount,
+  channelFailedCount,
+  lastPushAt,
+  pushCafe24Stock,
+  MAX_PUSH: CHANNEL_MAX_PUSH
+} = require('./lib/channel-stock');
+const {
   initFromCafe24,
   applyStocktake,
   ledgerSummary,
@@ -326,6 +337,8 @@ function defaultDb() {
       epostContCd: '025', // 내용품코드: 의류/패션잡화
       kakaoRestKey: '',      // 카카오 REST API 키 (주소→우편번호 자동 변환, 선택)
       pickupDeadline: '16:00', // 기사님 수거 시각 (마감 알림 기준)
+      // 채널 재고 자동 반영 (가용 수량 = 실물 − 아직 안 보낸 주문 − 예비)
+      channelStock: { enabled: false, cafe24: true, reserve: 0, autoAfterChange: true },
       // 우체국 계약고객시스템 > 파일등록 > "주문접수처 양식다운로드"에서 확인한 NUSOLVERE 실제 양식
       epostColumns: [
         '주문번호', '수취인명', '수취인 우편번호', '수취인 주소',
@@ -517,7 +530,8 @@ function cafe24AuthUrl(db) {
     redirect_uri: cafe24RedirectUri(db),
     // write_shipping: 송장 등록/삭제(배송처리)에 필요 — 없으면 insufficient_scope 로 실패
     // mall.read_community: 문의(게시판) 미답변 수 표시용 — 이 권한이 없으면 /api/cafe24/inquiries 가 supported:false 로 답한다
-    scope: 'mall.read_order,mall.write_order,mall.read_product,mall.read_shipping,mall.write_shipping,mall.read_community'
+    // mall.write_product: 채널 재고 자동 반영(옵션 재고 수정) — 없으면 insufficient_scope 로 막힌다
+    scope: 'mall.read_order,mall.write_order,mall.read_product,mall.write_product,mall.read_shipping,mall.write_shipping,mall.read_community'
   });
   return `https://${s.cafe24MallId}.cafe24api.com/api/v2/oauth/authorize?${p}`;
 }
@@ -542,6 +556,8 @@ async function cafe24TokenRequest(db, params) {
 }
 async function cafe24ExchangeCode(db, code) {
   await cafe24TokenRequest(db, { grant_type: 'authorization_code', code, redirect_uri: cafe24RedirectUri(db) });
+  // 재연결하면 권한이 새로 붙으므로 "재고 수정 권한 없음" 표시를 푼다 (갱신 토큰은 옛 권한 그대로라 여기서만 푼다)
+  if (db.channelStockScopeMissing) { delete db.channelStockScopeMissing; saveDb(db); }
 }
 async function cafe24EnsureToken(db) {
   const t = db.cafe24Token;
@@ -1801,6 +1817,8 @@ async function syncAll() {
   if (cancelWarnings.length) changed = true;
   backupDb(); // 하루 1개 자동 백업
   try { if (await checkDelivered(db)) changed = true; } catch (e) { /* 무시 */ }
+  // 채널(카페24) 판매가능 수량을 앱의 가용 재고에 맞춘다 — 자동 반영이 켜져 있을 때만
+  try { if (await reconcileChannelStock(db)) changed = true; } catch (e) { console.error('채널 재고 맞추기 실패:', e.message); }
   if (changed) saveDb(db);
   syncStatus.lastOk = syncStatus.google.ok || syncStatus.cafe24.ok ? new Date().toISOString() : syncStatus.lastOk;
   return { db, out };
@@ -2329,28 +2347,10 @@ async function matchInvoices(db, rows) {
   return results;
 }
 
-// 재고 항목과 발송 제품이 같은 물건인지 (품번/특수문자 무시, 글자만 비교 + 단어 단위 느슨 매칭)
-function stockMatches(inv, item) {
-  const lo = s => String(s || '').toLowerCase().replace(/[^a-z가-힣]/g, '');
-  const stripped = String(inv.name || '').replace(/^[A-Za-z]#?\d+_?/, '');
-  const core = lo(stripped);
-  const text = lo(item.product);
-  if (!core || core.length < 6) return false;
-  let nameOk = text.includes(core);
-  if (!nameOk) {
-    // 단어들이 순서 상관없이 전부 들어있으면 인정 ("Margot Denim(Indigoblue)" ↔ "Margot Denim Pants (Indigo Blue)")
-    const words = stripped.split(/[^A-Za-z가-힣]+/).map(lo).filter(w => w.length >= 3);
-    nameOk = words.length >= 2 && words.every(w => text.includes(w));
-  }
-  if (!nameOk) return false;
-  if (inv.color && !text.includes(lo(inv.color)) && lo(item.color) !== lo(inv.color)) return false;
-  if (inv.size && String(item.size || '').trim().toUpperCase() !== String(inv.size).trim().toUpperCase()) return false;
-  return true;
-}
-
 // 여러 재고 행이 걸리면 옵션이 구체적으로 맞는 1건만 (이중 차감/유령 복구 방지)
+// 이름 비교 규칙(stockMatchesByName)은 lib/operations.js 에 있다 — 채널 재고 계산도 같은 규칙을 써야 해서 옮겼다
 function findStockMatches(db, item) {
-  return selectStockMatches(db.inventory, item, stockMatches);
+  return selectStockMatches(db.inventory, item);
 }
 
 function prepareReturnCompletion(db, ret, restock) {
@@ -2383,6 +2383,64 @@ function logStock(db, inv, delta, reason, ref, note) {
     ...(note ? { note: String(note).slice(0, 80) } : {}) // 사람이 적은 메모 — ref(코드)와 달리 개인정보 정리에서 지우지 않음
   });
   if (db.stockLog.length > 3000) db.stockLog = db.stockLog.slice(-3000); // 오래된 것부터 정리
+  markChannelDirty(db, inv);
+}
+
+// ---------- 채널 재고 자동 반영 ----------
+// 실물이 바뀐 줄에 "반영 대기" 표시를 남기고, 자동 반영이 켜져 있으면 3초 뒤 한 번에 밀어 보낸다
+function markChannelDirty(db, inv) {
+  if (!inv) return;
+  inv.channelDirty = true;
+  scheduleChannelPush();
+}
+
+// 카페24 옵션 재고 수정 (판매가능 수량) — mall.write_product 권한 필요
+async function cafe24SetVariantQty(db, inv, qty) {
+  const token = await cafe24EnsureToken(db);
+  const path = `/api/v2/admin/products/${encodeURIComponent(inv.productNo)}` +
+    `/variants/${encodeURIComponent(inv.variantCode)}/inventories`;
+  return cafe24Fetch(db, token, path, 'PUT', { shop_no: 1, request: { quantity: Math.max(0, Number(qty) || 0) } });
+}
+
+function channelPushReady(db) {
+  return cafe24Configured(db) && !!db.cafe24Token && !db.channelStockScopeMissing;
+}
+
+// 계획한 줄을 카페24에 순차 반영 (실제 HTTP 는 여기서만 — 계산·판정은 lib/channel-stock.js)
+async function runChannelPush(db, rows, trigger) {
+  if (!rows.length) return { pushed: 0, failed: [], scopeMissing: !!db.channelStockScopeMissing };
+  if (!channelPushReady(db)) {
+    return { pushed: 0, failed: [], scopeMissing: !!db.channelStockScopeMissing, notConnected: !db.channelStockScopeMissing };
+  }
+  return pushCafe24Stock(db, rows, { trigger, send: (inv, qty) => cafe24SetVariantQty(db, inv, qty) });
+}
+
+let channelPushTimer = null;
+function scheduleChannelPush() {
+  if (VIEW_ONLY || channelPushTimer) return; // 보기 모드(노트북)는 채널에 쓰지 않는다
+  channelPushTimer = setTimeout(() => {
+    channelPushTimer = null;
+    mutationQueue.run(async () => {
+      const db = loadDb();
+      const policy = channelStockPolicy(db);
+      if (!policy.enabled || !policy.autoAfterChange || !policy.cafe24) return;
+      if (!stockInitialized(db) || !channelPushReady(db)) return;
+      const plan = planCafe24Push(db, policy);
+      const result = await runChannelPush(db, plan.rows, 'auto');
+      if (result.pushed || result.failed.length || result.scopeMissing) saveDb(db);
+    }).catch(e => console.error('채널 재고 자동 반영 실패:', e.message));
+  }, 3000);
+  if (channelPushTimer.unref) channelPushTimer.unref();
+}
+
+// 동기화 끝에 전체를 맞춰본다 (같은 값은 planCafe24Push 가 이미 걸러 낸다)
+async function reconcileChannelStock(db) {
+  const policy = channelStockPolicy(db);
+  if (VIEW_ONLY || !policy.enabled || !policy.cafe24) return 0;
+  if (!stockInitialized(db) || !channelPushReady(db)) return 0;
+  const plan = planCafe24Push(db, policy);
+  const result = await runChannelPush(db, plan.rows, 'reconcile');
+  return result.pushed + result.failed.length;
 }
 
 function restoreShipmentStock(db, item, type, reason) {
@@ -2872,7 +2930,7 @@ const server = http.createServer((req, res) => {
     // 보기 모드: 우체국 접수/취소/새로고침은 허용(시딩은 시트로 매장과 자동 합쳐짐),
     // 회수/업로드/따로보냄은 매장 전용, 카페24 관련은 "매장이 켜져 있을 때만" 양보
     if (VIEW_ONLY && req.method === 'POST' &&
-        /^\/api\/(return|manual-ship|export|upload|inbound|inventory\/(?:stocktake|init-from-cafe24))/.test(url.pathname)) {
+        /^\/api\/(return|manual-ship|export|upload|inbound|channel-stock\/push|inventory\/(?:stocktake|init-from-cafe24))/.test(url.pathname)) {
       return sendJson(res, 200, { error: '이 작업은 매장 컴퓨터에서 해주세요. (노트북 보기 모드)' });
     }
     if (VIEW_ONLY && req.method === 'POST' && /^\/api\/cafe24\//.test(url.pathname) && await storeAliveCached()) {
@@ -2908,7 +2966,17 @@ const server = http.createServer((req, res) => {
       let ver = '';
       try { ver = JSON.parse(fs.readFileSync(path.join(__dirname, 'version.json'), 'utf8')).version; } catch (e) { /* 무시 */ }
       // syncStatus 는 서버가 계속 들고 있는 값이라 건드리지 않고, 이번 응답에만 집계를 얹는다
-      const status = Object.assign({}, syncStatus, { holdCount: holdCount(db), closing: closingSummary(db) });
+      const status = Object.assign({}, syncStatus, {
+        holdCount: holdCount(db),
+        closing: closingSummary(db),
+        channelStock: {
+          enabled: channelStockPolicy(db).enabled,
+          dirty: channelDirtyCount(db),
+          failed: channelFailedCount(db),
+          lastPushAt: lastPushAt(db),
+          scopeMissing: !!db.channelStockScopeMissing
+        }
+      });
       return sendJson(res, 200, { rev: db.rev || 0, version: ver, viewOnly: VIEW_ONLY, c24Owner: !VIEW_ONLY || !(await storeAliveCached()), status });
     }
     // ── 재고/출고 마스터 API (allin_v4 등 다른 시스템이 참조하는 읽기 전용 단일 기준) ──
@@ -3002,6 +3070,8 @@ const server = http.createServer((req, res) => {
       const ids = Array.isArray(b.ids) ? b.ids.map(Number).filter(Number.isFinite) : null;
       const r = initFromCafe24(db, { ids });
       if (r.applied) {
+        // stock-ledger 는 자체 로거를 써서 logStock 을 안 지나므로 여기서 반영 대기 표시를 남긴다
+        for (const row of r.rows) markChannelDirty(db, (db.inventory || []).find(i => i.id === row.id));
         saveDb(db);
         audit('inventory.initFromCafe24', { count: r.applied, rev: db.rev });
       }
@@ -3015,6 +3085,7 @@ const server = http.createServer((req, res) => {
       if (!rows.length) return sendJson(res, 200, { error: '실사한 줄이 없어요.' });
       const db = loadDb();
       const r = applyStocktake(db, rows, { memo: b.memo });
+      for (const row of r.adjusted) markChannelDirty(db, (db.inventory || []).find(i => i.id === row.id));
       saveDb(db);
       audit('inventory.stocktake', { count: r.adjusted.length, rev: db.rev });
       return sendJson(res, 200, { ok: true, db, adjusted: r.adjusted, unchanged: r.unchanged, errors: r.errors });
@@ -3032,6 +3103,89 @@ const server = http.createServer((req, res) => {
       saveDb(db);
       audit('inventory.min', { ref: inv.sku || inventorySku(inv), count: n, rev: db.rev });
       return sendJson(res, 200, { ok: true, db });
+    }
+    // ── 채널 재고 자동 반영 ──
+    if (url.pathname === '/api/channel-stock/preview' && req.method === 'GET') {
+      const db = loadDb();
+      const policy = channelStockPolicy(db);
+      return sendJson(res, 200, {
+        ok: true,
+        enabled: policy.enabled,
+        initialized: stockInitialized(db),
+        scopeMissing: !!db.channelStockScopeMissing,
+        connected: cafe24Configured(db) && !!db.cafe24Token,
+        policy,
+        plan: planCafe24Push(db, policy),
+        lastPushAt: lastPushAt(db),
+        failCount: channelFailedCount(db)
+      });
+    }
+    if (url.pathname === '/api/channel-stock/push' && req.method === 'POST') {
+      const raw = (await readBody(req)).toString('utf8');
+      const b = raw ? JSON.parse(raw) : {};
+      const db = loadDb();
+      // 자동 반영이 꺼져 있어도 수동은 허용 — 다만 실물 재고를 한 번도 안 채웠으면 카페24를 0으로 밀 수 있어 막는다
+      if (!stockInitialized(db)) {
+        return sendJson(res, 200, { error: '실물 재고를 먼저 채워 주세요. (재고 화면에서 [카페24 수량으로 시작] 또는 재고 실사)' });
+      }
+      if (db.channelStockScopeMissing) {
+        return sendJson(res, 200, { error: '카페24 재고 수정 권한이 없어요. 설정에서 카페24를 다시 연결해 주세요.', scopeMissing: true });
+      }
+      if (!channelPushReady(db)) return sendJson(res, 200, { error: '카페24가 아직 연결되지 않았어요. 설정에서 [카페24 연결하기]를 눌러 주세요.' });
+      const policy = channelStockPolicy(db);
+      const plan = planCafe24Push(db, policy);
+      const ids = Array.isArray(b.ids) ? new Set(b.ids.map(Number).filter(Number.isFinite)) : null;
+      const rows = b.all === true || !ids ? plan.rows : plan.rows.filter(row => ids.has(Number(row.id)));
+      if (!rows.length) return sendJson(res, 200, { ok: true, pushed: 0, failed: [], db, code: 'same' });
+      const result = await runChannelPush(db, rows, String(b.trigger || 'manual') === 'auto' ? 'auto' : 'manual');
+      saveDb(db);
+      audit('channelStock.push', { count: result.pushed, ref: 'cafe24', rev: db.rev });
+      return sendJson(res, 200, {
+        ok: true, pushed: result.pushed, failed: result.failed,
+        scopeMissing: !!db.channelStockScopeMissing, skippedOverLimit: Math.max(0, rows.length - CHANNEL_MAX_PUSH), db
+      });
+    }
+    if (url.pathname === '/api/channel-stock/settings' && req.method === 'POST') {
+      const raw = (await readBody(req)).toString('utf8');
+      const b = raw ? JSON.parse(raw) : {};
+      const db = loadDb();
+      const current = channelStockPolicy(db);
+      const enabled = b.enabled === undefined ? current.enabled : b.enabled === true;
+      if (enabled && !stockInitialized(db)) {
+        return sendJson(res, 200, { error: '실물 재고를 먼저 채운 뒤에 자동 반영을 켤 수 있어요. (재고 화면에서 시작 수량을 넣어 주세요)' });
+      }
+      const reserve = b.reserve === undefined ? current.reserve : Math.round(Number(b.reserve));
+      if (!Number.isFinite(reserve) || reserve < 0 || reserve > 99) {
+        return sendJson(res, 200, { error: '예비 수량은 0~99 사이 숫자로 적어 주세요.' });
+      }
+      db.settings.channelStock = {
+        enabled,
+        cafe24: b.cafe24 === undefined ? current.cafe24 : b.cafe24 !== false,
+        reserve,
+        autoAfterChange: b.autoAfterChange === undefined ? current.autoAfterChange : b.autoAfterChange !== false
+      };
+      saveDb(db);
+      audit('channelStock.settings', { ref: enabled ? 'on' : 'off', count: reserve, rev: db.rev });
+      return sendJson(res, 200, { ok: true, db });
+    }
+    if (url.pathname === '/api/channel-stock/log' && req.method === 'GET') {
+      const db = loadDb();
+      const asked = Math.round(Number(url.searchParams.get('limit')));
+      const limit = Number.isFinite(asked) && asked > 0 ? Math.min(2000, asked) : 100;
+      return sendJson(res, 200, { ok: true, log: (db.channelSyncLog || []).slice(-limit).reverse() });
+    }
+    if (url.pathname === '/api/export/channel-stock.xlsx' && req.method === 'GET') {
+      // API 가 없는 채널(29CM·무신사·GS샵)의 파트너센터 재고 업로드용 — 카페24와 같은 가용 수량을 낸다
+      const channel = String(url.searchParams.get('channel') || '').toLowerCase();
+      if (!isChannelWithDictionary(channel)) return sendJson(res, 200, { error: '재고 엑셀을 만들 수 있는 판매채널이 아니에요.' });
+      const db = loadDb();
+      const codes = ((db.channelMappings || {})[channel] || {}).stockCodes || {};
+      const columns = ['상품명', '컬러', '사이즈', '채널 상품코드', '가용 수량'];
+      const rows = availableList(db, channelStockPolicy(db))
+        .map(row => [row.name, row.color, row.size, String(codes[row.sku] || ''), row.available]);
+      const buffer = buildWorkbookBuffer('재고업로드', columns, rows);
+      res.writeHead(200, xlsxDownloadHeaders(channel + '_재고_' + nowStamp() + '.xlsx', buffer.length));
+      return res.end(buffer);
     }
     if (url.pathname === '/api/master/stocklog' && req.method === 'GET') {
       // 입출고 변동 장부 (allin_v4 등 외부 시스템·앱 내역 화면 공용)

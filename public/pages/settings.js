@@ -116,8 +116,129 @@ function renderSettings() {
     <div class="hint">문의 수 표시는 카페24 재연결 후 가능해요. 위 [카페24 연결]을 다시 눌러 게시판 조회 권한을 추가해 주세요.</div>
   </div>`;
 
-  main().innerHTML = header + senderCard + connCard + channelMappingCardHtml() + inquiryCard + backupCard + codeCard + notifyCard;
+  main().innerHTML = header + senderCard + connCard + channelStockCardHtml() + channelMappingCardHtml() + inquiryCard + backupCard + codeCard + notifyCard;
   loadBackups();
+  cstkLoadLog();
+}
+
+// ---------- 채널 재고 자동 반영 ----------
+// db.settings.channelStock = { enabled, cafe24, reserve, autoAfterChange } — 백엔드가 아직 없으면 undefined이니 기본값으로 채운다.
+function cstkSettings() {
+  return (DB.settings && DB.settings.channelStock) || { enabled: false, cafe24: true, reserve: 0, autoAfterChange: true };
+}
+// api()는 서버가 꺼졌을 때와 라우트가 아직 없을 때(404, JSON이 아닌 응답) 구분 없이 같은 안내를 준다.
+// 이 기능은 백엔드와 같이 만들어지는 중이라 아직 없는 라우트를 "서버가 꺼졌다"고 겁주지 않고 조용히 준비 중으로 안내한다.
+function cstkErrorMsg(r) {
+  const generic = '프로그램(서버)와 연결이 안 돼요. 검은 창이 꺼졌는지 확인하고, 바탕화면 아이콘으로 다시 켜주세요.';
+  return (r && r.error && r.error !== generic) ? r.error : '아직 준비 중이에요. 잠시 후 다시 시도해 주세요.';
+}
+function channelStockCardHtml() {
+  const cs = cstkSettings();
+  const scopeMissing = !!DB.channelStockScopeMissing;
+  const statusChip = scopeMissing ? chipEl('bad', '권한 필요') : chipEl(cs.enabled ? 'ok' : 'idle', cs.enabled ? '켜짐' : '꺼짐');
+  const permBanner = scopeMissing ? banner('bad', '카페24 재연결이 필요해요 (재고 수정 권한). 위 [카페24 연결]을 다시 누르고 다시 동의해 주세요.') : '';
+  return `<div class="card">
+    <div style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:15px;margin-bottom:6px">채널 재고 자동 반영 ${statusChip}</div>
+    <div class="hint">가용 수량 = 실물 − 아직 안 보낸 주문 − 예비. 실물재고가 바뀌면 카페24 판매가능 수량을 이 값으로 맞춰요.</div>
+    ${permBanner}
+    <div class="form-row"><label for="cs-reserve">예비 수량 (채널에 내놓지 않을 개수)</label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input id="cs-reserve" type="text" inputmode="numeric" value="${esc(cs.reserve != null ? cs.reserve : 0)}" style="width:6rem" oninput="this.value=this.value.replace(/[^0-9]/g,'')">
+        ${btn({ label: '저장', onclick: 'cstkSaveReserve()', kind: 'text', size: 'sm' })}
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:4px 0 12px">
+      ${btn({ label: '미리보기', onclick: 'cstkPreview()', kind: 'secondary', icon: 'search' })}
+      ${btn({ label: '지금 카페24에 반영', onclick: 'cstkPushAll()', kind: 'secondary', icon: 'upload' })}
+      ${btn({ label: cs.enabled ? '자동 반영 끄기' : '자동 반영 켜기', onclick: 'cstkToggleEnabled()', kind: 'secondary' })}
+    </div>
+    <div id="cs-preview"></div>
+    <div style="margin-top:16px;padding-top:16px;border-top:1px dashed var(--line)">
+      <div class="step-title" style="margin-bottom:8px">최근 반영 기록</div>
+      <div id="cs-log" class="hint">불러오는 중…</div>
+    </div>
+  </div>`;
+}
+function cstkPreviewRowHtml(row) {
+  return `<tr>
+    <td>${esc(row.name)}${row.color ? ` <span class="muted">${esc(row.color)}</span>` : ''}${row.size ? ` <b>${esc(row.size)}</b>` : ''}</td>
+    <td class="num">${Number(row.physical) || 0}</td>
+    <td class="num">${Number(row.reserved) || 0}</td>
+    <td class="num">${Number(row.available) || 0}</td>
+    <td class="num">${row.cafe24Qty}</td>
+    <td class="num"><span class="diff-badge ${row.delta > 0 ? 'pos' : 'neg'}">${row.delta > 0 ? '+' : ''}${row.delta}</span></td>
+  </tr>`;
+}
+async function cstkPreview() {
+  const box = document.getElementById('cs-preview');
+  if (box) box.innerHTML = '<div class="hint">불러오는 중…</div>';
+  const r = await api('/api/channel-stock/preview');
+  if (!box) return;
+  if (!r || !r.ok) { box.innerHTML = `<div class="hint">${esc(cstkErrorMsg(r))}</div>`; return; }
+  const rows = (r.plan && r.plan.rows) || [];
+  if (!rows.length) { box.innerHTML = '<div class="hint">지금 반영할 차이가 없어요.</div>'; return; }
+  box.innerHTML = `<div class="table-wrap"><table class="tbl">
+      <thead><tr><th>상품 · 사이즈</th><th class="num">실물</th><th class="num">주문 대기</th><th class="num">가용</th><th class="num">카페24</th><th class="num">차이</th></tr></thead>
+      <tbody>${rows.map(cstkPreviewRowHtml).join('')}</tbody>
+    </table></div>
+    <div class="hint" style="margin-top:8px">${rows.length}개 옵션이 카페24와 달라요.</div>`;
+}
+async function cstkPushAll() {
+  const r = await api('/api/channel-stock/preview');
+  if (!r || !r.ok) { toast(cstkErrorMsg(r), 5000); return; }
+  const rows = (r.plan && r.plan.rows) || [];
+  if (!rows.length) { toast('지금 반영할 차이가 없어요.'); return; }
+  if (!confirm(`카페24 판매가능 수량 ${rows.length}건을 지금 반영할까요?`)) return;
+  busy(true, '카페24에 반영하는 중…');
+  const pr = await api('/api/channel-stock/push', { method: 'POST', body: JSON.stringify({ all: true, trigger: 'manual' }) });
+  busy(false);
+  if (!pr || !pr.ok) { toast(cstkErrorMsg(pr), 6000); return; }
+  if (pr.db) adoptDb(pr.db);
+  const failN = (pr.failed || []).length;
+  toast(`카페24에 ${pr.pushed || 0}건 반영했어요.` + (failN ? ` 실패 ${failN}건` : ''), 6000);
+  cstkPreview();
+  cstkLoadLog();
+}
+async function cstkToggleEnabled() {
+  const cs = cstkSettings();
+  const next = !cs.enabled;
+  if (next && !confirm('자동 반영을 켤까요?\n앞으로 재고가 바뀔 때마다 카페24 판매가능 수량을 자동으로 맞춰요.')) return;
+  const el = document.getElementById('cs-reserve');
+  const reserve = el ? Math.max(0, Math.min(99, Math.floor(Number(el.value) || 0))) : (cs.reserve || 0);
+  const r = await api('/api/channel-stock/settings', { method: 'POST', body: JSON.stringify({ enabled: next, reserve, autoAfterChange: cs.autoAfterChange !== false }) });
+  if (!r || !r.ok) { toast(cstkErrorMsg(r), 6000); return; }
+  adoptDb(r.db);
+  renderSettings();
+  toast(next ? '자동 반영을 켰어요.' : '자동 반영을 껐어요.', 5000);
+}
+async function cstkSaveReserve() {
+  const cs = cstkSettings();
+  const el = document.getElementById('cs-reserve');
+  const reserve = Math.max(0, Math.min(99, Math.floor(Number(el.value) || 0)));
+  const r = await api('/api/channel-stock/settings', { method: 'POST', body: JSON.stringify({ enabled: cs.enabled, reserve, autoAfterChange: cs.autoAfterChange !== false }) });
+  if (!r || !r.ok) { toast(cstkErrorMsg(r), 6000); return; }
+  adoptDb(r.db);
+  renderSettings();
+  toast(`예비 수량을 ${reserve}개로 저장했어요.`, 5000);
+}
+async function cstkLoadLog() {
+  const box = document.getElementById('cs-log');
+  const r = await api('/api/channel-stock/log?limit=10');
+  if (!box) return;
+  if (!r || !r.ok) { box.innerHTML = esc(cstkErrorMsg(r)); return; }
+  const log = (r.log || []).slice(0, 10);
+  if (!log.length) { box.innerHTML = '아직 반영 기록이 없어요.'; return; }
+  const rows = log.map(e => `<tr>
+      <td class="muted" style="white-space:nowrap">${esc(new Date(e.ts).toLocaleString('ko-KR', { hour12: false }))}</td>
+      <td>${esc(e.name || e.sku || '')}</td>
+      <td class="c">${e.from ?? '-'} → ${e.to ?? '-'}</td>
+      <td class="c">${e.ok ? chipEl('ok', '성공') : chipEl('bad', '실패')}</td>
+      <td class="muted">${e.error ? esc(e.error) : '-'}</td>
+    </tr>`).join('');
+  box.innerHTML = `<div class="table-wrap"><table class="tbl">
+      <thead><tr><th>시각</th><th>제품</th><th class="c">변경</th><th class="c">결과</th><th>비고</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
 }
 
 // ---------- 판매 채널 엑셀 매핑 ----------

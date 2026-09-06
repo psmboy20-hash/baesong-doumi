@@ -113,6 +113,15 @@ function renderHome() {
     rows.push(todoRow('alert', 'r', `재고 부족 ${lowStockItems.length}개 옵션`, names + (lowStockItems.length > 2 ? ' 외' : ''),
       btn({ label: '재고 보기', onclick: "window._invFilter='low';go('inventory')" })));
   }
+  const cstk = SYNC_STATUS && SYNC_STATUS.channelStock;
+  if (cstk && cstk.failed > 0) {
+    rows.push(todoRow('alert', 'r', `채널 재고 반영 실패 ${cstk.failed}개 옵션`, '',
+      btn({ label: '설정 열기', onclick: "go('settings')" })));
+  }
+  if (cstk && cstk.enabled === false && cstk.dirty > 0) {
+    rows.push(todoRow('box', 'w', `카페24 판매수량과 차이 ${cstk.dirty}개 — 자동 반영이 꺼져 있어요`, '',
+      btn({ label: '설정 열기', onclick: "go('settings')" })));
+  }
   if (retActive > 0) {
     rows.push(todoRow('refresh', 'w', `교환/반품 진행 중 ${retActive}건`, '',
       btn({ label: '교환/반품 열기', onclick: "go('returns')" })));

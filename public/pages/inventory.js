@@ -1,4 +1,35 @@
 
+// ---------- 재고: 채널 재고 자동 반영 상태 ----------
+// '차이' 열 옆에 붙는 작은 칩 — 반영 대기(channelDirty)·실패(channelSyncError, title에 오류)·반영됨(24시간 이내)
+function channelStockChip(i) {
+  if (!i.variantCode || !i.cafe24StockTracked) return '';
+  if (i.channelSyncError) return ` <span class="chip bad" title="${esc(i.channelSyncError)}">반영 실패</span>`;
+  if (i.channelDirty) return ' ' + chipEl('warn', '반영 대기');
+  if (i.cafe24PushedAt && (Date.now() - new Date(i.cafe24PushedAt).getTime()) < 86400000) return ' ' + chipEl('ok', '반영됨');
+  return '';
+}
+// api()는 서버가 꺼졌을 때와 라우트가 아직 없을 때(404)를 구분하지 않는다.
+// 이 기능은 백엔드와 같이 만들어지는 중이라 아직 없는 라우트를 "서버가 꺼졌다"고 겁주지 않고 조용히 준비 중으로 안내한다.
+function invChannelStockErrorMsg(r) {
+  const generic = '프로그램(서버)와 연결이 안 돼요. 검은 창이 꺼졌는지 확인하고, 바탕화면 아이콘으로 다시 켜주세요.';
+  return (r && r.error && r.error !== generic) ? r.error : '아직 준비 중이에요. 잠시 후 다시 시도해 주세요.';
+}
+async function invChannelPush() {
+  const r = await api('/api/channel-stock/preview');
+  if (!r || !r.ok) { toast(invChannelStockErrorMsg(r), 5000); return; }
+  const rows = (r.plan && r.plan.rows) || [];
+  if (!rows.length) { toast('지금 반영할 차이가 없어요.'); return; }
+  if (!confirm(`카페24 판매가능 수량 ${rows.length}건을 지금 반영할까요?`)) return;
+  busy(true, '카페24에 반영하는 중…');
+  const pr = await api('/api/channel-stock/push', { method: 'POST', body: JSON.stringify({ all: true, trigger: 'manual' }) });
+  busy(false);
+  if (!pr || !pr.ok) { toast(invChannelStockErrorMsg(pr), 6000); return; }
+  if (pr.db) adoptDb(pr.db);
+  const failN = (pr.failed || []).length;
+  toast(`카페24에 ${pr.pushed || 0}건 반영했어요.` + (failN ? ` 실패 ${failN}건` : ''), 6000);
+  renderInventory();
+}
+
 // ---------- 재고 ----------
 function invTabSeg() {
   const tab = window._invTab || 'stock';
@@ -148,7 +179,7 @@ function renderInventory() {
       <td class="sz">${esc(i.size) || '<span class="muted" style="font-weight:400">-</span>'}</td>
       <td class="qcell channel-stock" style="text-align:right"><span class="qty ${c24Sellable(i) && i.cafe24Qty <= 2 ? 'low' : ''}">${c24Known(i) ? i.cafe24Qty : '-'}</span></td>
       ${qtyCell}
-      <td style="text-align:center">${diffBadge(i)}</td>
+      <td style="text-align:center">${diffBadge(i)}${channelStockChip(i)}</td>
       ${minCell}
       <td style="text-align:center;width:5rem">${stChip(i)}</td>
       ${actsCell}
@@ -161,6 +192,7 @@ function renderInventory() {
   const headerActions = counting ? '' : [
     btn({ label: '입고·출고 등록', onclick: 'invMoveForm()' }),
     btn({ label: '입출고 내역·수불부', onclick: "go('stocklog')" }),
+    btn({ label: '카페24에 반영', onclick: 'invChannelPush()' }),
     btn({ label: '재고 실사 시작', onclick: 'invStocktakeStart()', kind: showBanner ? 'secondary' : 'primary' })
   ].join('');
   // 자주 안 쓰는 동작은 필터 줄 오른쪽 글자 버튼으로
