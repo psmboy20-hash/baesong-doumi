@@ -70,7 +70,7 @@ function renderSettings() {
 
     <div style="padding-bottom:16px;margin-bottom:16px;border-bottom:1px solid var(--line)">
       <div style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:15px;margin-bottom:6px">우체국 바로 접수 ${chipEl(epostConnected ? 'ok' : 'idle', epostConnected ? '연결됨' : '연결 안 됨')}</div>
-      <div class="hint">연결하면 [보내기]에서 버튼 한 번으로 우체국 접수와 송장번호 발급이 됩니다. 계약고객시스템 → 고객센터 → 오픈API신청결과 화면의 인증키와 접수용 보안키를 붙여넣으세요.</div>
+      <div class="hint">연결하면 [주문 확인]에서 버튼 한 번으로 우체국 접수와 송장번호 발급이 됩니다. 계약고객시스템 → 고객센터 → 오픈API신청결과 화면의 인증키와 접수용 보안키를 붙여넣으세요.</div>
       <div class="form-row"><label for="set-epkey">인증키</label><input id="set-epkey" value="${esc(s.epostApiKey)}"></div>
       <div class="form-row"><label for="set-epsec">접수용 보안키</label><input id="set-epsec" type="password" value="${esc(s.epostSecKey)}"></div>
       <div class="form-row"><label for="set-epid">인터넷우체국 아이디</label><input id="set-epid" value="${esc(s.epostMemberId)}"></div>
@@ -433,14 +433,14 @@ async function loadBackups() {
     <div class="muted" style="font-size:0.9rem;margin-top:8px">총 ${r.files.length}개 보관 중</div>`;
 }
 async function restoreBackup(file, date) {
-  if (!confirm(`정말 ${date} 시점의 장부로 되돌릴까요?\n\n· 그 이후에 한 모든 작업(접수·재고 변경 등)이 화면에서 사라져요\n· 되돌리기 직전 상태도 백업 폴더에 따로 저장돼요\n· 되돌린 뒤엔 [우체국 접수]에서 [진행상태 새로고침]을 꼭 눌러 주세요`)) return;
+  if (!confirm(`정말 ${date} 시점의 장부로 되돌릴까요?\n\n· 그 이후에 한 모든 작업(접수·재고 변경 등)이 화면에서 사라져요\n· 되돌리기 직전 상태도 백업 폴더에 따로 저장돼요\n· 되돌린 뒤엔 [출고]에서 [진행상태 새로고침]을 꼭 눌러 주세요`)) return;
   busy(true, '되돌리는 중…');
   const r = await api('/api/backup/restore', { method: 'POST', body: JSON.stringify({ file }) });
   busy(false);
   if (r.error) { toast(r.error, 7000); return; }
   adoptDb(r.db);
   render();
-  toast(`${date} 시점으로 되돌렸어요. [우체국 접수]에서 진행상태를 새로고침해 주세요.`, 10000);
+  toast(`${date} 시점으로 되돌렸어요. [출고]에서 진행상태를 새로고침해 주세요.`, 10000);
 }
 async function saveSettings() {
   const s = DB.settings;

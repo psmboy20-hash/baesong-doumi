@@ -163,7 +163,7 @@ function renderReturns() {
 
   const guide = `<div class="hint">
     회수 신청은 우체국 기사님이 송장을 들고 고객 집으로 방문해요(출력 없음).<br>
-    물건 도착 확인은 검수 결과에 따라 재고가 들어오고, 교환이면 [보내기]에 재발송 1건이 생겨요.<br>
+    물건 도착 확인은 검수 결과에 따라 재고가 들어오고, 교환이면 [주문 확인]에 재발송 1건이 생겨요.<br>
     회수만 취소는 우체국 방문만 취소하고 교환·반품 접수는 남겨요. 전체 취소는 우체국과 카페24 접수까지 같이 취소해요.<br>
     반품 환불 결제는 돈이 움직이므로 자동 승인하지 않고 카페24의 환불 상태를 확인해 완료로 넘겨요.
   </div>`;
@@ -283,7 +283,7 @@ function retPick(v) {
 }
 // 발송 전 취소: 보내기 목록에서 빼기 (배송 확인에서 되돌릴 수 있음)
 async function cancelSend(kind, id, name) {
-  if (!confirm(`${name}님 건을 보내지 않기로 할까요?\n\n· 보내기 목록에서 빠져요\n· [배송 확인]에서 [다시 보내기]로 언제든 되돌릴 수 있어요`)) return;
+  if (!confirm(`${name}님 건을 보내지 않기로 할까요?\n\n· 주문 확인 목록에서 빠져요\n· [배송 확인]에서 [다시 보내기]로 언제든 되돌릴 수 있어요`)) return;
   const list = kind === 'seeding' ? DB.seeding : DB.orders;
   const x = list.find(i => i.id === id);
   if (!x) return;
@@ -301,7 +301,7 @@ async function restoreSend(kind, id, name) {
   x.manualCanceled = false;
   await saveDb();
   render();
-  toast(`${name}님 건을 [보내기] 목록으로 되돌렸어요.`, 5000);
+  toast(`${name}님 건을 [주문 확인] 목록으로 되돌렸어요.`, 5000);
 }
 // 다른 택배사 등 자동 확인이 안 되는 건을 손으로 [배달 끝] 처리
 async function markDelivered(kind, id, name) {
@@ -367,7 +367,7 @@ async function returnComplete(id, name, kind, inspection) {
     toast(retry.warning || '카페24 상태까지 다시 맞췄어요.', 8000);
     return;
   }
-  const extra = kind === '교환' ? '\n· 교환이라서 [보내기]에 재발송 건이 새로 생겨요' : '';
+  const extra = kind === '교환' ? '\n· 교환이라서 [주문 확인]에 재발송 건이 새로 생겨요' : '';
   let sellable;
   if (inspection === 'sellable' || inspection === 'damaged') {
     // 도착 확인 인라인 버튼([양품 · 재고로]/[불량 · 폐기])에서 바로 넘어온 경우 — 확인만 한 번
@@ -393,7 +393,7 @@ async function returnComplete(id, name, kind, inspection) {
   render();
   let msg = '완료했어요.';
   if (r.stock && r.stock.length) msg += ' 재고 +' + r.stock.map(s => s.name + '(' + s.left + '개)').join(', ');
-  if (r.resend) msg += ` / 재발송 건이 [보내기]에 생겼어요: ${r.resend.product}`;
+  if (r.resend) msg += ` / 재발송 건이 [주문 확인]에 생겼어요: ${r.resend.product}`;
   toast(msg, 8000);
   if (r.warning) setTimeout(() => alert(r.warning), 200);
 }

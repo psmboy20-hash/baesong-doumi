@@ -136,6 +136,16 @@
     if (filter === 'problem') {
       return source.status === '발송완료' && !source.delivered && source.epost.stus === '04';
     }
+    // 출력됨 · 수거 대기 — 인쇄(앱 라벨 또는 [출력함 표시])는 끝났지만 아직 기사님이 못 가져간 건
+    if (filter === 'printedWait') {
+      return source.status === '발송완료' && !source.delivered &&
+        !!source.printed &&
+        !['03', '05'].includes(source.epost.stus || '01');
+    }
+    // 수거됨 — 우체국이 기사님 수거를 확인한 건(배달완료 여부와는 별개 축)
+    if (filter === 'collected') {
+      return source.epost.stus === '03';
+    }
     return true;
   }
 

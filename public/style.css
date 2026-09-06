@@ -68,6 +68,10 @@ a { color: inherit; }
 .side nav a:hover, .side nav button:hover { background: var(--bg); color: var(--text); }
 .side nav a.on, .side nav a.active,
 .side nav button.on, .side nav button.active { background: var(--primary-soft); color: var(--primary-dark); }
+.kind-tag { display: inline-flex; align-items: center; gap: 4px; }
+.kind-tag .ic { flex-shrink: 0; }
+.pick-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 1200px) { .pick-grid { grid-template-columns: 1fr; } }
 .nav-badge {
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 18px; height: 18px; padding: 0 5px; margin-left: auto;

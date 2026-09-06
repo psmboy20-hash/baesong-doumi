@@ -325,6 +325,21 @@ function shipmentSourceLabel(x) {
   if (x.sourceChannel === 'other') return '기타 채널';
   return '주문';
 }
+// 구분 칸 아이콘+글자용 정규화 — shipmentSourceLabel과 같은 우선순위지만 GS샵도 구분하고 kind 키까지 같이 준다
+function shipmentKindOf(x, isSeeding) {
+  if (x.exchange || x.sourceChannel === 'exchange') return { kind: 'exchange', label: '교환 재발송' };
+  if (isSeeding || x.sourceChannel === 'seeding' || x._kind === '시딩') return { kind: 'seeding', label: seedingSourceLabel(x) };
+  if (x.sourceChannel === 'direct') return { kind: 'direct', label: '직접 등록' };
+  if (x.sourceChannel === '29cm') return { kind: '29cm', label: '29CM' };
+  if (x.sourceChannel === 'musinsa') return { kind: 'musinsa', label: '무신사' };
+  if (x.sourceChannel === 'gsshop') return { kind: 'gsshop', label: 'GS샵' };
+  if (x.sourceChannel === 'other') return { kind: 'order', label: '기타 채널' };
+  return { kind: 'order', label: '주문' };
+}
+function kindTag(x, isSeeding) {
+  const k = shipmentKindOf(x, isSeeding);
+  return `<span class="kind-tag">${kindIcon(k.kind)}${esc(k.label)}</span>`;
+}
 function externalSyncIssues() {
   const rows = [];
   for (const item of [...(DB.orders || []), ...(DB.seeding || []), ...(DB.returns || [])]) {
@@ -363,14 +378,15 @@ const HELP = {
   home: `여기는 <b>전체 요약</b> 화면이에요.<br>오늘 할 일 목록은 물건이 지금 어느 단계에 몇 건 있는지 보여줘요. 버튼을 누르면 그 화면으로 이동합니다.<br>아래엔 보낼 준비·수거 기다림·가는 중·이달 배달 끝 숫자와 연결 상태가 있어요.`,
   send: `주문과 시딩은 <b>5분마다 자동으로</b> 들어와요. 직접 입력할 필요 없어요.<br>
 ① 목록에서 보낼 사람이 맞는지 체크 확인<br>
-② <b>[우체국 바로 접수]</b> — 송장번호가 그 자리에서 나와요. 인쇄는 [우체국 접수]에서<br>
+② <b>[우체국 바로 접수]</b> — 송장번호가 그 자리에서 나와요. 운송장 출력은 [출고]에서<br>
 ③ 우체국 창구 등 <b>앱 밖에서 이미 보낸 건</b>은 그 줄의 <b>[직접 보냄으로 표시]</b>를 누르면 정리돼요<br>
 ④ 안 보낼 건은 <b>[보내지 않음]</b> — 마음이 바뀌면 [배송 확인]에서 <b>[다시 보내기]</b>로 되돌려요<br>
 ⑤ <b>우편번호 없음</b>이 뜬 줄은 5자리를 넣고 저장 — 옷 꺼낼 땐 <b>[오늘 쌀 목록 인쇄]</b>가 편해요`,
-  epost: `앱으로 우체국에 접수한 택배 목록이에요.<br>
-· <b>[인쇄]</b> — 라벨기로 운송장을 뽑아 상자에 붙여요<br>
-· <b>[새로고침]</b> — 예약·수거가 어디까지 됐는지 우체국에 물어봐요<br>
-· <b>[취소]</b> — 기사님이 가져가기 전까지 할 수 있어요. 취소 버튼이 보이면 아직 가능하다는 뜻이에요. 취소하면 [보내기]로 돌아갑니다`,
+  epost: `앱으로 우체국에 접수한 택배가 지금 어느 단계인지 보여줘요.<br>
+· <b>오늘 쌀 목록</b> — 아직 안 걷어간 택배를 제품별·사람별로 모아 보여줘요<br>
+· <b>[운송장 출력]</b> — 라벨기로 뽑아 상자에 붙여요. 우체국 홈페이지에서 출력했다면 [출력함 표시]는 눌러도 되고 안 눌러도 돼요<br>
+· <b>[진행상태 새로고침]</b> — 예약·수거가 어디까지 됐는지 우체국에 물어봐요<br>
+· <b>접수 취소</b> — 기사님이 가져가기 전까지 할 수 있어요. 취소하면 [주문 확인]으로 돌아갑니다`,
   shipping: `보낸 물건 전체 기록이에요.<br>
 · <b>송장번호</b>를 누르면 지금 어디쯤 가는지 우체국 페이지가 열려요<br>
 · 배달이 끝나면 <b>배달 끝</b>이 자동으로 붙어요 (5분마다 확인)<br>

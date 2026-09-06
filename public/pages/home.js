@@ -36,14 +36,14 @@ function closingCardHtml() {
   const nowMin = now.getHours() * 60 + now.getMinutes();
   const within = Number.isFinite(dlMin) && nowMin >= dlMin - 120;
   const notPrintedAction = closing.notPrinted > 0
-    ? `<div style="margin-top:8px">${btn({ label: '우체국 접수 열기', kind: 'text', size: 'sm', onclick: "go('epost')" })}</div>` : '';
+    ? `<div style="margin-top:8px">${btn({ label: '출고 열기', kind: 'text', size: 'sm', onclick: "go('epost')" })}</div>` : '';
   const holdAction = closing.holds > 0
     ? btn({ label: '보류 보기', kind: 'text', size: 'sm', onclick: 'openSendHold()' }) : '';
   return `<div class="card">
     <details ${within ? 'open' : ''}>
       <summary style="font-size:15px;font-weight:700;cursor:pointer">마감 준비${fmtDeadline(dl) ? ' · 수거 ' + esc(fmtDeadline(dl)) : ''}</summary>
       <div class="hint" style="margin-top:0.6rem">
-        오늘 접수 <b>${closing.registered || 0}</b> · 인쇄 <b>${closing.printed || 0}</b> · 미인쇄 <b>${closing.notPrinted || 0}</b> · 미집하 <b>${closing.notCollected || 0}</b> · 보류 <b>${closing.holds || 0}</b> ${holdAction}
+        오늘 접수 <b>${closing.registered || 0}</b> · 출력 <b>${closing.printed || 0}</b> · 운송장 출력 대기 <b>${closing.notPrinted || 0}</b>장 · 미집하 <b>${closing.notCollected || 0}</b> · 보류 <b>${closing.holds || 0}</b> ${holdAction}
       </div>
       ${notPrintedAction}
     </details>
@@ -94,11 +94,11 @@ function renderHome() {
     const first = toSendGroups[0] ? toSendGroups[0][0] : null;
     const sub = first ? (toSendGroups.length > 1 ? `${esc(first.name)} 외 ${toSendGroups.length - 1}건` : esc(first.name)) : '';
     rows.push(todoRow('send', 'b', `보낼 택배 ${toSend}건 (상품 ${toSendQty}개)`, sub,
-      btn({ label: '우체국 접수하기', onclick: "go('send')", kind: 'primary' })));
+      btn({ label: '주문 확인하기', onclick: "go('send')", kind: 'primary' })));
   }
   if (notPickedUp > 0) {
     rows.push(todoRow('post', 'w', `미집하 ${notPickedUp}건`, '우체국 접수 후 3일 넘게 기사님이 못 가져갔어요',
-      btn({ label: '우체국 접수 열기', onclick: "go('epost','problem')" })));
+      btn({ label: '출고 열기', onclick: "go('epost','problem')" })));
   }
   if (overdueUnconfirmed > 0) {
     rows.push(todoRow('clock', 'w', `배달 확인이 안 된 택배 ${overdueUnconfirmed}건`, '받았으면 [배달 끝 처리]로 옮겨 주세요',
@@ -128,7 +128,7 @@ function renderHome() {
   }
   if (epostOpPending > 0) {
     rows.push(todoRow('post', 'w', `우체국 접수 확인 중 ${epostOpPending}건`, '',
-      btn({ label: '우체국 접수 열기', onclick: "go('epost')" })));
+      btn({ label: '출고 열기', onclick: "go('epost')" })));
   }
   if (syncIssues.length > 0) {
     const first = syncIssues[0];
@@ -197,8 +197,8 @@ function renderHome() {
       <summary style="font-size:15px;font-weight:700;cursor:pointer">보내는 순서 (처음이면 펼쳐 보세요)</summary>
       <div class="hint" style="margin-top:0.6rem">
         ① 주문·시딩은 <b>5분마다 저절로</b> 들어와요<br>
-        ② [보내기]에서 <b>[우체국 바로 접수]</b> — 송장번호가 즉시 발급돼요<br>
-        ③ [우체국 접수]에서 <b>[운송장 인쇄]</b> — 라벨기에서 뽑아 상자에 붙여요<br>
+        ② [주문 확인]에서 <b>[우체국 바로 접수]</b> — 송장번호가 즉시 발급돼요<br>
+        ③ [출고]에서 <b>[운송장 출력]</b> — 라벨기에서 뽑아 상자에 붙여요<br>
         ④ 끝. 카페24 배송처리·재고 차감·구글시트 기록은 저절로 됩니다
       </div>
     </details>

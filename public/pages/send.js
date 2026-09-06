@@ -265,7 +265,7 @@ function renderSendRow(m) {
 
   return `<tr class="${m.allSel ? 'checked-row' : ''}${m.hold ? ' hold-row' : ''}">
     <td><input type="checkbox" ${m.allSel ? 'checked' : ''} ${blocked ? 'disabled' : ''} onchange="toggleSelGroup('${m.spec}',this.checked)"></td>
-    <td><b>${esc(first.name)}</b>${first.insta ? `<span class="sub">${esc(first.insta)}</span>` : ''}<span class="sub">${esc(first.phone)} · ${esc(m.sourceLabel)}${first.orderNo ? ' ' + esc(first.orderNo) : ''}</span></td>
+    <td><b>${esc(first.name)}</b>${first.insta ? `<span class="sub">${esc(first.insta)}</span>` : ''}<span class="sub">${esc(first.phone)} · <span class="kind-tag">${kindIcon(m.category)}${esc(m.sourceLabel)}</span>${first.orderNo ? ' ' + esc(first.orderNo) : ''}</span></td>
     <td style="min-width:240px;max-width:480px">${productsHtml}${packingAction}${notesHtml}${staffMemoHtml}</td>
     <td class="num">${m.groupProductQty}</td>
     <td style="max-width:420px">${addrHtml}</td>
@@ -324,7 +324,7 @@ function renderSend() {
   ].join('');
 
   const header = pageHeader({
-    title: '보내기',
+    title: '주문 확인',
     sub: '카페24 주문과 시딩 선물을 한 번에 우체국으로 보낼 준비를 해요.',
     actions: headerActions
   });
@@ -493,7 +493,7 @@ async function fixZipGroup(spec, inputId) {
 }
 async function cancelSendGroup(spec, name) {
   const items = specItems(spec);
-  if (!confirm(`${name}님 건(${items.length}개)을 보내지 않기로 할까요?\n\n· 보내기 목록에서 빠져요\n· [배송 확인]에서 [다시 보내기]로 언제든 되돌릴 수 있어요`)) return;
+  if (!confirm(`${name}님 건(${items.length}개)을 보내지 않기로 할까요?\n\n· 주문 확인 목록에서 빠져요\n· [배송 확인]에서 [다시 보내기]로 언제든 되돌릴 수 있어요`)) return;
   for (const { x } of items) { x.status = '취소됨'; x.manualCanceled = true; }
   await saveDb();
   render();
@@ -817,7 +817,7 @@ async function doEpostRegister() {
     html += `<div class="result-box ok"><div class="big">우체국 접수 완료. 송장번호가 나왔어요.</div>` +
       ok.map(x => `${esc(x.name)} → 송장 <b>${esc(x.regiNo)}</b>${x.price ? ' (예상요금 ' + esc(x.price) + '원)' : ''}`).join('<br>') +
       (printSel.length ? `<div style="margin-top:0.8rem">${btn({ label: '운송장 인쇄', kind: 'success', onclick: `printLabels('${printSel.join(',')}')` })}</div>` : '') +
-      `<div class="muted" style="font-size:0.95rem;font-weight:400;margin-top:0.6rem">이 내용은 [우체국 접수] 화면에서 언제든 다시 볼 수 있어요.</div></div>`;
+      `<div class="muted" style="font-size:0.95rem;font-weight:400;margin-top:0.6rem">이 내용은 [출고] 화면에서 언제든 다시 볼 수 있어요.</div></div>`;
   }
   if (fail.length) {
     html += `<div class="result-box err"><div class="big">접수 못 한 건 ${fail.length}건</div>` +

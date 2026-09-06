@@ -1,10 +1,5 @@
 
 // ---------- 배송 확인 ----------
-// app-core.js의 shipmentSourceLabel엔 아직 GS샵이 없어 여기서만 보정한다
-function shipSourceLabel(x) {
-  if (x.sourceChannel === 'gsshop') return 'GS샵';
-  return shipmentSourceLabel(x);
-}
 function shipDefaultDate(offsetDays) {
   const d = new Date(Date.now() + offsetDays * 86400000);
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
@@ -60,7 +55,7 @@ function renderShipping() {
     ? `'${esc(q)}'(으)로 찾은 것이 없어요. ${btn({ label: '전체 보기', onclick: "window._shipQ='';renderShipping()", kind: 'text' })}`
     : f !== 'all'
       ? `이 단계에는 지금 아무것도 없어요. ${btn({ label: '전체 보기', onclick: "go('shipping','all')", kind: 'text' })}`
-      : `아직 보낸 택배가 없어요. ${btn({ label: '보내기 열기', onclick: "go('send')", kind: 'text' })}`;
+      : `아직 보낸 택배가 없어요. ${btn({ label: '주문 확인 열기', onclick: "go('send')", kind: 'text' })}`;
 
   const kindOf = x => x._kind === '시딩' ? 'seeding' : 'orders';
   const rows = filtered.slice(0, 200).map(x => {
@@ -88,7 +83,7 @@ function renderShipping() {
 
     return `
     <tr>
-      <td style="white-space:nowrap">${shipSourceLabel(x)}</td>
+      <td style="white-space:nowrap">${kindTag(x, x._kind === '시딩')}</td>
       <td style="white-space:nowrap">${esc(x.sentDate || '')}</td>
       <td><b>${esc(x.name)}</b></td>
       <td style="min-width:240px;max-width:480px">${pp.name}${pp.opt || ''}${memo}</td>

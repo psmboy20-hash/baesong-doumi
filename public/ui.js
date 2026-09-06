@@ -33,12 +33,23 @@ const ICONS = {
   edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
   filter: '<path d="M4 5h16"/><path d="M7 12h10"/><path d="M10 19h4"/>',
   users: '<path d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="10" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
-  chart: '<path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/>'
+  chart: '<path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/>',
+  cart: '<circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/>',
+  gift: '<rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M19 12v7a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-7"/><path d="M7.5 8a2.5 2.5 0 0 1 0-5C11 3 12 8 12 8s1-5 4.5-5a2.5 2.5 0 0 1 0 5"/>',
+  swap: '<path d="m16 3 4 4-4 4"/><path d="M20 7H4"/><path d="m8 21-4-4 4-4"/><path d="M4 17h16"/>',
+  file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>'
 };
 function icon(name, size) {
   size = size || 18;
   const body = ICONS[name] || '';
   return `<svg class="ic" viewBox="0 0 24 24" width="${size}" height="${size}" stroke="currentColor" fill="none" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+}
+
+// ---------- 구분 아이콘 (주문/시딩/교환/직접등록/채널) ----------
+// kind: 'order'|'seeding'|'exchange'|'direct'|채널키('29cm'|'musinsa'|'gsshop' 등) — 채널 주문도 카트 아이콘을 쓴다.
+function kindIcon(kind) {
+  const map = { seeding: 'gift', exchange: 'swap', direct: 'file' };
+  return icon(map[kind] || 'cart', 15);
 }
 
 // ---------- 페이지 헤더 ----------

@@ -113,7 +113,7 @@ function lineRows(x, products) {
     return { type: type === 'seeding' ? 'seeding' : 'order', id: Number(idStr) };
   });
   const out = document.getElementById('out');
-  if (!refs.length) { out.innerHTML = '<p class="muted">인쇄할 항목이 없어요. 보내기 화면에서 체크한 뒤 [포장 명세 인쇄]를 다시 눌러 주세요.</p>'; return; }
+  if (!refs.length) { out.innerHTML = '<p class="muted">인쇄할 항목이 없어요. 주문 확인 화면에서 체크한 뒤 [포장 명세 인쇄]를 다시 눌러 주세요.</p>'; return; }
   let db;
   try {
     db = await (await fetch('/api/db')).json();
