@@ -75,6 +75,14 @@ const {
 const { writeJsonAtomic, appendAudit, createMutationQueue } = require('./lib/storage');
 const { buildWorkbookBuffer, xlsxDownloadHeaders } = require('./lib/spreadsheet-export');
 const {
+  initFromCafe24,
+  applyStocktake,
+  ledgerSummary,
+  toCsv,
+  LEDGER_COLUMNS,
+  STOCKLOG_COLUMNS
+} = require('./lib/stock-ledger');
+const {
   clientJson,
   mergeClientDb,
   accessCodeRequiredForIp,
@@ -371,6 +379,11 @@ function excelDate(v) {
 function today() { // 한국 로컬 날짜 (UTC를 쓰면 오전 9시 전 접수가 전날로 찍힘)
   const d = new Date(), p = n => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+// 수불부·CSV 의 ym 파라미터 — YYYY-MM 모양이 아니면 이번 달로 (파일명·필터에 그대로 쓰이므로)
+function monthParam(v) {
+  const s = String(v == null ? '' : v).trim();
+  return /^\d{4}-\d{2}$/.test(s) ? s : today().slice(0, 7);
 }
 function nowStamp() {
   const d = new Date();
@@ -2253,7 +2266,7 @@ function prepareReturnCompletion(db, ret, restock) {
 // 재고 변동 장부: 입고/출고/복구가 일어날 때마다 한 줄씩 남긴다 (입출고 내역 화면·마스터 API용)
 // 재고수불 구분 — 화면·수불부·마스터 API가 같은 이름을 쓴다
 const STOCK_MOVE_REASONS = {
-  in: ['본사 입고', '반품 입고', '교환 회수 입고', '입고 (직접)', '재고 조정 (+)'],
+  in: ['기초 재고', '본사 입고', '반품 입고', '교환 회수 입고', '입고 (직접)', '재고 조정 (+)'],
   out: ['주문 출고', '시딩 출고', '교환 재발송 출고', '샘플 출고', '본사 출고', '폐기·불량', '차감 (직접)', '재고 조정 (−)']
 };
 function shipmentStockReason(type, item) {
@@ -2261,13 +2274,14 @@ function shipmentStockReason(type, item) {
   if (item && (item.exchange || item.sourceChannel === 'exchange')) return '교환 재발송 출고';
   return '주문 출고';
 }
-function logStock(db, inv, delta, reason, ref) {
+function logStock(db, inv, delta, reason, ref, note) {
   if (!db.stockLog) db.stockLog = [];
   db.stockLog.push({
     ts: new Date().toISOString(), date: today(),
     sku: inv.sku || inventorySku(inv),
     name: inv.name, color: inv.color || '', size: inv.size || '',
-    delta, left: inv.qty, reason, ref: ref || ''
+    delta, left: inv.qty, reason, ref: ref || '',
+    ...(note ? { note: String(note).slice(0, 80) } : {}) // 사람이 적은 메모 — ref(코드)와 달리 개인정보 정리에서 지우지 않음
   });
   if (db.stockLog.length > 3000) db.stockLog = db.stockLog.slice(-3000); // 오래된 것부터 정리
 }
@@ -2673,6 +2687,17 @@ function sendJson(res, code, obj) {
   });
   res.end(body);
 }
+function sendCsv(res, filename, csv) {
+  // 엑셀에서 바로 열리도록 UTF-8 BOM 포함 텍스트를 그대로 내려준다 (파일명은 한글이라 RFC 5987)
+  const body = Buffer.from(String(csv), 'utf8');
+  res.writeHead(200, {
+    'Content-Type': 'text/csv; charset=utf-8',
+    'Content-Disposition': `attachment; filename="stock.csv"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+    'Content-Length': body.length,
+    'Cache-Control': 'no-store, max-age=0'
+  });
+  res.end(body);
+}
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.ico': 'image/x-icon', '.svg': 'image/svg+xml' };
 
 const mutationQueue = createMutationQueue();
@@ -2703,7 +2728,7 @@ const server = http.createServer((req, res) => {
     // 보기 모드: 우체국 접수/취소/새로고침은 허용(시딩은 시트로 매장과 자동 합쳐짐),
     // 회수/업로드/따로보냄은 매장 전용, 카페24 관련은 "매장이 켜져 있을 때만" 양보
     if (VIEW_ONLY && req.method === 'POST' &&
-        /^\/api\/(return|manual-ship|export|upload)/.test(url.pathname)) {
+        /^\/api\/(return|manual-ship|export|upload|inventory\/(?:stocktake|init-from-cafe24))/.test(url.pathname)) {
       return sendJson(res, 200, { error: '이 작업은 매장 컴퓨터에서 해주세요. (노트북 보기 모드)' });
     }
     if (VIEW_ONLY && req.method === 'POST' && /^\/api\/cafe24\//.test(url.pathname) && await storeAliveCached()) {
@@ -2814,7 +2839,7 @@ const server = http.createServer((req, res) => {
       const wanted = String(b.reason || '').trim();
       const allowedReasons = applied > 0 ? STOCK_MOVE_REASONS.in : STOCK_MOVE_REASONS.out;
       const reason = allowedReasons.includes(wanted) ? wanted : (applied > 0 ? '입고 (직접)' : '차감 (직접)');
-      if (applied) logStock(db, inv, applied, reason, String(b.memo || '').trim().slice(0, 80));
+      if (applied) logStock(db, inv, applied, reason, '', String(b.memo || '').trim().slice(0, 80));
       if (Math.abs(applied) < Math.abs(d)) {
         saveDb(db);
         return sendJson(res, 200, { ok: true, db, short: true, applied, error: `재고가 ${before}개뿐이라 ${Math.abs(applied)}개만 뺐어요.` });
@@ -2823,13 +2848,83 @@ const server = http.createServer((req, res) => {
       audit('inventory.adjust', { ref: inv.sku || inventorySku(inv), count: applied, rev: db.rev });
       return sendJson(res, 200, { ok: true, db });
     }
+    if (url.pathname === '/api/inventory/init-from-cafe24' && req.method === 'POST') {
+      // 카페24 판매가능 수량을 실물 기초재고로 한 번에 채워 넣기 (실사 전 시작점)
+      const raw = (await readBody(req)).toString('utf8');
+      const b = raw ? JSON.parse(raw) : {};
+      const db = loadDb();
+      const ids = Array.isArray(b.ids) ? b.ids.map(Number).filter(Number.isFinite) : null;
+      const r = initFromCafe24(db, { ids });
+      if (r.applied) {
+        saveDb(db);
+        audit('inventory.initFromCafe24', { count: r.applied, rev: db.rev });
+      }
+      return sendJson(res, 200, { ok: true, db, applied: r.applied, skipped: r.skipped, rows: r.rows });
+    }
+    if (url.pathname === '/api/inventory/stocktake' && req.method === 'POST') {
+      // 재고 실사 확정 — 센 수량과 장부 수량의 차이를 '재고 조정'으로 남긴다
+      const raw = (await readBody(req)).toString('utf8');
+      const b = raw ? JSON.parse(raw) : {};
+      const rows = Array.isArray(b.rows) ? b.rows : [];
+      if (!rows.length) return sendJson(res, 200, { error: '실사한 줄이 없어요.' });
+      const db = loadDb();
+      const r = applyStocktake(db, rows, { memo: b.memo });
+      saveDb(db);
+      audit('inventory.stocktake', { count: r.adjusted.length, rev: db.rev });
+      return sendJson(res, 200, { ok: true, db, adjusted: r.adjusted, unchanged: r.unchanged, errors: r.errors });
+    }
+    if (url.pathname === '/api/inventory/min' && req.method === 'POST') {
+      // 안전재고(이 개수 이하면 '부족') 수정
+      const raw = (await readBody(req)).toString('utf8');
+      const b = raw ? JSON.parse(raw) : {};
+      const db = loadDb();
+      const inv = (db.inventory || []).find(i => i.id === b.id);
+      if (!inv) return sendJson(res, 200, { error: '해당 재고를 찾지 못했어요.' });
+      const n = Math.round(Number(b.minQty));
+      if (!Number.isFinite(n) || n < 0 || n > 999) return sendJson(res, 200, { error: '안전재고는 0~999 사이 숫자로 적어 주세요.' });
+      inv.minQty = n;
+      saveDb(db);
+      audit('inventory.min', { ref: inv.sku || inventorySku(inv), count: n, rev: db.rev });
+      return sendJson(res, 200, { ok: true, db });
+    }
     if (url.pathname === '/api/master/stocklog' && req.method === 'GET') {
       // 입출고 변동 장부 (allin_v4 등 외부 시스템·앱 내역 화면 공용)
       const db = loadDb();
       const since = String(url.searchParams.get('since') || '').trim();
+      let sku = String(url.searchParams.get('sku') || '').trim();
+      // id 로 물으면 그 재고 줄의 SKU(없으면 이름|색상|사이즈 규칙)로 찾는다 — 옛 줄엔 sku 필드가 없을 수 있어서
+      const idParam = String(url.searchParams.get('id') || '').trim(); // Number(null) 은 0 이라 "없음"과 구분해야 한다
+      const askedId = idParam ? Number(idParam) : NaN;
+      if (!sku && Number.isFinite(askedId)) {
+        const inv = (db.inventory || []).find(i => i.id === askedId);
+        // 없는 id 를 물었는데 장부 전체를 돌려주면 남의 이력이 그 옵션 것처럼 보인다
+        if (!inv) return sendJson(res, 200, { ok: true, source: 'baesong-doumi', count: 0, since: since || null, sku: null, limit: 0, log: [] });
+        sku = inv.sku || inventorySku(inv);
+      }
+      const askedLimit = Math.round(Number(url.searchParams.get('limit')));
+      const limit = Number.isFinite(askedLimit) && askedLimit > 0 ? Math.min(3000, askedLimit) : 1000;
       let rows = db.stockLog || [];
       if (since) rows = rows.filter(r => r.date >= since);
-      return sendJson(res, 200, { ok: true, source: 'baesong-doumi', count: rows.length, since: since || null, log: rows.slice(-1000).reverse() });
+      if (sku) rows = rows.filter(r => String(r.sku || '') === sku);
+      return sendJson(res, 200, { ok: true, source: 'baesong-doumi', count: rows.length, since: since || null, sku: sku || null, limit, log: rows.slice(-limit).reverse() });
+    }
+    if ((url.pathname === '/api/master/ledger' || url.pathname === '/api/master/ledger.csv') && req.method === 'GET') {
+      // 월별 수불부 (기초 → 입고 → 출고 → 기말)
+      const db = loadDb();
+      const ym = monthParam(url.searchParams.get('ym'));
+      const r = ledgerSummary(db.stockLog || [], db.inventory || [], ym);
+      if (url.pathname === '/api/master/ledger.csv') {
+        return sendCsv(res, `수불부_${r.ym}.csv`, toCsv(r.rows, LEDGER_COLUMNS));
+      }
+      return sendJson(res, 200, { ok: true, ym: r.ym, rows: r.rows, totals: r.totals });
+    }
+    if (url.pathname === '/api/master/stocklog.csv' && req.method === 'GET') {
+      // 그 달 입출고 내역 CSV (ym 이 YYYY-MM 이 아니면 이번 달)
+      const db = loadDb();
+      const ym = monthParam(url.searchParams.get('ym'));
+      let rows = (db.stockLog || []).filter(r => String(r.date || '').startsWith(ym));
+      rows = rows.slice(-3000).reverse();
+      return sendCsv(res, `입출고내역_${ym}.csv`, toCsv(rows, STOCKLOG_COLUMNS));
     }
     if (url.pathname === '/api/inventory/split' && req.method === 'POST') {
       // 재고 한 줄을 사이즈별 줄로 나눔 (예: S/M/L) — 출고 차감이 사이즈까지 정확히 맞도록
