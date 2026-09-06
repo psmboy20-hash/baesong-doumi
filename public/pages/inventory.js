@@ -1,6 +1,15 @@
 
 // ---------- 재고 ----------
+function invTabSeg() {
+  const tab = window._invTab || 'stock';
+  const inboundN = (DB.inbound || []).filter(x => x.status === 'expected').length;
+  return seg([
+    { key: 'stock', label: '재고', on: tab === 'stock', onclick: "window._invTab='stock';renderInventory()" },
+    { key: 'inbound', label: '입고 예정', count: inboundN, on: tab === 'inbound', onclick: "window._invTab='inbound';renderInventory()" }
+  ]);
+}
 function renderInventory() {
+  if ((window._invTab || 'stock') === 'inbound') { renderInboundTab(); return; }
   const q = (window._invQ || '').trim();
   const filter = window._invFilter || 'all'; // all | diff | low | zero | unknown
   const counting = !!window._invCount;
@@ -214,9 +223,122 @@ function renderInventory() {
       actionHtml: btn({ label: '전체 보기', onclick: "window._invQ='';window._invFilter='all';renderInventory()", kind: 'text' })
     });
 
-  main().innerHTML = header + kpis + bannerHtml + invStocktakeResultHtml() + (counting ? countBar : toolbar) + tableOrEmpty;
+  main().innerHTML = header + invTabSeg() + kpis + bannerHtml + invStocktakeResultHtml() + (counting ? countBar : toolbar) + tableOrEmpty;
   injectHelp();
   if (counting) invStocktakeMark();
+}
+
+// ---------- 재고: 입고 예정 ----------
+// 도착 예정일까지 남은 날 수 (오늘=0, 지남=음수)
+function invSoonDays(eta) {
+  if (!eta) return Infinity;
+  const target = new Date(eta + 'T00:00:00');
+  if (Number.isNaN(target.getTime())) return Infinity;
+  const today = new Date(new Date().toDateString());
+  return Math.floor((target - today) / 86400000);
+}
+function invInboundItemLabel(x) {
+  const item = (DB.inventory || []).find(i => i.id === x.inventoryId);
+  if (item) return invLabel(item);
+  return esc(x.name || '이름 없음') + (x.color ? ` <span class="muted">${esc(x.color)}</span>` : '') + (x.size ? ` <b>${esc(x.size)}</b>` : '');
+}
+function renderInboundTab() {
+  PAGE = 'inventory';
+  const list = [...(DB.inbound || [])].filter(x => x.status === 'expected')
+    .sort((a, b) => String(a.eta || '').localeCompare(String(b.eta || '')));
+  const soonN = list.filter(x => invSoonDays(x.eta) <= 3).length;
+
+  const header = pageHeader({
+    title: '재고',
+    sub: '앞으로 들어올 물건을 미리 등록해 두면 도착일에 맞춰 입고 확인만 하면 돼요.',
+    actions: btn({ label: '입고 예정 등록', onclick: 'inbForm()', kind: 'primary', icon: 'plus' })
+  });
+  const kpis = kpiStrip([
+    { label: '입고 예정', value: list.length, unit: '건' },
+    { label: '3일 내 도착', value: soonN, unit: '건', tone: soonN ? 'hot' : '' }
+  ]);
+  const rows = list.map(x => {
+    const soon = invSoonDays(x.eta) <= 3;
+    return `<tr>
+      <td style="white-space:nowrap">${esc(x.eta || '-')} ${soon ? chipEl('warn', '곧 도착') : ''}</td>
+      <td>${invInboundItemLabel(x)}</td>
+      <td class="c">${esc(x.size || '') || '<span class="muted">-</span>'}</td>
+      <td class="num">${Number(x.qty) || 0}개</td>
+      <td>${x.memo ? esc(x.memo) : '<span class="muted">-</span>'}</td>
+      <td class="acts">
+        ${btn({ label: '입고 확인', onclick: `inbReceive(${x.id})`, kind: 'text', size: 'sm' })}
+        ${btn({ label: '취소', onclick: `inbCancel(${x.id})`, kind: 'text', size: 'sm' })}
+      </td>
+    </tr>`;
+  }).join('');
+  const table = rows ? tableWrap(`<table class="tbl">
+      <thead><tr><th>도착 예정일</th><th>상품</th><th class="c">사이즈</th><th class="num">수량</th><th>메모</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`) : emptyState({
+    icon: 'box', title: '입고 예정이 없어요',
+    sub: '앞으로 들어올 물건을 등록해 두면 도착일에 맞춰 알려드려요.',
+    actionHtml: btn({ label: '입고 예정 등록', onclick: 'inbForm()', size: 'sm' })
+  });
+
+  main().innerHTML = header + invTabSeg() + kpis + `<div id="inb-form"></div>` + table;
+  injectHelp();
+}
+function inbForm() {
+  const box = document.getElementById('inb-form');
+  if (!box) return;
+  box.innerHTML = `
+    <div class="card" style="border:2px solid #cfe0f5;background:#f7faff">
+      <div class="step-title">입고 예정 등록</div>
+      <div class="form-row"><label>제품 검색</label><input id="inb-filter" placeholder="제품 이름·컬러·사이즈로 찾기" oninput="invMoveFilterItems(this.value,'inb-item')"></div>
+      <div class="form-row"><label>제품 / 사이즈</label><select id="inb-item" style="font-size:1rem;padding:0.5rem;border:2px solid var(--line);border-radius:8px;max-width:100%" size="6">${invMoveItemOptions('')}</select></div>
+      <div class="form-row"><label>수량</label><input id="inb-qty" type="number" value="1" min="1" style="width:6rem"></div>
+      <div class="form-row"><label>도착 예정일</label><input id="inb-eta" type="date"></div>
+      <div class="form-row"><label>메모 (선택 — 예: 9월 2차 생산분)</label><input id="inb-memo" maxlength="80" placeholder="어디서 들어오는지"></div>
+      <div style="display:flex;gap:0.6rem;flex-wrap:wrap">
+        ${btn({ label: '등록', onclick: 'inbSave()', kind: 'primary' })}
+        ${btn({ label: '취소', onclick: "document.getElementById('inb-form').innerHTML=''", kind: 'text' })}
+      </div>
+    </div>`;
+  document.getElementById('inb-filter').focus();
+}
+async function inbSave() {
+  const sel = document.getElementById('inb-item');
+  if (!sel || !sel.value) { toast('제품을 골라 주세요.'); return; }
+  const inventoryId = Number(sel.value);
+  const qty = Math.max(1, Math.floor(Number(document.getElementById('inb-qty').value) || 0));
+  const eta = document.getElementById('inb-eta').value;
+  const memo = document.getElementById('inb-memo').value.trim();
+  if (!eta) { toast('도착 예정일을 골라 주세요.'); return; }
+  const r = await api('/api/inbound', { method: 'POST', body: JSON.stringify({ inventoryId, qty, eta, memo }) });
+  if (r.error && !r.ok) { toast(r.error, 5000); return; }
+  adoptDb(r.db);
+  renderInventory();
+  toast('입고 예정을 등록했어요.', 5000);
+}
+async function inbReceive(id) {
+  const item = (DB.inbound || []).find(x => x.id === id);
+  if (!item) return;
+  const ans = prompt('입고 수량을 확인해 주세요.', item.qty);
+  if (ans === null) return;
+  const raw = String(ans).trim();
+  if (!/^\d+$/.test(raw)) { toast('숫자로 적어 주세요.', 4000); return; }
+  const qty = Math.max(0, Math.floor(Number(raw)));
+  const r = await api('/api/inbound/receive', { method: 'POST', body: JSON.stringify({ id, qty }) });
+  if (r.error && !r.ok) { toast(r.error, 5000); return; }
+  adoptDb(r.db);
+  window._invHistCache = new Map();
+  renderInventory();
+  toast(`입고 ${qty}개 확인했어요.`, 5000);
+}
+async function inbCancel(id) {
+  const item = (DB.inbound || []).find(x => x.id === id);
+  if (!item) return;
+  if (!confirm('이 입고 예정을 취소할까요?')) return;
+  const r = await api('/api/inbound/cancel', { method: 'POST', body: JSON.stringify({ id }) });
+  if (r.error && !r.ok) { toast(r.error, 5000); return; }
+  adoptDb(r.db);
+  renderInventory();
+  toast('입고 예정을 취소했어요.');
 }
 // ── 재고 실사 모드 ──
 function invStocktakeStart() {
@@ -261,7 +383,7 @@ async function invStocktakeConfirm() {
   if (!confirm(`실사 결과를 확정할까요?\n확인한 줄 ${rows.length}개 (수량 바뀐 줄 ${dirtyN}개)`)) return;
   const r = await api('/api/inventory/stocktake', { method: 'POST', body: JSON.stringify({ rows, memo }) });
   if (r.error && !r.ok) { toast(r.error, 5000); return; }
-  DB = r.db;
+  adoptDb(r.db);
   window._invCount = false;
   window._invHistCache = new Map();
   const errors = r.errors || [];
@@ -315,7 +437,7 @@ async function invSetMin(id) {
   const n = Math.max(0, Math.min(999, Math.floor(Number(raw))));
   const r = await api('/api/inventory/min', { method: 'POST', body: JSON.stringify({ id, minQty: n }) });
   if (r.error && !r.ok) { toast(r.error, 5000); return; }
-  DB = r.db;
+  adoptDb(r.db);
   renderInventory();
   toast(`안전재고를 ${n}개로 바꿨어요.`);
 }
@@ -338,7 +460,7 @@ async function invInitFromCafe24() {
   if (!confirm('카페24 판매가능 수량을 실물재고 기초값으로 가져올까요?\n(이미 실물 수량이 입력된 옵션은 건드리지 않아요)')) return;
   const r = await api('/api/inventory/init-from-cafe24', { method: 'POST', body: JSON.stringify({}) });
   if (r.error && !r.ok) { toast(r.error, 5000); return; }
-  DB = r.db;
+  adoptDb(r.db);
   window._invHistCache = new Map(); // 이력 패널 캐시는 재고가 바뀌면 낡는다
   renderInventory();
   toast(`기초재고 ${r.applied || 0}개 옵션 설정했어요.` + (r.skipped ? ` (건너뜀 ${r.skipped}개)` : ''), 6000);
@@ -394,7 +516,7 @@ async function invSplit(id) {
   if (ans === null) return;
   const r = await api('/api/inventory/split', { method: 'POST', body: JSON.stringify({ id, sizes: ans }) });
   if (r.error) { toast(r.error, 5000); return; }
-  DB = r.db;
+  adoptDb(r.db);
   window._invHistCache = new Map();
   renderInventory();
   toast(`${r.made.join('/')} 사이즈 줄로 나눴어요. 각 사이즈의 실제 개수를 ＋로 채워 주세요.`, 6000);
@@ -405,7 +527,7 @@ async function invAdj(id, d) {
   // 서버가 처리해야 입출고 내역에 남는다
   const r = await api('/api/inventory/adjust', { method: 'POST', body: JSON.stringify({ id, delta: d }) });
   if (r.error) { toast(r.error, 4000); return; }
-  DB = r.db;
+  adoptDb(r.db);
   window._invHistCache = new Map();
   renderInventory();
 }
@@ -444,8 +566,8 @@ function invMoveItemOptions(filterText) {
   return filtered.map(i => `<option value="${i.id}">${esc(i.name)}${i.color ? ' / ' + esc(i.color) : ''}${i.size ? ' / ' + esc(i.size) : ''} (지금 ${Number(i.qty) || 0}개)</option>`).join('')
     || `<option value="" disabled selected>일치하는 제품이 없어요</option>`;
 }
-function invMoveFilterItems(text) {
-  const sel = $('#mv-item');
+function invMoveFilterItems(text, selId) {
+  const sel = $('#' + (selId || 'mv-item'));
   if (!sel) return;
   sel.innerHTML = invMoveItemOptions(text);
 }
@@ -493,7 +615,7 @@ async function invMoveSave() {
   if (!isIn && qty > item.qty && !confirm(`지금 재고가 ${item.qty}개인데 ${qty}개를 빼려고 해요.\n재고는 0개까지만 줄어요. 계속할까요?`)) return;
   const r = await api('/api/inventory/adjust', { method: 'POST', body: JSON.stringify({ id, delta: isIn ? qty : -qty, reason, memo }) });
   if (r.error && !r.ok) { toast(r.error, 5000); return; }
-  DB = r.db;
+  adoptDb(r.db);
   window._invHistCache = new Map();
   renderInventory();
   toast(`${reason} ${qty}개 기록했어요.` + (r.short ? ' ' + r.error : ''), 6000);

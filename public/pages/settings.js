@@ -111,8 +111,189 @@ function renderSettings() {
     ${notifyOn ? '' : `<div>${btn({ label: '알림 켜기', onclick: 'enableNotify()' })}</div>`}
   </div>`;
 
-  main().innerHTML = header + senderCard + connCard + backupCard + codeCard + notifyCard;
+  const inquiryCard = `<div class="card">
+    <div class="step-title">카페24 문의 수 표시</div>
+    <div class="hint">문의 수 표시는 카페24 재연결 후 가능해요. 위 [카페24 연결]을 다시 눌러 게시판 조회 권한을 추가해 주세요.</div>
+  </div>`;
+
+  main().innerHTML = header + senderCard + connCard + channelMappingCardHtml() + inquiryCard + backupCard + codeCard + notifyCard;
   loadBackups();
+}
+
+// ---------- 판매 채널 엑셀 매핑 ----------
+const CHANNEL_OPTIONS = [
+  { key: '29cm', label: '29CM' },
+  { key: 'musinsa', label: '무신사' },
+  { key: 'gsshop', label: 'GS샵' }
+];
+const CHANNEL_FIELD_LABELS = [
+  ['orderNo', '주문번호'], ['lineNo', '품목번호'], ['name', '수령인'], ['phone', '연락처'], ['zip', '우편번호'],
+  ['addr', '주소'], ['product', '상품명'], ['option', '옵션'], ['qty', '수량'], ['msg', '배송메시지']
+];
+// 채널별 헤더 동의어(자동 추천용) — 실제 채널 엑셀 샘플이 아직 없어 스펙의 사전으로 추천하고,
+// 사용자가 select에서 최종 확정한다. 새 샘플이 오면 이 사전을 갱신할 것.
+const CHANNEL_FIELD_SYNONYMS = {
+  '29cm': {
+    orderNo: ['주문번호', '주문 번호'], lineNo: ['품목번호', '섹션번호'], name: ['수령인', '수취인', '받는분'],
+    phone: ['수령인 연락처', '휴대폰', '연락처'], zip: ['우편번호'], addr: ['주소', '배송지'],
+    product: ['상품명', '품목명'], option: ['옵션명', '색상/사이즈', '옵션'], qty: ['수량'],
+    msg: ['배송메시지', '배송메모', '요청사항']
+  },
+  musinsa: {
+    orderNo: ['주문번호'], lineNo: ['품목주문번호', '주문상세번호'], name: ['수취인', '수령인'],
+    phone: ['휴대폰', '연락처'], zip: ['우편번호'], addr: ['주소'],
+    product: ['상품명', '상품'], option: ['옵션정보', '단품명', '옵션'], qty: ['수량'],
+    msg: ['배송메시지', '배송요청']
+  },
+  gsshop: {
+    orderNo: ['발주번호', '주문번호'], lineNo: ['상세번호', '주문상세번호', '순번'], name: ['수취인', '수령인', '고객명'],
+    phone: ['전화번호', '휴대폰', '연락처'], zip: ['우편번호'], addr: ['주소'],
+    product: ['상품명', '상품'], option: ['단품명', '규격', '옵션'], qty: ['수량'],
+    msg: ['배송요청', '배송메시지', '메모']
+  }
+};
+function chanGuessField(headers, candidates) {
+  for (const c of candidates || []) {
+    const hit = headers.find(h => String(h).trim() === c);
+    if (hit) return hit;
+  }
+  for (const c of candidates || []) {
+    const hit = headers.find(h => String(h).includes(c));
+    if (hit) return hit;
+  }
+  return '';
+}
+function chanState() {
+  if (!window._chanState) {
+    window._chanState = {
+      channel: '29cm', headers: [], sample: [], mapping: {},
+      invoiceHeaders: '', invoiceOrderCol: '', invoiceLineCol: '', invoiceCourierCol: '', invoiceInvoiceCol: '', courierName: '우체국택배'
+    };
+    chanLoadSaved(window._chanState.channel);
+  }
+  return window._chanState;
+}
+// 저장된 매핑(DB.channelMappings[channel])을 불러와 폼에 미리 채운다
+function chanLoadSaved(channel) {
+  const st = window._chanState;
+  const saved = DB.channelMappings && DB.channelMappings[channel];
+  st.mapping = {};
+  st.headers = []; st.sample = [];
+  st.invoiceHeaders = ''; st.invoiceOrderCol = ''; st.invoiceLineCol = ''; st.invoiceCourierCol = ''; st.invoiceInvoiceCol = ''; st.courierName = '우체국택배';
+  if (saved) {
+    st.mapping = Object.assign({}, saved.headers || {});
+    st.headers = Object.values(st.mapping).filter(Boolean);
+    const inv = saved.invoiceTemplate || {};
+    st.invoiceHeaders = (inv.headers || []).join(', ');
+    st.invoiceOrderCol = inv.orderNoCol || '';
+    st.invoiceLineCol = inv.lineNoCol || '';
+    st.invoiceCourierCol = inv.courierCol || '';
+    st.invoiceInvoiceCol = inv.invoiceCol || '';
+    st.courierName = inv.courierName || '우체국택배';
+  }
+}
+function chanSetChannel(channel) {
+  chanState(); // 초기화 보장
+  window._chanState.channel = channel;
+  chanLoadSaved(channel);
+  renderSettings();
+}
+function chanSetField(key, value) { chanState().mapping[key] = value; }
+function chanSetInvoiceField(key, value) { chanState()[key] = value; }
+function chanPickFile() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.xlsx,.xls,.csv';
+  input.onchange = () => { if (input.files[0]) chanUploadPreview(input.files[0]); };
+  input.click();
+}
+// 엑셀 열 읽기 — send.js의 uploadFile과 같은 전송 방식(원문 바이트 + X-File-Name 헤더)을 그대로 씀
+async function chanUploadPreview(file) {
+  if (file.size > 10 * 1024 * 1024) { toast('파일이 너무 커요. 10MB 이하 엑셀 또는 CSV 파일을 골라 주세요.', 7000); return; }
+  const st = chanState();
+  busy(true, '엑셀 열을 읽는 중…');
+  try {
+    const buf = await file.arrayBuffer();
+    const r = await api('/api/channels/preview?channel=' + encodeURIComponent(st.channel), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', 'X-File-Name': encodeURIComponent(file.name) },
+      body: buf
+    });
+    busy(false);
+    if (!r || r.error || !r.ok) { toast((r && r.error) || '엑셀을 읽지 못했어요.', 7000); return; }
+    st.headers = r.headers || [];
+    st.sample = r.sample || [];
+    const syn = CHANNEL_FIELD_SYNONYMS[st.channel] || {};
+    for (const [key] of CHANNEL_FIELD_LABELS) {
+      if (st.mapping[key] && st.headers.includes(st.mapping[key])) continue; // 저장된 값이 새 헤더에도 있으면 유지
+      st.mapping[key] = chanGuessField(st.headers, syn[key]);
+    }
+    renderSettings();
+    toast(`열 ${st.headers.length}개를 읽었어요. 자동으로 추천했으니 확인하고 저장하세요.`, 6000);
+  } catch (e) {
+    busy(false);
+    toast('파일을 읽지 못했어요: ' + e.message, 7000);
+  }
+}
+async function chanSaveMapping() {
+  const st = chanState();
+  const missing = CHANNEL_FIELD_LABELS.filter(([k]) => !st.mapping[k]);
+  if (missing.length) { toast('아직 안 고른 항목이 있어요: ' + missing.map(([, label]) => label).join(', '), 7000); return; }
+  const headers = {};
+  for (const [k] of CHANNEL_FIELD_LABELS) headers[k] = st.mapping[k];
+  const invHeadersList = st.invoiceHeaders.split(',').map(s => s.trim()).filter(Boolean);
+  const invoiceTemplate = {
+    headers: invHeadersList,
+    orderNoCol: st.invoiceOrderCol.trim(),
+    lineNoCol: st.invoiceLineCol.trim(),
+    courierCol: st.invoiceCourierCol.trim(),
+    invoiceCol: st.invoiceInvoiceCol.trim(),
+    courierName: st.courierName.trim() || '우체국택배'
+  };
+  const r = await api('/api/channels/mapping', { method: 'POST', body: JSON.stringify({ channel: st.channel, headers, invoiceTemplate }) });
+  if (r.error && !r.ok) { toast(r.error, 6000); return; }
+  adoptDb(r.db);
+  renderSettings();
+  toast('채널 매핑을 저장했어요.', 5000);
+}
+function chanFieldSelect(id, headers, value, onchange) {
+  const list = [...headers];
+  if (value && !list.includes(value)) list.unshift(value);
+  const opts = ['<option value="">선택 안 함</option>']
+    .concat(list.map(h => `<option value="${esc(h)}"${h === value ? ' selected' : ''}>${esc(h)}</option>`));
+  return `<select id="${id}" onchange="${onchange}" style="font-size:1rem;padding:0.45rem;border:2px solid var(--line);border-radius:8px;max-width:100%">${opts.join('')}</select>`;
+}
+function channelMappingCardHtml() {
+  const st = chanState();
+  const hasHeaders = st.headers.length > 0;
+  const chanSelect = `<select id="chan-select" onchange="chanSetChannel(this.value)" style="font-size:1rem;padding:0.45rem;border:2px solid var(--line);border-radius:8px">
+    ${CHANNEL_OPTIONS.map(c => `<option value="${c.key}"${c.key === st.channel ? ' selected' : ''}>${c.label}</option>`).join('')}
+  </select>`;
+  const fieldRows = CHANNEL_FIELD_LABELS.map(([key, label]) => `
+    <div class="form-row"><label>${esc(label)}</label>${chanFieldSelect('chan-f-' + key, st.headers, st.mapping[key] || '', `chanSetField('${key}',this.value)`)}</div>`
+  ).join('');
+  const hasAnyMapping = CHANNEL_FIELD_LABELS.some(([k]) => st.mapping[k]);
+  return `<div class="card">
+    <div class="step-title">판매 채널 엑셀 매핑</div>
+    <div class="hint">채널마다 엑셀 열 이름이 달라요. 파일을 한 번 읽어서 어느 열이 무엇인지 확인하고 저장해 두면 다음부터 자동으로 맞춰 읽어요.</div>
+    <div class="form-row"><label>채널</label>${chanSelect}</div>
+    <div style="margin-bottom:12px;display:flex;align-items:center;gap:10px">
+      ${btn({ label: '엑셀 열 읽기', onclick: 'chanPickFile()', icon: 'upload' })}
+      ${hasHeaders ? `<span class="muted">열 ${st.headers.length}개 확인함</span>` : ''}
+    </div>
+    ${hasHeaders || hasAnyMapping ? fieldRows : `<div class="hint">엑셀 열 읽기를 먼저 눌러 주세요. 파일을 읽으면 필수 항목 10개를 자동으로 추천해요.</div>`}
+    <div style="margin:16px 0 0;padding-top:16px;border-top:1px dashed var(--line)">
+      <div class="step-title" style="margin-bottom:8px">송장 등록 템플릿</div>
+      <div class="hint">채널에 다시 올릴 송장 엑셀의 열 구성이에요. 헤더는 쉼표로 구분해 적어 주세요.</div>
+      <div class="form-row"><label>헤더 목록</label><input id="chan-inv-headers" value="${esc(st.invoiceHeaders)}" placeholder="예: 주문번호, 품목번호, 택배사, 송장번호" oninput="chanSetInvoiceField('invoiceHeaders',this.value)"></div>
+      <div class="form-row"><label>주문번호 열</label><input id="chan-inv-order" value="${esc(st.invoiceOrderCol)}" oninput="chanSetInvoiceField('invoiceOrderCol',this.value)"></div>
+      <div class="form-row"><label>품목 열</label><input id="chan-inv-line" value="${esc(st.invoiceLineCol)}" oninput="chanSetInvoiceField('invoiceLineCol',this.value)"></div>
+      <div class="form-row"><label>택배사 열</label><input id="chan-inv-courier" value="${esc(st.invoiceCourierCol)}" oninput="chanSetInvoiceField('invoiceCourierCol',this.value)"></div>
+      <div class="form-row"><label>송장 열</label><input id="chan-inv-invoice" value="${esc(st.invoiceInvoiceCol)}" oninput="chanSetInvoiceField('invoiceInvoiceCol',this.value)"></div>
+      <div class="form-row"><label>택배사 표기명</label><input id="chan-inv-courier-name" value="${esc(st.courierName)}" oninput="chanSetInvoiceField('courierName',this.value)"></div>
+    </div>
+    <div style="margin-top:8px">${btn({ label: '매핑 저장', onclick: 'chanSaveMapping()', kind: 'secondary', icon: 'check' })}</div>
+  </div>`;
 }
 
 async function loadBackups() {

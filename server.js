@@ -100,6 +100,34 @@ const {
   zipForChangedAddress
 } = require('./lib/postal');
 const {
+  searchCustomers,
+  getCustomer,
+  setCustomerNote,
+  globalSearch
+} = require('./lib/customers');
+const {
+  monthlyStats,
+  shippingCostRows,
+  shipmentCsvRows,
+  SHIPPING_COST_COLUMNS,
+  SHIPMENT_COLUMNS
+} = require('./lib/stats');
+const {
+  addInbound,
+  receiveInbound,
+  cancelInbound,
+  inboundList
+} = require('./lib/inbound');
+const {
+  isChannelWithDictionary,
+  channelFieldLabels,
+  parseChannelSheet,
+  previewChannelSheet,
+  normalizeInvoiceTemplate,
+  buildInvoiceRows,
+  normalizeMapping
+} = require('./lib/channels');
+const {
   seedKey,
   normalizeSeedingPacking,
   stableSheetRowId,
@@ -488,7 +516,8 @@ function cafe24AuthUrl(db) {
     state: cafe24State,
     redirect_uri: cafe24RedirectUri(db),
     // write_shipping: 송장 등록/삭제(배송처리)에 필요 — 없으면 insufficient_scope 로 실패
-    scope: 'mall.read_order,mall.write_order,mall.read_product,mall.read_shipping,mall.write_shipping'
+    // mall.read_community: 문의(게시판) 미답변 수 표시용 — 이 권한이 없으면 /api/cafe24/inquiries 가 supported:false 로 답한다
+    scope: 'mall.read_order,mall.write_order,mall.read_product,mall.read_shipping,mall.write_shipping,mall.read_community'
   });
   return `https://${s.cafe24MallId}.cafe24api.com/api/v2/oauth/authorize?${p}`;
 }
@@ -689,6 +718,23 @@ function cafe24OptionParts(raw) {
   return { color, size };
 }
 
+// 카페24 금액 필드 이름은 응답 구조에 따라 다르다 — 품목 판매가 → 실결제금액/수량 순으로 본다 (없으면 null)
+function cafe24ItemPrice(item) {
+  const direct = Number(item && item.product_price);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  const paid = Number(item && item.payment_amount);
+  const qty = Number(item && item.quantity) || 1;
+  if (Number.isFinite(paid) && paid > 0) return Math.round(paid / qty);
+  return null;
+}
+function cafe24OrderAmount(order) {
+  for (const key of ['payment_amount', 'actual_payment_amount', 'order_price_amount']) {
+    const value = Number(order && order[key]);
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return null;
+}
+
 async function cafe24FetchOrders(db) {
   const token = await cafe24EnsureToken(db);
   const end = new Date();
@@ -760,6 +806,10 @@ async function cafe24FetchOrders(db) {
           color, size,
           option: it.option_value || '',
           qty: Number(it.quantity) || 1,
+          // 통계 매출용 금액 — 카페24 품목의 판매가(product_price), 없으면 실결제금액(payment_amount)/수량.
+          // 옛 주문에는 이 값이 없어 null 로 두고, 화면은 null 이면 매출을 '—' 로 표시한다.
+          price: cafe24ItemPrice(it),
+          orderAmount: cafe24OrderAmount(o),
           productNo: it.product_no || null,
           variantCode: it.variant_code || '',
           orderItemCode: it.order_item_code || '',
@@ -863,6 +913,54 @@ async function cafe24WriteClaim(db, ret, action, values) {
     saveDb(db);
     throw error;
   }
+}
+
+// ---------- 카페24 문의(게시판) 미답변 수 ----------
+// 게시판 API 는 mall.read_community 권한이 있어야 한다 — 예전에 연결한 토큰에는 없으므로
+// 권한이 없거나 조회에 실패하면 오류가 아니라 supported:false 로 알려주고 화면은 "재연결하면 볼 수 있어요"만 띄운다.
+const INQUIRY_CACHE_MS = 15 * 60 * 1000;
+let inquiryCache = { at: 0, value: null };
+
+function inquiryUnsupported(reason) {
+  return { ok: true, supported: false, unanswered: 0, boards: [], reason };
+}
+
+async function cafe24Inquiries(db) {
+  if (inquiryCache.value && Date.now() - inquiryCache.at < INQUIRY_CACHE_MS) return inquiryCache.value;
+  if (!cafe24Configured(db) || !db.cafe24Token) return inquiryUnsupported('카페24가 아직 연결되지 않았어요.');
+  let value;
+  try {
+    const token = await cafe24EnsureToken(db);
+    const listed = await cafe24Fetch(db, token, '/api/v2/admin/boards');
+    if (listed.status === 401 || listed.status === 403 || listed.status === 422) {
+      value = inquiryUnsupported('문의 수를 보려면 설정에서 카페24를 다시 연결해 주세요. (게시판 읽기 권한 필요)');
+    } else if (listed.status !== 200 || !listed.json) {
+      value = inquiryUnsupported('카페24 게시판을 읽지 못했어요 (' + listed.status + ').');
+    } else {
+      const boards = (listed.json.boards || []).filter(board => {
+        const name = String(board.board_name || board.name || '');
+        return /문의|Q&A|qna/i.test(name) || [6, 9].includes(Number(board.board_no));
+      }).slice(0, 5);
+      const rows = [];
+      let unanswered = 0;
+      for (const board of boards) {
+        const boardNo = Number(board.board_no);
+        if (!Number.isFinite(boardNo)) continue;
+        // 최근 100건만 본다 (배지용 숫자라 전체를 훑지 않는다)
+        const articles = await cafe24Fetch(db, token, '/api/v2/admin/boards/' + boardNo + '/articles?limit=100');
+        if (articles.status !== 200 || !articles.json) continue;
+        const open = (articles.json.articles || []).filter(article =>
+          String(article.reply_status || 'N').toUpperCase() !== 'C').length;
+        unanswered += open;
+        rows.push({ board_no: boardNo, name: String(board.board_name || board.name || ('게시판 ' + boardNo)), unanswered: open });
+      }
+      value = { ok: true, supported: true, unanswered, boards: rows };
+    }
+  } catch (error) {
+    value = inquiryUnsupported(error.message);
+  }
+  inquiryCache = { at: Date.now(), value };
+  return value;
 }
 
 // ---------- 우체국 계약소포 OpenAPI ----------
@@ -1774,7 +1872,7 @@ function parseSeedingSheet(ws, schemaOut) {
 
 // ---------- 주문 시트/카페24 엑셀 파싱 ----------
 // 엑셀로 넣을 수 있는 판매채널 (주문 수집 자동 연동은 카페24만; 나머지는 채널 어드민에서 내려받은 주문 엑셀)
-const ORDER_CHANNELS = { cafe24: '카페24', '29cm': '29CM', musinsa: '무신사', other: '기타 채널' };
+const ORDER_CHANNELS = { cafe24: '카페24', '29cm': '29CM', musinsa: '무신사', gsshop: 'GS샵', other: '기타 채널' };
 
 function parseOrderRows(rows) {
   // 헤더 행 찾기 (앞 10행 안에서 '수령인'류 + '주소'류가 함께 있는 행)
@@ -1835,7 +1933,7 @@ function optKey(o) {
   return (String(o.color || '') + '|' + String(o.size || '') + '|' + String(o.option || ''))
     .toLowerCase().replace(/\s/g, '').slice(0, 40);
 }
-function orderKey(o) { return (o.orderNo || '') + '|' + String(o.orderItemCode || '') + '|' + normName(o.name) + '|' + phoneDigits(o.phone) + '|' + String(o.product || '').replace(/\s/g, '').slice(0, 40) + '|' + optKey(o); }
+function orderKey(o) { return (o.orderNo || '') + '|' + String(o.orderItemCode || '') + '|' + String(o.lineNo || '') + '|' + normName(o.name) + '|' + phoneDigits(o.phone) + '|' + String(o.product || '').replace(/\s/g, '').slice(0, 40) + '|' + optKey(o); }
 
 function mergeSeeding(db, parsed) {
   return mergeSeedingRows(db, parsed, { zipForChangedAddress, clearZipLookupState, today });
@@ -1985,7 +2083,7 @@ function mergeOrders(db, parsed) {
           (!ex.canceledInvoice || (p.invoice && p.invoice !== ex.canceledInvoice))) { ex.status = '발송완료'; ch = true; }
       if (shipped && !ex.sentDate && p.sentDate) { ex.sentDate = p.sentDate; ch = true; }
       if (p.orderNo && !ex.orderNo) { ex.orderNo = p.orderNo; ch = true; }
-      for (const f of ['productNo', 'variantCode', 'orderItemCode', 'orderedAt', 'sku', 'sourceChannel']) {
+      for (const f of ['productNo', 'variantCode', 'orderItemCode', 'lineNo', 'orderedAt', 'sku', 'price', 'orderAmount', 'sourceChannel']) {
         if (p[f] != null && String(p[f]) !== '' && String(p[f]) !== String(ex[f] ?? '')) { ex[f] = p[f]; ch = true; }
       }
       // 아직 안 보낸 건은 주소/연락처/옵션 변경을 최신으로 반영
@@ -2048,6 +2146,7 @@ function buildParcelGroups(db, selected) {
     // 이미 보낸 건은 서버에서도 걸러냄 (화면이 30초 묵은 상태에서 눌러도 이중 접수 방지)
     if (!(item && item.status !== '취소됨' && item.status !== '발송완료' && !item.epost)) continue;
     if (item.shippingHold || item.sheetCancelHold) continue;
+    if (item.hold) continue; // 보류 중인 건은 우체국 접수·엑셀 접수 양쪽에서 뺀다
     if (item.epostOp && ['pending', 'unknown'].includes(item.epostOp.state)) continue;
     // 과거에 이미 보낸 것과 같은 내용이면 차단 — [한 번 더 보내기]로 확인한 건(resendOk)만 통과
     if (!item.resendOk) {
@@ -2675,6 +2774,51 @@ async function finishPostProcessShipped(db, matchedItems, results) {
   return results;
 }
 
+// ---------- 홈 마감 카드 ----------
+// 보류 건수 (아직 안 보낸 것만) — 홈 '오늘 할 일'과 마감 카드가 같은 숫자를 쓴다.
+// 항목 수가 아니라 택배 묶음 수로 센다 (보내기 화면의 '보류 N' 세그먼트와 같은 숫자여야 한다)
+function holdCount(db) {
+  const keys = new Set();
+  for (const [list, type] of [[db.orders || [], 'order'], [db.seeding || [], 'seeding']]) {
+    for (const item of list) {
+      if (!item.hold || item.status === '발송완료' || item.status === '취소됨') continue;
+      keys.add(fulfillmentKey(type, item));
+    }
+  }
+  return keys.size;
+}
+// 오늘 접수한 택배 기준 마감 현황 (접수 → 인쇄 → 집하)
+function closingSummary(db) {
+  const day = today();
+  const ymd = day.replace(/-/g, '');
+  const parcels = new Map();
+  for (const [list, type] of [[db.orders || [], 'order'], [db.seeding || [], 'seeding']]) {
+    for (const item of list) {
+      if (!item.epost) continue;
+      const reqYmd = String(item.epost.reqYmd || '').replace(/\D/g, '');
+      // 접수일(reqYmd)이 있으면 그 날짜로, 없으면 발송일로 오늘 것만 센다
+      if (reqYmd ? reqYmd !== ymd : String(item.sentDate || '') !== day) continue;
+      const key = String(item.epost.orderNo || '').trim() || type + ':' + item.id;
+      if (!parcels.has(key)) parcels.set(key, { printed: false, stus: '' });
+      const parcel = parcels.get(key);
+      if (item.printed) parcel.printed = true;
+      if (item.epost.stus) parcel.stus = item.epost.stus;
+    }
+  }
+  const rows = [...parcels.values()];
+  const printed = rows.filter(row => row.printed).length;
+  return {
+    today: {
+      registered: rows.length,
+      printed,
+      notPrinted: rows.length - printed,
+      // 03 집하완료·05 취소를 뺀 나머지 = 아직 기사님이 안 가져간 것
+      notCollected: rows.filter(row => !['03', '05'].includes(row.stus || '01')).length,
+      holds: holdCount(db)
+    }
+  };
+}
+
 // ---------- HTTP ----------
 function readBody(req, maxBytes = 2 * 1024 * 1024) {
   return readBodyLimited(req, maxBytes);
@@ -2728,7 +2872,7 @@ const server = http.createServer((req, res) => {
     // 보기 모드: 우체국 접수/취소/새로고침은 허용(시딩은 시트로 매장과 자동 합쳐짐),
     // 회수/업로드/따로보냄은 매장 전용, 카페24 관련은 "매장이 켜져 있을 때만" 양보
     if (VIEW_ONLY && req.method === 'POST' &&
-        /^\/api\/(return|manual-ship|export|upload|inventory\/(?:stocktake|init-from-cafe24))/.test(url.pathname)) {
+        /^\/api\/(return|manual-ship|export|upload|inbound|inventory\/(?:stocktake|init-from-cafe24))/.test(url.pathname)) {
       return sendJson(res, 200, { error: '이 작업은 매장 컴퓨터에서 해주세요. (노트북 보기 모드)' });
     }
     if (VIEW_ONLY && req.method === 'POST' && /^\/api\/cafe24\//.test(url.pathname) && await storeAliveCached()) {
@@ -2763,7 +2907,9 @@ const server = http.createServer((req, res) => {
       syncStatus.epost = { configured: epostConfigured(db), connected: !!db.epost };
       let ver = '';
       try { ver = JSON.parse(fs.readFileSync(path.join(__dirname, 'version.json'), 'utf8')).version; } catch (e) { /* 무시 */ }
-      return sendJson(res, 200, { rev: db.rev || 0, version: ver, viewOnly: VIEW_ONLY, c24Owner: !VIEW_ONLY || !(await storeAliveCached()), status: syncStatus });
+      // syncStatus 는 서버가 계속 들고 있는 값이라 건드리지 않고, 이번 응답에만 집계를 얹는다
+      const status = Object.assign({}, syncStatus, { holdCount: holdCount(db), closing: closingSummary(db) });
+      return sendJson(res, 200, { rev: db.rev || 0, version: ver, viewOnly: VIEW_ONLY, c24Owner: !VIEW_ONLY || !(await storeAliveCached()), status });
     }
     // ── 재고/출고 마스터 API (allin_v4 등 다른 시스템이 참조하는 읽기 전용 단일 기준) ──
     // 외부 시스템은 X-Ham-Code 헤더에 접속 코드를 넣어 호출한다.
@@ -3182,6 +3328,7 @@ const server = http.createServer((req, res) => {
       const resolved = resolvePackingMergeSelection(db, b.selected || []);
       if (resolved.error) return sendJson(res, 200, { error: resolved.error });
       const picked = resolved.picked;
+      if (picked.some(({ item }) => item.hold)) return sendJson(res, 200, { error: '보류 중인 건은 합포장할 수 없어요. 먼저 [보류 해제]를 눌러 주세요.' });
       // 화면(item-lines normalizedRecipient)과 같은 기준: 우편번호 표기·모든 공백 제거 (띄어쓰기 차이로 합포가 거절되지 않게)
       const mergeAddr = a => String(a || '').replace(/\((\d{5})\)/g, '').replace(/\(우\)?\s*\d{5}\)?/g, '').replace(/우편번호[:\s]*\d{5}/g, '').replace(/\s+/g, '').trim();
       const recipientKeys = new Set(picked.map(({ item }) =>
@@ -3214,6 +3361,12 @@ const server = http.createServer((req, res) => {
     if (url.pathname === '/api/packing/split' && req.method === 'POST') {
       const b = JSON.parse((await readBody(req)).toString('utf8'));
       const db = loadDb();
+      // 보류 중인 포장은 접수 대상에서 빠져 있다 — 나눠 봐야 나가지 않으므로 먼저 보류를 풀게 한다
+      const target = (db.orders || []).find(row => row.id === Number(b.id));
+      if (target && (db.orders || []).some(row =>
+        row.hold && row.status !== '취소됨' && (row.id === target.id || (target.orderNo && row.orderNo === target.orderNo)))) {
+        return sendJson(res, 200, { error: '보류 중인 건이에요. 보내기 화면에서 [보류 해제]를 먼저 눌러 주세요.' });
+      }
       const splitId = 'SPLIT-' + Date.now().toString(36).toUpperCase() + '-' + Number(b.id);
       const result = splitOrderLineForLater(db.orders, b.id, splitId);
       if (result.error) return sendJson(res, 200, result);
@@ -3255,6 +3408,7 @@ const server = http.createServer((req, res) => {
       if (shipmentConflicts.length) return sendJson(res, 200, { error: shipmentConflicts[0].reason });
       if (entries.some(entry => entry.item.sheetCancelHold)) return sendJson(res, 200, { error: '구글시트에서 기존 송장번호와 발송일을 지운 뒤 [시트에서 기존 송장 지웠어요]를 먼저 눌러 주세요.' });
       if (entries.some(entry => entry.item.shippingHold)) return sendJson(res, 200, { error: '재고 기다림 품목은 발송완료로 바꿀 수 없어요. 재고가 들어온 뒤 [재고 들어옴 · 이제 보내기]를 먼저 눌러 주세요.' });
+      if (entries.some(entry => entry.item.hold)) return sendJson(res, 200, { error: '보류 중인 건이에요. 보내기 화면에서 [보류 해제]를 먼저 눌러 주세요.' });
       if (entries.some(entry => entry.item.status === '발송완료' || entry.item.invoice || entry.item.epost)) return sendJson(res, 200, { error: '이 포장에는 이미 발송된 상품이 있어요.' });
       const inv = String(body.invoice || '').trim();
       const courier = inv.replace(/\D/g, '').length === 13 ? '우체국' : (inv ? '기타' : '');
@@ -3803,18 +3957,31 @@ const server = http.createServer((req, res) => {
       try { wb = XLSX.read(buf, spreadsheetReadOptions(buf, format)); }
       catch (e) { return sendJson(res, 200, { error: '엑셀 파일을 읽지 못했습니다. 파일이 맞는지 확인해 주세요.' }); }
       const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
-      const parsed = parseOrderRows(rows);
-      if (parsed.error) return sendJson(res, 200, { error: parsed.error });
+      const db = loadDb();
+      let parsed;
+      let unmapped = [];
+      let sampleHeaders = [];
+      if (isChannelWithDictionary(channel)) {
+        // 29CM·무신사·GS샵: 저장해 둔 열 매핑 먼저, 없으면 채널 사전으로 찾는다
+        const channelParsed = parseChannelSheet(rows, channel, (db.channelMappings || {})[channel]);
+        unmapped = channelParsed.unmapped || [];
+        sampleHeaders = channelParsed.sampleHeaders || [];
+        // 매핑으로도 못 읽으면 옛 방식(공통 열 이름 찾기)으로 한 번 더 — 되던 파일이 갑자기 안 되지 않게
+        parsed = channelParsed.items.length ? { items: channelParsed.items } : parseOrderRows(rows);
+        if (parsed.error) return sendJson(res, 200, { error: channelParsed.error || parsed.error, channel, unmapped, unmappedLabels: channelFieldLabels(unmapped), sampleHeaders });
+      } else {
+        parsed = parseOrderRows(rows);
+        if (parsed.error) return sendJson(res, 200, { error: parsed.error, channel });
+      }
       for (const item of parsed.items) {
         item.sourceChannel = channel;
         // 채널마다 주문번호 체계가 달라 겹칠 수 있으니 채널 접두어로 구분 (카페24는 기존 그대로)
         if (channel !== 'cafe24' && item.orderNo && !item.orderNo.startsWith(channel.toUpperCase() + '-')) item.orderNo = channel.toUpperCase() + '-' + item.orderNo;
       }
-      const db = loadDb();
       const r = mergeOrders(db, parsed.items);
       saveDb(db);
       audit('orders.upload', { channel, added: r.added, total: parsed.items.length });
-      return sendJson(res, 200, { ok: true, channel, added: r.added, updated: r.updated, total: parsed.items.length, db });
+      return sendJson(res, 200, { ok: true, channel, added: r.added, updated: r.updated, total: parsed.items.length, unmapped, unmappedLabels: channelFieldLabels(unmapped), sampleHeaders, db });
     }
     if (url.pathname === '/api/upload/invoice' && req.method === 'POST') {
       const buf = await readBody(req, 10 * 1024 * 1024);
@@ -3866,6 +4033,212 @@ const server = http.createServer((req, res) => {
       audit('epost.xlsx.download', { parcels: r.parcels, items: r.count, rev: db.rev });
       res.writeHead(200, xlsxDownloadHeaders(r.fname, r.buffer.length));
       return res.end(r.buffer);
+    }
+    // ---------- 보류 · 메모 ----------
+    if (url.pathname === '/api/hold' && req.method === 'POST') {
+      // 보류: 상태는 '대기' 그대로 두고 접수 대상에서만 뺀다 (buildParcelGroups 에서 제외)
+      const b = JSON.parse((await readBody(req)).toString('utf8'));
+      const db = loadDb();
+      const type = b.type === 'seeding' ? 'seeding' : 'order';
+      const list = type === 'seeding' ? db.seeding : db.orders;
+      const item = (list || []).find(x => x.id === Number(b.id));
+      if (!item) return sendJson(res, 200, { error: '해당 건을 찾지 못했어요.' });
+      const hold = b.hold !== false;
+      if (hold) {
+        if (item.status === '발송완료' || item.status === '취소됨' || item.epost) {
+          return sendJson(res, 200, { error: '이미 보냈거나 취소된 건은 보류할 수 없어요.' });
+        }
+        item.hold = true;
+        item.holdReason = String(b.reason || '').trim().slice(0, 80);
+        item.holdAt = new Date().toISOString();
+      } else {
+        delete item.hold;
+        delete item.holdReason;
+        delete item.holdAt;
+      }
+      saveDb(db);
+      // 감사 로그는 허용된 필드(ref·status·count·type…)만 남는다 — 이름·전화는 넣지 않는다
+      audit('order.hold', { type, ref: type + ':' + item.id, status: hold ? 'hold' : 'release', rev: db.rev });
+      return sendJson(res, 200, { ok: true, db });
+    }
+    if (url.pathname === '/api/memo' && req.method === 'POST') {
+      // 우리가 적는 메모 (고객이 보낸 배송메시지 msg 와는 별개)
+      const b = JSON.parse((await readBody(req)).toString('utf8'));
+      const db = loadDb();
+      const type = b.type === 'seeding' ? 'seeding' : b.type === 'return' ? 'return' : 'order';
+      const list = type === 'seeding' ? db.seeding : type === 'return' ? db.returns : db.orders;
+      const item = (list || []).find(x => x.id === Number(b.id));
+      if (!item) return sendJson(res, 200, { error: '해당 건을 찾지 못했어요.' });
+      const memo = String(b.memo == null ? '' : b.memo).trim().slice(0, 200);
+      if (memo) item.memo = memo; else delete item.memo;
+      saveDb(db);
+      audit('item.memo', { type, ref: type + ':' + item.id, rev: db.rev });
+      return sendJson(res, 200, { ok: true, db });
+    }
+    // ---------- 고객 이력 · 전역 검색 ----------
+    if (url.pathname === '/api/customers' && req.method === 'GET') {
+      const db = loadDb();
+      return sendJson(res, 200, { ok: true, list: searchCustomers(db, url.searchParams.get('q'), 50) });
+    }
+    if (url.pathname === '/api/search' && req.method === 'GET') {
+      const db = loadDb();
+      const found = globalSearch(db, url.searchParams.get('q'));
+      return sendJson(res, 200, Object.assign({ ok: true }, found));
+    }
+    const customerNoteMatch = url.pathname.match(/^\/api\/customers\/([^/]+)\/note$/);
+    if (customerNoteMatch && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req)).toString('utf8'));
+      const db = loadDb();
+      const key = decodeURIComponent(customerNoteMatch[1]);
+      const r = setCustomerNote(db, key, b.note);
+      if (r.error) return sendJson(res, 200, { error: r.error });
+      saveDb(db);
+      // 고객 키(전화 뒤 8자리)는 감사 로그에 남기지 않는다
+      audit('customer.note', { type: 'customer', rev: db.rev });
+      return sendJson(res, 200, { ok: true, db });
+    }
+    const customerMatch = url.pathname.match(/^\/api\/customers\/([^/]+)$/);
+    if (customerMatch && req.method === 'GET') {
+      const db = loadDb();
+      const customer = getCustomer(db, decodeURIComponent(customerMatch[1]));
+      if (!customer) return sendJson(res, 200, { error: '그 고객을 찾지 못했어요.' });
+      return sendJson(res, 200, { ok: true, customer });
+    }
+    // ---------- 입고 예정 ----------
+    if (url.pathname === '/api/inbound' && req.method === 'GET') {
+      const db = loadDb();
+      return sendJson(res, 200, { ok: true, list: inboundList(db) });
+    }
+    if (url.pathname === '/api/inbound' && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req)).toString('utf8'));
+      const db = loadDb();
+      const r = addInbound(db, b);
+      if (r.error) return sendJson(res, 200, { error: r.error });
+      saveDb(db);
+      audit('inbound.add', { ref: r.item.sku, count: r.item.qty, rev: db.rev });
+      return sendJson(res, 200, { ok: true, db, item: r.item });
+    }
+    if (url.pathname === '/api/inbound/receive' && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req)).toString('utf8'));
+      const db = loadDb();
+      // 재고 반영과 입출고 장부는 다른 입고와 똑같이 server.js logStock 으로 남긴다
+      const r = receiveInbound(db, b, { logStock });
+      if (r.error) return sendJson(res, 200, { error: r.error });
+      saveDb(db);
+      audit('inbound.receive', { ref: r.item.sku, count: r.qty, rev: db.rev });
+      return sendJson(res, 200, { ok: true, db, item: r.item, left: r.left });
+    }
+    if (url.pathname === '/api/inbound/cancel' && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req)).toString('utf8'));
+      const db = loadDb();
+      const r = cancelInbound(db, b);
+      if (r.error) return sendJson(res, 200, { error: r.error });
+      saveDb(db);
+      audit('inbound.cancel', { ref: r.item.sku, rev: db.rev });
+      return sendJson(res, 200, { ok: true, db });
+    }
+    // ---------- 발송 내역 CSV ----------
+    if (url.pathname === '/api/master/shipments.csv' && req.method === 'GET') {
+      const db = loadDb();
+      const rows = shipmentCsvRows(db, {
+        from: url.searchParams.get('from'),
+        to: url.searchParams.get('to'),
+        filter: url.searchParams.get('filter'),
+        q: url.searchParams.get('q')
+      });
+      return sendCsv(res, '발송내역_' + nowStamp() + '.csv', toCsv(rows, SHIPMENT_COLUMNS));
+    }
+    // ---------- 통계 ----------
+    if (url.pathname === '/api/stats' && req.method === 'GET') {
+      const db = loadDb();
+      const r = monthlyStats(db, url.searchParams.get('ym'));
+      return sendJson(res, 200, Object.assign({ ok: true }, r));
+    }
+    if (url.pathname === '/api/stats/shipping.csv' && req.method === 'GET') {
+      const db = loadDb();
+      const ym = monthParam(url.searchParams.get('ym'));
+      return sendCsv(res, '택배비_' + ym + '.csv', toCsv(shippingCostRows(db, ym), SHIPPING_COST_COLUMNS));
+    }
+    // ---------- 카페24 문의 수 ----------
+    if (url.pathname === '/api/cafe24/inquiries' && req.method === 'GET') {
+      const db = loadDb();
+      return sendJson(res, 200, await cafe24Inquiries(db));
+    }
+    // ---------- 판매채널 열 매핑 ----------
+    if (url.pathname === '/api/channels/mapping' && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req)).toString('utf8'));
+      const channel = String(b.channel || '').toLowerCase();
+      if (!isChannelWithDictionary(channel)) return sendJson(res, 200, { error: '열 매핑을 저장할 수 있는 판매채널이 아니에요.' });
+      const db = loadDb();
+      if (!db.channelMappings || typeof db.channelMappings !== 'object') db.channelMappings = {};
+      db.channelMappings[channel] = normalizeMapping(b);
+      saveDb(db);
+      audit('channel.mapping', { ref: channel, rev: db.rev });
+      return sendJson(res, 200, { ok: true, db });
+    }
+    if (url.pathname === '/api/channels/preview' && req.method === 'POST') {
+      // 파일은 업로드 라우트와 같은 방식(본문 그대로 + X-File-Name), JSON 으로 rowsBase64 를 보내도 된다
+      const raw = await readBody(req, 10 * 1024 * 1024);
+      const contentType = String(req.headers['content-type'] || '');
+      let channel = String(url.searchParams.get('channel') || '').toLowerCase();
+      let fileName = '';
+      let buf = raw;
+      if (contentType.includes('application/json')) {
+        const b = JSON.parse(raw.toString('utf8') || '{}');
+        channel = String(b.channel || channel).toLowerCase();
+        fileName = String(b.fileName || '');
+        buf = Buffer.from(String(b.rowsBase64 || b.file || ''), 'base64');
+      } else {
+        try { fileName = decodeURIComponent(String(req.headers['x-file-name'] || '')); } catch (e) { fileName = ''; }
+      }
+      if (!isChannelWithDictionary(channel)) return sendJson(res, 200, { error: '열 매핑을 쓸 수 있는 판매채널이 아니에요.' });
+      const format = spreadsheetFormat(buf, fileName);
+      if (!format) return sendJson(res, 400, { error: '엑셀(.xlsx, .xls) 또는 CSV(.csv) 파일만 올릴 수 있어요.' });
+      let wb;
+      try { wb = XLSX.read(buf, spreadsheetReadOptions(buf, format)); }
+      catch (e) { return sendJson(res, 200, { error: '엑셀 파일을 읽지 못했습니다. 파일이 맞는지 확인해 주세요.' }); }
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
+      const db = loadDb();
+      const saved = (db.channelMappings || {})[channel];
+      const preview = previewChannelSheet(rows, channel, saved);
+      return sendJson(res, 200, Object.assign({ ok: true, channel }, preview));
+    }
+    if (url.pathname === '/api/export/channel-invoices.xlsx' && req.method === 'POST') {
+      // 채널 어드민에 올릴 송장 등록 엑셀 (내보낸 건은 channelInvoiceExportedAt 로 표시해 두 번 나가지 않게)
+      // "내보냄" 표시를 남기는 쓰기 작업이라 POST 로 받는다 — 화면은 fetch 로 받아 blob 으로 저장한다
+      const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
+      const channel = String(body.channel || '').toLowerCase();
+      if (!isChannelWithDictionary(channel)) return sendJson(res, 200, { error: '송장 엑셀을 만들 수 있는 판매채널이 아니에요.' });
+      const db = loadDb();
+      const from = String(body.from || '').trim();
+      const to = String(body.to || '').trim();
+      const all = body.all === true || body.all === '1';
+      const items = (db.orders || []).filter(item => {
+        if (String(item.sourceChannel || '') !== channel) return false;
+        if (item.status !== '발송완료' || !item.invoice) return false;
+        const date = String(item.sentDate || item.regDate || '').slice(0, 10);
+        if (from && date && date < from) return false;
+        if (to && date && date > to) return false;
+        return all || !item.channelInvoiceExportedAt;
+      });
+      // code: 'empty' — 화면이 "이미 내보낸 건까지 다시 만들까요?" 를 물어볼 수 있게
+      if (!items.length) {
+        return sendJson(res, 200, {
+          error: all
+            ? '내보낼 송장이 없어요. 발송완료된 건이 있는지 확인해 주세요.'
+            : '새로 내보낼 송장이 없어요. (이미 내보낸 건은 빼고 만듭니다)',
+          code: 'empty', channel
+        });
+      }
+      const template = normalizeInvoiceTemplate(((db.channelMappings || {})[channel] || {}).invoiceTemplate);
+      const built = buildInvoiceRows(items, channel, template);
+      const buffer = buildWorkbookBuffer('송장등록', built.columns, built.rows);
+      const at = new Date().toISOString();
+      for (const item of items) item.channelInvoiceExportedAt = at;
+      saveDb(db);
+      audit('channel.invoice.export', { ref: channel, count: items.length, rev: db.rev });
+      res.writeHead(200, xlsxDownloadHeaders(channel + '_송장등록_' + nowStamp() + '.xlsx', buffer.length));
+      return res.end(buffer);
     }
     // 정적 파일
     let p = url.pathname === '/' ? '/index.html' : url.pathname;

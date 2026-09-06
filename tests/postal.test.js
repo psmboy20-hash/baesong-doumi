@@ -2,12 +2,16 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const {
   normalizePostalAddress,
   postalAddressCandidates,
   postalZipFromDocuments,
   postalLookupDue,
-  zipForChangedAddress
+  zipForChangedAddress,
+  remoteArea,
+  REMOTE_AREA_RANGES
 } = require('../lib/postal');
 
 test('상세 동호수를 빼고 도로명과 건물번호로 다시 찾는다', () => {
@@ -64,4 +68,37 @@ test('주소가 바뀌면 이전과 같은 우편번호는 지우고 새 우편�
   assert.equal(zipForChangedAddress('11111', '11111'), '');
   assert.equal(zipForChangedAddress('11111', '22222'), '22222');
   assert.equal(zipForChangedAddress('11111', ''), '');
+});
+
+test('제주 우편번호는 제주로, 울릉·도서는 도서산간으로 알려준다', () => {
+  assert.deepEqual(remoteArea('63000'), { kind: '제주', note: '제주도' });
+  assert.deepEqual(remoteArea('63644'), { kind: '제주', note: '제주도' });
+  assert.deepEqual(remoteArea('40240'), { kind: '도서산간', note: '울릉도·독도' });
+  assert.deepEqual(remoteArea('58810'), { kind: '도서산간', note: '홍도' });
+  assert.equal(remoteArea('63645'), null, '구간 밖은 추가요금 안내를 하지 않는다');
+  assert.equal(remoteArea('06134'), null);
+});
+
+test('우편번호가 5자리가 아니면 판정하지 않고, 구간표는 10개 이상이며 서로 겹치지 않는다', () => {
+  assert.equal(remoteArea(''), null);
+  assert.equal(remoteArea('6300'), null);
+  assert.equal(remoteArea(null), null);
+  assert.deepEqual(remoteArea('63-000'), { kind: '제주', note: '제주도' }, '기호가 섞여도 숫자 5자리면 본다');
+  assert.ok(REMOTE_AREA_RANGES.length >= 10);
+  const sorted = [...REMOTE_AREA_RANGES].sort((a, b) => a.from - b.from);
+  for (let i = 0; i < sorted.length; i++) {
+    assert.ok(sorted[i].from <= sorted[i].to, '구간 시작이 끝보다 앞');
+    if (i) assert.ok(sorted[i - 1].to < sorted[i].from, '구간이 겹치면 안 된다: ' + sorted[i].note);
+  }
+});
+
+// 화면(send.js)은 서버 모듈을 import 할 수 없어 구간표를 값으로 복제해 뒀다 — 두 벌이 갈라지면 여기서 잡는다
+test('보내기 화면의 도서산간 우편번호 구간이 lib/postal.js 와 같다', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'public', 'pages', 'send.js'), 'utf8');
+  const block = source.match(/const REMOTE_ZIP_RANGES = \[([\s\S]*?)\];/);
+  assert.ok(block, 'send.js 에서 REMOTE_ZIP_RANGES 를 찾지 못했어요');
+  const onScreen = [...block[1].matchAll(/from:\s*(\d+),\s*to:\s*(\d+),\s*kind:\s*'([^']+)'/g)]
+    .map(m => ({ from: Number(m[1]), to: Number(m[2]), kind: m[3] }));
+  assert.deepEqual(onScreen, REMOTE_AREA_RANGES.map(r => ({ from: r.from, to: r.to, kind: r.kind })),
+    'lib/postal.js 의 REMOTE_AREA_RANGES 를 고쳤으면 public/pages/send.js 의 REMOTE_ZIP_RANGES 도 같이 고쳐야 해요');
 });

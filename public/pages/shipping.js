@@ -1,5 +1,28 @@
 
 // ---------- 배송 확인 ----------
+// app-core.js의 shipmentSourceLabel엔 아직 GS샵이 없어 여기서만 보정한다
+function shipSourceLabel(x) {
+  if (x.sourceChannel === 'gsshop') return 'GS샵';
+  return shipmentSourceLabel(x);
+}
+function shipDefaultDate(offsetDays) {
+  const d = new Date(Date.now() + offsetDays * 86400000);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function shipSetRange(which, val) {
+  if (which === 'from') window._shipFrom = val; else window._shipTo = val;
+}
+async function shipDownloadCsv() {
+  const f = window._shipFilter || 'all';
+  const q = (window._shipQ || '').trim();
+  const params = new URLSearchParams();
+  params.set('filter', f);
+  if (window._shipFrom) params.set('from', window._shipFrom);
+  if (window._shipTo) params.set('to', window._shipTo);
+  if (q) params.set('q', q);
+  const r = await downloadFile('/api/master/shipments.csv?' + params.toString(), null, '발송내역.csv');
+  if (!r || !r.ok) toast((r && r.error) || '발송 내역을 내려받지 못했어요.', 6000);
+}
 function shipInvoiceCell(x) {
   if (!x.invoice) return '<span class="muted">아직 없음</span>';
   const url = trackUrl(x.invoice, x.courier);
@@ -8,6 +31,9 @@ function shipInvoiceCell(x) {
   return `${trackBtn}<div class="sub">${esc(label)}</div>`;
 }
 function renderShipping() {
+  // 엑셀 내려받기 기간 기본값: 최근 90일
+  if (!window._shipFrom) window._shipFrom = shipDefaultDate(-89);
+  if (!window._shipTo) window._shipTo = shipDefaultDate(0);
   const all = [
     ...DB.orders.map(x => Object.assign({ _kind: '주문' }, x)),
     ...DB.seeding.map(x => Object.assign({ _kind: '시딩' }, x))
@@ -62,7 +88,7 @@ function renderShipping() {
 
     return `
     <tr>
-      <td style="white-space:nowrap">${shipmentSourceLabel(x)}</td>
+      <td style="white-space:nowrap">${shipSourceLabel(x)}</td>
       <td style="white-space:nowrap">${esc(x.sentDate || '')}</td>
       <td><b>${esc(x.name)}</b></td>
       <td style="min-width:240px;max-width:480px">${pp.name}${pp.opt || ''}${memo}</td>
@@ -72,7 +98,15 @@ function renderShipping() {
     </tr>`;
   }).join('');
 
-  const header = pageHeader({ title: '배송 확인', sub: '택배 전체 내역이에요. 보낼 것부터 취소한 것까지 모두 있어요.' });
+  const dateInputStyle = 'font-size:14px;padding:6px 8px;border:1px solid var(--line-strong);border-radius:8px';
+  const rangeHtml = `<input type="date" value="${esc(window._shipFrom)}" onchange="shipSetRange('from',this.value)" style="${dateInputStyle}">` +
+    `<span style="color:var(--text-3)">~</span>` +
+    `<input type="date" value="${esc(window._shipTo)}" onchange="shipSetRange('to',this.value)" style="${dateInputStyle}">`;
+  const header = pageHeader({
+    title: '배송 확인',
+    sub: '택배 전체 내역이에요. 보낼 것부터 취소한 것까지 모두 있어요.',
+    actions: rangeHtml + btn({ kind: 'secondary', icon: 'download', label: '엑셀 내려받기', onclick: 'shipDownloadCsv()' })
+  });
 
   main().innerHTML = header +
     `<div style="margin-bottom:16px">${segRow}</div>` +

@@ -16,6 +16,39 @@ function todoRow(iconName, tone, title, sub, actionHtml) {
     ${actionHtml || ''}
   </div>`;
 }
+// 카페24 미답변 문의 — 15분 서버 캐시라 화면에서는 세션당 한 번만 가져오면 충분
+async function loadInquiries() {
+  if (window._inquiriesLoading) return;
+  window._inquiriesLoading = true;
+  const r = await api('/api/cafe24/inquiries');
+  window._inquiriesLoading = false;
+  window._inquiries = (r && !r.error) ? r : null; // supported:false 도 정상 응답 — 오류 토스트 없이 그냥 숨김
+  if (PAGE === 'home') renderHome();
+}
+// 마감 카드: 수거 시각(기본 16:00) 2시간 전부터 펼쳐진다. status.closing 이 없으면(백엔드 미구현) 카드 자체를 숨김
+function closingCardHtml() {
+  const closing = SYNC_STATUS && SYNC_STATUS.closing && SYNC_STATUS.closing.today;
+  if (!closing) return '';
+  const dl = (DB.settings && DB.settings.pickupDeadline) || '16:00';
+  const parts = String(dl).split(':');
+  const dlMin = Number(parts[0]) * 60 + Number(parts[1] || 0);
+  const now = new Date();
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const within = Number.isFinite(dlMin) && nowMin >= dlMin - 120;
+  const notPrintedAction = closing.notPrinted > 0
+    ? `<div style="margin-top:8px">${btn({ label: '우체국 접수 열기', kind: 'text', size: 'sm', onclick: "go('epost')" })}</div>` : '';
+  const holdAction = closing.holds > 0
+    ? btn({ label: '보류 보기', kind: 'text', size: 'sm', onclick: 'openSendHold()' }) : '';
+  return `<div class="card">
+    <details ${within ? 'open' : ''}>
+      <summary style="font-size:15px;font-weight:700;cursor:pointer">마감 준비${fmtDeadline(dl) ? ' · 수거 ' + esc(fmtDeadline(dl)) : ''}</summary>
+      <div class="hint" style="margin-top:0.6rem">
+        오늘 접수 <b>${closing.registered || 0}</b> · 인쇄 <b>${closing.printed || 0}</b> · 미인쇄 <b>${closing.notPrinted || 0}</b> · 미집하 <b>${closing.notCollected || 0}</b> · 보류 <b>${closing.holds || 0}</b> ${holdAction}
+      </div>
+      ${notPrintedAction}
+    </details>
+  </div>`;
+}
 function renderHome() {
   const all = [...DB.orders, ...DB.seeding];
   const daysSince = d => d ? Math.floor((Date.now() - new Date(d)) / 86400000) : 0;
@@ -94,6 +127,27 @@ function renderHome() {
     rows.push(todoRow('alert', 'r', `연동 오류 ${syncIssues.length}건`, `${esc(sysName)} · ${esc(first.issue.message)}`,
       btn({ label: '확인하기', onclick: "go('shipping')" })));
   }
+  // 보류 — /api/status 의 status.holdCount (백엔드 미구현 시 0으로 조용히 숨김)
+  const holdCount = (SYNC_STATUS && SYNC_STATUS.holdCount) || 0;
+  if (holdCount > 0) {
+    rows.push(todoRow('alert', 'w', `보류 ${holdCount}건`, '접수·합포장 추천에서 빠져 있어요',
+      btn({ label: '보류 목록 보기', onclick: 'openSendHold()' })));
+  }
+  // 입고 예정(3일 내) — db.inbound 는 /api/db 에 함께 실려온다(백엔드 미구현 시 빈 배열)
+  const inboundIn3d = (new Date(Date.now() + 3 * 86400000)).toISOString().slice(0, 10);
+  const inboundSoon = (DB.inbound || []).filter(i => i.status === 'expected' && i.eta && i.eta <= inboundIn3d).length;
+  if (inboundSoon > 0) {
+    rows.push(todoRow('box', 'b', `입고 예정 ${inboundSoon}건`, '3일 안에 도착 예정이에요',
+      btn({ label: '입고 예정 보기', onclick: "window._invTab='inbound';go('inventory')" })));
+  }
+  // 카페24 미답변 문의 — supported:false(권한 없음)면 조용히 숨김, 아직 못 가져왔으면 한 번 가져옴
+  if (window._inquiries === undefined) loadInquiries();
+  if (window._inquiries && window._inquiries.supported && window._inquiries.unanswered > 0) {
+    const mall = DB.settings && DB.settings.cafe24MallId;
+    const adminUrl = mall ? `https://${mall}.cafe24.com/admin` : '';
+    rows.push(todoRow('info', 'w', `카페24 미답변 문의 ${window._inquiries.unanswered}건`, '',
+      adminUrl ? btn({ label: '카페24에서 확인', onclick: `window.open('${jsq(adminUrl)}','_blank')` }) : ''));
+  }
   const todoCard = rows.length
     ? `<div class="card"><div class="todo">${rows.join('')}</div></div>`
     : `<div class="card">${emptyState({ icon: 'check', title: '오늘 할 일이 없어요', sub: '지금은 처리할 게 없어요.' })}</div>`;
@@ -141,5 +195,5 @@ function renderHome() {
     </details>
   </div>`;
 
-  main().innerHTML = header + todoCard + kpis + monthLine + connCard + guideCard;
+  main().innerHTML = header + todoCard + kpis + monthLine + closingCardHtml() + connCard + guideCard;
 }

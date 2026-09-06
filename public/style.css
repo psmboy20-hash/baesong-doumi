@@ -79,6 +79,18 @@ a { color: inherit; }
   padding: 10px 12px 2px; line-height: 1.6; border-top: 1px solid var(--line);
 }
 
+/* ===== 사이드바 전역 검색 (searchBox 아님 — 좁은 폭 전용) ===== */
+.side-search { padding: 0 4px 14px; }
+.side-search input {
+  width: 100%; height: 38px; font: 500 14px/1 "Pretendard", "Malgun Gothic", sans-serif;
+  padding: 0 12px 0 34px; border: 1px solid var(--line-strong); border-radius: var(--r);
+  background-color: var(--bg); color: var(--text);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='15' height='15' viewBox='0 0 24 24' fill='none' stroke='%238b95a1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m20 20-3.5-3.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: 10px center;
+}
+.side-search input:focus { outline: none; border-color: var(--primary); background-color: var(--surface); }
+.side-search input::placeholder { color: var(--text-3); }
+
 /* ===== 본문 ===== */
 main, #main { padding: 28px 32px 60px; max-width: var(--content-max); width: 100%; min-width: 0; } /* min-width:0 — 넓은 표는 .table-wrap 안에서만 스크롤되게(그리드 칸이 표 폭만큼 늘어나지 않게) */
 .sub { font-size: 14px; color: var(--text-2); margin-bottom: 20px; line-height: 1.5; }
@@ -509,3 +521,55 @@ input[type="checkbox"] { width: 1.4rem; height: 1.4rem; accent-color: var(--prim
 .pline .sub { font-size: 13px; color: var(--text-2); margin-bottom: 0; }
 .card .sub, td .sub, .rma-line .sub { margin-bottom: 0; }
 .pline .pqty { color: var(--bad-text); font-weight: 700; margin-left: 4px; }
+
+/* ===== 고객 화면 (F2) ===== */
+.cust-layout { display: grid; grid-template-columns: 320px 1fr; gap: 20px; align-items: start; }
+.cust-list-col .search-input { margin-bottom: 12px; }
+.cust-rows { display: flex; flex-direction: column; gap: 6px; max-height: calc(100vh - 220px); overflow-y: auto; padding-right: 2px; }
+.cust-row {
+  display: block; width: 100%; text-align: left; font-family: inherit; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r);
+  padding: 10px 12px; transition: border-color .15s, background-color .15s;
+}
+.cust-row:hover { border-color: var(--primary); }
+.cust-row.on { border-color: var(--primary); background: var(--primary-soft); }
+.cust-row:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.cust-row .cr-name { font-weight: 700; font-size: 15px; }
+.cust-row .cr-sub { font-size: 13px; color: var(--text-2); margin-top: 1px; }
+.cust-row .cr-meta { font-size: 12px; color: var(--text-3); margin-top: 3px; }
+.cust-note-input {
+  width: 100%; min-height: 84px; font: inherit; font-size: 15px; line-height: 1.5;
+  padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: var(--r); resize: vertical;
+}
+.cust-note-input:focus { outline: none; border-color: var(--primary); }
+
+/* ===== 마감 카드 (F1 home.js 전용 — 수거 시각 −2시간부터 펼쳐짐, 그 전엔 details로 접힘) ===== */
+.closing-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 16px 20px; margin-bottom: 16px; }
+.closing-card summary { cursor: pointer; font-size: 15px; font-weight: 700; list-style: none; display: flex; align-items: center; gap: 8px; }
+.closing-card summary::-webkit-details-marker { display: none; }
+.closing-card summary::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--warn); flex-shrink: 0; }
+.closing-card .cc-row { display: flex; gap: 22px; flex-wrap: wrap; margin-top: 12px; font-size: 14px; color: var(--text-2); }
+.closing-card .cc-item { display: flex; align-items: baseline; gap: 6px; }
+.closing-card .cc-num { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text); }
+.closing-card .cc-item.warn .cc-num { color: var(--warn-text); }
+.closing-card .cc-item.bad .cc-num { color: var(--bad-text); }
+
+/* ===== 메모 표시 (보내기/배송 확인/교환·반품 등 행 아래 회색 한 줄 — 공용) ===== */
+.memo-line {
+  margin-top: 4px; padding: 3px 8px; border-radius: 6px;
+  background: var(--bg); color: var(--text-2); font-size: 13px; line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/* ===== 보류 처리된 행 (F1 send.js 전용 — 회색 처리·체크 불가) ===== */
+tr.hold-row td { background: #f4f5f7; color: var(--text-3); }
+tr.hold-row:hover td { background: #f4f5f7; }
+tr.hold-row .pname { color: var(--text-3); }
+tr.hold-row input[type="checkbox"] { opacity: .35; pointer-events: none; }
+
+/* 통계 일별 막대 */
+.stats-bar-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
+.stats-bar-label { width: 40px; font-size: 13px; color: var(--text-3); text-align: right; flex-shrink: 0; }
+.stats-bar-track { flex: 1; height: 14px; background: var(--bg); border-radius: 4px; overflow: hidden; }
+.stats-bar-fill { height: 100%; background: var(--primary); border-radius: 4px; }
+.stats-bar-n { width: 36px; text-align: right; font-size: 13px; font-variant-numeric: tabular-nums; flex-shrink: 0; }

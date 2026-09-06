@@ -67,6 +67,7 @@ function returnRow(x, epostOn) {
     ? `<div class="warn-text"><b>안전 중지</b><br>${esc(completionBlock)}<br><span class="muted">발송·재고 변경 없음</span></div>`
     : issues.length ? `<div class="warn-text">${esc(issues[issues.length - 1])}</div>` : '';
   const reasonLine = x.reason ? `<div class="sub">사유: ${esc(x.reason)}</div>` : '';
+  const memoLine = x.memo ? `<div class="memo-line">메모 · ${esc(x.memo)}</div>` : '';
   let btns = '';
   const cancelUnresolved = x.flowState !== 'canceled' && x.syncOps && x.syncOps.cancel && ['pending', 'unknown', 'failed'].includes(x.syncOps.cancel.state);
   if (cancelUnresolved) {
@@ -81,16 +82,18 @@ function returnRow(x, epostOn) {
           : actLink('전체 취소', `returnCancel(${x.id},'entry','${jsq(x.name)}')`, true))
         : actLink('지우기', `returnCancel(${x.id},'delete','${jsq(x.name)}')`, true));
   } else if (['pickup_booked', 'collected'].includes(x.flowState)) {
-    const completeButton = completionBlock
+    const inspectButtons = completionBlock
       ? actLink('연동 다시 확인', 'doSync()') + '<span class="muted" style="font-size:13px">완료 버튼 잠김</span>'
-      : actLink('물건 도착 확인', `returnComplete(${x.id},'${jsq(x.name)}','${jsq(x.kind)}')`);
-    btns = completeButton +
+      : actLink('양품 · 재고로', `returnComplete(${x.id},'${jsq(x.name)}','${jsq(x.kind)}','sellable')`) +
+        actLink('불량 · 폐기', `returnComplete(${x.id},'${jsq(x.name)}','${jsq(x.kind)}','damaged')`, true);
+    btns = inspectButtons +
       (x.epost && ['00', '01', '02', '04'].includes(x.epost.stus || '01') ? actLink('회수만 취소', `returnCancel(${x.id},'pickup','${jsq(x.name)}')`) : '') +
       actLink('전체 취소', `returnCancel(${x.id},'entry','${jsq(x.name)}')`, true);
   } else if (x.stockReviewNeeded) {
     btns = completionBlock
       ? actLink('연동 다시 확인', 'doSync()') + '<span class="muted" style="font-size:13px">재고·재발송 잠김</span>'
-      : actLink('재고·재발송 확인', `returnComplete(${x.id},'${jsq(x.name)}','${jsq(x.kind)}')`);
+      : actLink('양품 · 재고로', `returnComplete(${x.id},'${jsq(x.name)}','${jsq(x.kind)}','sellable')`) +
+        actLink('불량 · 폐기', `returnComplete(${x.id},'${jsq(x.name)}','${jsq(x.kind)}','damaged')`, true);
   } else if (issues.length && x.localCompleted) {
     btns = completionBlock
       ? actLink('연동 다시 확인', 'doSync()') + '<span class="muted" style="font-size:13px">카페24 반영 잠김</span>'
@@ -101,11 +104,12 @@ function returnRow(x, epostOn) {
   } else if (x.flowState === 'completed' && x.sourceChannel !== 'cafe24') {
     btns = actLink('지우기', `returnCancel(${x.id},'delete','${jsq(x.name)}')`, true);
   }
+  btns += actLink('메모', `returnMemo(${x.id},'${jsq(x.name)}')`);
   return `
     <tr>
       <td style="white-space:nowrap">${esc(x.regDate || '')}</td>
       <td><b>${esc(x.name)}</b><div class="sub">${esc(x.phone || '')}</div></td>
-      <td style="min-width:220px;max-width:380px">${rmaCells(x)}${reasonLine}</td>
+      <td style="min-width:220px;max-width:380px">${rmaCells(x)}${reasonLine}${memoLine}</td>
       <td style="white-space:nowrap"><b>${esc(x.kind)}</b><div class="sub">${esc(x.rmaNo || 'RMA-' + x.id)}</div>${x.sourceChannel === 'cafe24' || x._src === 'c24' ? '<span class="note-badge">카페24 연결</span>' : ''}</td>
       <td style="max-width:230px">${chipEl(cls, esc(nm))}${x.invoice ? `<div class="sub">${invoiceCell(x.invoice)}</div>` : ''}${stusNm ? `<div class="sub">${esc(stusNm)}</div>` : ''}${cafe24Line}${issueLine}</td>
       <td style="white-space:nowrap"><div class="btn-col">${btns}</div></td>
@@ -346,7 +350,7 @@ async function returnPickup(id, name) {
   toast('회수 신청 완료', 5000);
   if (r.warning) setTimeout(() => alert(r.warning), 200);
 }
-async function returnComplete(id, name, kind) {
+async function returnComplete(id, name, kind, inspection) {
   const ret = (DB.returns || []).find(x => x.id === id);
   if (ret && ret.localCompleted) {
     busy(true, '변경 전 안전 점검 중…');
@@ -364,8 +368,19 @@ async function returnComplete(id, name, kind) {
     return;
   }
   const extra = kind === '교환' ? '\n· 교환이라서 [보내기]에 재발송 건이 새로 생겨요' : '';
-  const sellable = confirm(`${name}님의 회수품을 검수해 주세요.\n\n정상 상품으로 다시 판매할 수 있나요?\n\n[확인] 정상 — 재고에 다시 넣기\n[취소] 불량/오염 — 재고에서 제외`);
-  if (!sellable && !confirm(`불량/오염으로 처리할까요?\n\n· 재고에는 다시 넣지 않습니다${extra}`)) return;
+  let sellable;
+  if (inspection === 'sellable' || inspection === 'damaged') {
+    // 도착 확인 인라인 버튼([양품 · 재고로]/[불량 · 폐기])에서 바로 넘어온 경우 — 확인만 한 번
+    sellable = inspection === 'sellable';
+    const q = sellable
+      ? `${name}님의 회수품을 양품으로 재고에 다시 넣을까요?${extra}`
+      : `${name}님의 회수품을 불량·오염으로 폐기할까요?\n\n· 재고에는 다시 넣지 않습니다${extra}`;
+    if (!confirm(q)) return;
+  } else {
+    // 다른 진입 경로 대비 — 기존 두 번 확인 방식 유지
+    sellable = confirm(`${name}님의 회수품을 검수해 주세요.\n\n정상 상품으로 다시 판매할 수 있나요?\n\n[확인] 정상 — 재고에 다시 넣기\n[취소] 불량/오염 — 재고에서 제외`);
+    if (!sellable && !confirm(`불량/오염으로 처리할까요?\n\n· 재고에는 다시 넣지 않습니다${extra}`)) return;
+  }
   busy(true, '변경 전 안전 점검 중…');
   const preflight = await api('/api/return/preflight', { method: 'POST', body: JSON.stringify({ id, restock: sellable, inspection: sellable ? 'sellable' : 'damaged' }) });
   busy(false);
@@ -396,6 +411,19 @@ async function returnCancel(id, scope, name) {
   adoptDb(r.db);
   render();
   toast('처리했어요.', 4000);
+}
+// 반품/교환 항목에 우리끼리 남기는 메모 (고객 msg와 별개) — 화면에는 회색 줄로 표시
+async function returnMemo(id, name) {
+  const ret = (DB.returns || []).find(x => x.id === id);
+  const v = prompt(`${name}님 교환/반품 건 메모`, (ret && ret.memo) || '');
+  if (v === null) return;
+  busy(true, '메모를 저장하는 중…');
+  const r = await api('/api/memo', { method: 'POST', body: JSON.stringify({ type: 'return', id, memo: v }) });
+  busy(false);
+  if (r.error) { toast(r.error, 6000); return; }
+  adoptDb(r.db);
+  render();
+  toast('메모를 저장했어요.', 3000);
 }
 function externalPickupHelp() {
   alert('이 회수는 카페24에서 먼저 신청해서 배송도우미에는 택배사 취소번호가 없어요.\n\n1. 카페24에서 회수 신청을 취소하세요.\n2. 카페24에서 교환·반품을 취소하세요.\n3. 배송도우미에서 [전체 연동 다시 확인]을 누르면 함께 바뀝니다.');

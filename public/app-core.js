@@ -27,6 +27,43 @@ async function api(path, opts) {
     return { error: '프로그램(서버)와 연결이 안 돼요. 검은 창이 꺼졌는지 확인하고, 바탕화면 아이콘으로 다시 켜주세요.' };
   }
 }
+// 파일 내려받기 공통 — 서버가 JSON(에러)로 답하면 그대로 돌려주고, 파일이면 blob 으로 저장한다.
+// (location.href 로 받으면 서버가 에러 JSON 을 내려줄 때 빈 창만 뜨고 아무 말도 안 나온다)
+async function downloadFile(url, opts, fallbackName) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 60000);   // 무한 대기 방지
+  busy(true, '파일을 만드는 중…');
+  try {
+    const res = await fetch(url, Object.assign({ signal: ctrl.signal }, opts || {}));
+    if (String(res.headers.get('content-type') || '').includes('application/json')) return await res.json();
+    if (!res.ok) return { error: '파일을 내려받지 못했어요. (' + res.status + ')' };
+    const blob = await res.blob();
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = downloadFileName(res) || fallbackName || 'download';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(href), 10000);
+    return { ok: true };
+  } catch (e) {
+    return { error: e && e.name === 'AbortError'
+      ? '시간이 너무 오래 걸려요. 잠시 뒤 다시 시도해 주세요.'
+      : '파일을 내려받지 못했어요. 프로그램(검은 창)이 켜져 있는지 확인해 주세요.' };
+  } finally {
+    clearTimeout(timer);
+    busy(false);
+  }
+}
+// Content-Disposition 의 파일명 (한글 파일명은 RFC 5987 filename*)
+function downloadFileName(res) {
+  const cd = String(res.headers.get('content-disposition') || '');
+  const star = cd.match(/filename[*]=UTF-8''([^;]+)/i);
+  if (star) { try { return decodeURIComponent(star[1]); } catch (e) { /* 깨진 인코딩은 무시 */ } }
+  const plain = cd.match(/filename="([^"]+)"/i);
+  return plain ? plain[1] : '';
+}
 async function saveDb() {
   const r = await api('/api/db', { method: 'POST', body: JSON.stringify(DB) });
   if (r && r.conflict) {
@@ -313,6 +350,7 @@ function go(page, sub) {
   PAGE = page;
   if (page === 'shipping') window._shipFilter = sub || 'all'; // 홈 타일에서 오면 그 단계만 보이게
   if (page === 'epost') window._epostFilter = sub || 'all';
+  if (page === 'customers') window._custQ = sub || ''; // 사이드바 전역 검색 → 고객 화면 검색어
   document.querySelectorAll('.side a[data-page]').forEach(a => a.classList.toggle('on', a.dataset.page === page));
   render();
   window.scrollTo(0, 0);
@@ -347,7 +385,13 @@ const HELP = {
 · 택배를 보내면 <b>자동으로 −</b>, 교환·반품으로 돌아오면 <b>자동으로 +</b> 돼요<br>
 · 새 옷이 들어왔을 때만 ＋를 직접 눌러 채우세요<br>
 · <span style="color:var(--bad)"><b>빨간 숫자</b></span>는 2개 이하 — 곧 떨어진다는 뜻이에요`,
-  settings: `구글시트·카페24·우체국 연결과 알림·백업을 관리해요.<br>한 번 해두면 계속 유지되니 평소엔 들어올 일이 없어요.<br>무언가 "연결이 필요해요"라고 뜨면 여기서 파란 버튼만 다시 누르면 됩니다.<br>장부는 <b>하루 한 번 자동 백업</b>되고, 잘못됐을 땐 여기서 예전 날짜로 되돌릴 수 있어요.`
+  settings: `구글시트·카페24·우체국 연결과 알림·백업을 관리해요.<br>한 번 해두면 계속 유지되니 평소엔 들어올 일이 없어요.<br>무언가 "연결이 필요해요"라고 뜨면 여기서 파란 버튼만 다시 누르면 됩니다.<br>장부는 <b>하루 한 번 자동 백업</b>되고, 잘못됐을 땐 여기서 예전 날짜로 되돌릴 수 있어요.`,
+  customers: `고객 이름·전화·주소·송장·주문번호로 찾아 지금까지 무엇을 보냈는지 한눈에 봐요.<br>
+왼쪽에서 검색해 고객을 고르면 오른쪽에 주소·누적 건수·주문/시딩 기록·교환/반품 기록·메모가 나와요.<br>
+사이드바 맨 위 검색창에 입력하고 <b>Enter</b>를 누르면 바로 이 화면에서 검색돼요.`,
+  stats: `이번 달 판매·발송·상품·클레임을 한 화면에 모았어요.<br>
+◀ ▶ 로 지난달과 비교하고, 상품·사이즈 순위와 클레임 사유를 확인해요.<br>
+택배비는 [택배비 CSV]로 내려받아 우체국 청구서와 맞춰볼 수 있어요.`
 };
 function injectHelp() {
   if (document.getElementById('help-box')) return;
@@ -369,11 +413,18 @@ function render() {
   else if (PAGE === 'epost') renderEpost();
   else if (PAGE === 'shipping') renderShipping();
   else if (PAGE === 'returns') renderReturns();
+  else if (PAGE === 'customers') renderCustomers();
   else if (PAGE === 'inventory') renderInventory();
   else if (PAGE === 'stocklog') renderStockLog(); // 페이지로 등록해야 30초 자동 새로고침에 재고 화면으로 튕기지 않는다
   else if (PAGE === 'settings') renderSettings();
+  else if (PAGE === 'stats') { if (typeof renderStats === 'function') renderStats(); else renderStatsFallback(); }
   injectHelp();
   updateNavBadge();
+}
+// renderStats()가 아직 없을 때(F3 배포 전)의 임시 화면 — 콘솔 에러 없이 조용히 빈 상태만 보여준다
+function renderStatsFallback() {
+  main().innerHTML = pageHeader({ title: '통계', sub: '월별 판매·발송·상품·클레임 요약' }) +
+    `<div class="card">${emptyState({ icon: 'chart', title: '통계 화면을 준비 중이에요', sub: '잠시 후 다시 열어 주세요.' })}</div>`;
 }
 
 
@@ -473,7 +524,7 @@ async function refreshStatus(force) {
       const formOpen = PAGE === 'settings' || document.querySelector('#inv-form input') ||
         document.querySelector('#export-result .result-box') || document.querySelector('#ret-form input') ||
         (PAGE === 'inventory' && window._invCount) ||
-        (['stocklog', 'send', 'shipping', 'inventory', 'returns', 'epost'].includes(PAGE) && typing); // 검색어·입력 중이면 30초 재렌더가 포커스를 뺏지 않게
+        (['stocklog', 'send', 'shipping', 'inventory', 'returns', 'epost', 'customers', 'stats'].includes(PAGE) && typing); // 검색어·입력 중이면 30초 재렌더가 포커스를 뺏지 않게
       if (!formOpen) render();
       if (after > before) {
         toast(`새로 들어온 것이 ${after - before}건 있어요.`, 6000);

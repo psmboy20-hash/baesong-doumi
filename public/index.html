@@ -10,6 +10,10 @@
 <body>
 <aside class="side">
   <div class="brand" onclick="go('home');return false">배송 도우미 <span id="ver" class="ver"></span></div>
+  <div class="side-search">
+    <input id="global-search" type="text" placeholder="이름·전화·송장·주문번호 검색"
+      onkeydown="if(event.key==='Enter'){go('customers', this.value); this.blur();}">
+  </div>
   <nav id="nav">
     <a href="#" data-page="home" onclick="go('home');return false">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11 12 4l9 7v8a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>
@@ -31,9 +35,17 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12a8 8 0 0 1 14-5l2 2"/><path d="M20 4v5h-5"/><path d="M20 12a8 8 0 0 1-14 5l-2-2"/><path d="M4 20v-5h5"/></svg>
       <span>교환/반품</span>
     </a>
+    <a href="#" data-page="customers" onclick="go('customers');return false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="10" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      <span>고객</span>
+    </a>
     <a href="#" data-page="inventory" onclick="go('inventory');return false">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16v13H4z"/><path d="M8 7V4h8v3"/><path d="M4 12h16"/></svg>
       <span>재고</span>
+    </a>
+    <a href="#" data-page="stats" onclick="go('stats');return false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
+      <span>통계</span>
     </a>
     <a href="#" data-page="settings" onclick="go('settings');return false">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.3.9a7 7 0 0 0-1.7-1L14.5 3h-5l-.4 2.4a7 7 0 0 0-1.7 1l-2.3-.9-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-.9a7 7 0 0 0 1.7 1l.4 2.4h5l.4-2.4a7 7 0 0 0 1.7-1l2.3.9 2-3.4-2-1.5c.1-.3.1-.7.1-1z"/></svg>
@@ -60,8 +72,10 @@
 <script src="pages/epost.js"></script>
 <script src="pages/shipping.js"></script>
 <script src="pages/returns.js"></script>
+<script src="pages/customers.js"></script>
 <script src="pages/inventory.js"></script>
 <script src="pages/settings.js"></script>
+<script src="pages/stats.js"></script>
 <script src="app-init.js"></script>
 </body>
 </html>

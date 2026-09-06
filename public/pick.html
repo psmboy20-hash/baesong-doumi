@@ -64,7 +64,7 @@ function optOf(x) {
   const db = await (await fetch('/api/db')).json();
   const items = [];
   for (const list of [db.orders, db.seeding]) {
-    for (const x of list) if ((x.status === '대기' || x.status === '접수중') && x._sel !== false) items.push(x);
+    for (const x of list) if ((x.status === '대기' || x.status === '접수중') && x._sel !== false && !x.hold) items.push(x);
   }
   const d = new Date();
   document.getElementById('meta').textContent =
