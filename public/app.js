@@ -126,6 +126,13 @@ function chip(status) {
 }
 // ---- 제품 매칭: 자유 텍스트(구글폼)를 카페24 실제 제품(품번+사진)과 연결 ----
 function lettersOnly(s) { return String(s || '').toLowerCase().replace(/[^a-z가-힣]/g, ''); }
+// 검색: 띄어쓰기로 나눈 낱말이 순서 상관없이 전부 들어 있으면 매칭 (대소문자·기호·공백 무시 — "denim margot", "w01 마고" 같은 중간 키워드도 찾음)
+function matchQ(text, q) {
+  const norm = v => String(v || '').toLowerCase().replace(/[_#()\[\]\/·.,\-]+/g, ' ');
+  const hay = norm(text); const squashed = hay.replace(/\s+/g, '');
+  const tokens = norm(q).split(/\s+/).filter(Boolean);
+  return tokens.every(t => hay.includes(t) || squashed.includes(t.replace(/\s+/g, '')));
+}
 function matchProducts(text) {
   if (!DB.products || !DB.products.length) return [];
   const t = lettersOnly(text);
@@ -1496,7 +1503,7 @@ function renderShipping() {
     `<button class="big-btn ${f === k ? '' : 'gray'}" style="font-size:1rem;padding:0.5rem 1rem" onclick="go('shipping','${k}')">${nm} ${cnt(k)}</button>`).join('');
   const base = all.filter(byF);
   const q = (window._shipQ || '').trim();
-  const filtered = q ? base.filter(x => (x.name + x.phone + (x.invoice || '') + (x.product || '')).includes(q)) : base;
+  const filtered = q ? base.filter(x => matchQ(x.name + ' ' + x.phone + ' ' + (x.invoice || '') + ' ' + (x.product || ''), q)) : base;
   const cutNote = filtered.length > 200 ? `<div class="hint" style="margin-top:0.6rem">최근 200건만 보여줘요. 더 찾으려면 위 검색창에 이름이나 송장번호를 넣어 주세요.</div>` : '';
   const emptyMsg = q
     ? `'${esc(q)}'(으)로 찾은 것이 없어요. <button class="link-btn" onclick="window._shipQ='';renderShipping()">🔄 전체 보기</button>`
@@ -1583,7 +1590,7 @@ function renderInventory() {
   const prodN = allGroups.size;
   let items = activeInventory;
   if (!counting) {
-    items = q ? items.filter(i => (i.name + ' ' + (i.color || '') + ' ' + (i.size || '')).includes(q)) : items;
+    items = q ? items.filter(i => matchQ(i.name + ' ' + (i.color || '') + ' ' + (i.size || '') + ' ' + (i.sku || ''), q)) : items;
     if (filter === 'diff') items = items.filter(hasDiff);
     if (filter === 'low') items = items.filter(isLow);
     if (filter === 'zero') items = items.filter(isZero);
@@ -2033,7 +2040,7 @@ const stockRefLabel = e => {
 function invMoveItemOptions(filterText) {
   const q = (filterText || '').trim();
   const rows = [...DB.inventory].sort((a, b) => (a.name + a.size).localeCompare(b.name + b.size));
-  const filtered = q ? rows.filter(i => (i.name + ' ' + (i.color || '') + ' ' + (i.size || '')).includes(q)) : rows;
+  const filtered = q ? rows.filter(i => matchQ(i.name + ' ' + (i.color || '') + ' ' + (i.size || ''), q)) : rows;
   return filtered.map(i => `<option value="${i.id}">${esc(i.name)}${i.color ? ' / ' + esc(i.color) : ''}${i.size ? ' / ' + esc(i.size) : ''} (지금 ${i.qty}개)</option>`).join('')
     || `<option value="" disabled selected>일치하는 제품이 없어요</option>`;
 }
@@ -2162,7 +2169,7 @@ async function renderStockLog() {
       ${reasonChips}
     </div>` : '');
   const log = rf === 'all' ? inMonth : inMonth.filter(e => normReason(e.reason) === rf);
-  const filteredLog = slq ? log.filter(e => (e.name + ' ' + (e.color || '') + ' ' + (e.size || '')).includes(slq)) : log;
+  const filteredLog = slq ? log.filter(e => matchQ(e.name + ' ' + (e.color || '') + ' ' + (e.size || '') + ' ' + (e.note || '') + ' ' + (e.ref || ''), slq)) : log;
   el.innerHTML = summaryHtml + renderLogTab(filteredLog);
 }
 // 검색어를 입력하는 동안 다시 그려도 포커스·커서 위치를 유지
@@ -2211,7 +2218,7 @@ function ledgerBucket(byReason, reasons) {
 function renderLedgerTab(lr, slq) {
   if (!lr || !lr.ok) return `<div class="card"><div class="muted">수불부를 불러오지 못했어요. 잠시 뒤 다시 열어 주세요.</div></div>`;
   let rows = lr.rows || [];
-  if (slq) rows = rows.filter(row => (row.name + ' ' + (row.color || '') + ' ' + (row.size || '')).includes(slq));
+  if (slq) rows = rows.filter(row => matchQ(row.name + ' ' + (row.color || '') + ' ' + (row.size || ''), slq));
   const totals = lr.totals || rows.reduce((s, row) => ({ start: s.start + row.start, inN: s.inN + row.inN, outN: s.outN + row.outN, end: s.end + row.end }), { start: 0, inN: 0, outN: 0, end: 0 });
   const line = row => {
     const inHq = ledgerBucket(row.byReason, ['본사 입고', '입고 (직접)', '기초 재고']);
