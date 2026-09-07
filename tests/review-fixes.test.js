@@ -67,3 +67,10 @@ test('접속 코드 비교는 길이가 달라도 안전하게 동작하고 빈 
   assert.equal(codeMatches('anything', ''), false);
   assert.equal(codeMatches(undefined, '840007'), false);
 });
+
+test('우체국 처리상태 06(집하 이후)은 03(수거됨)으로 본다', () => {
+  const { epostTreatmentStatus, normalizeEpostStus } = require('../lib/operations');
+  assert.equal(normalizeEpostStus('06'), '03');
+  assert.equal(normalizeEpostStus('02'), '02');
+  assert.equal(epostTreatmentStatus('<xsync><treatStusCd><![CDATA[06]]></treatStusCd></xsync>'), '03');
+});

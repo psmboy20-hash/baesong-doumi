@@ -22,6 +22,7 @@ const {
   releaseMissingEpostOperations,
   epostResponseRecognized,
   epostTreatmentStatus,
+  normalizeEpostStus,
   fulfillmentKey,
   expandSelectedFulfillments,
   markPrintedFulfillments,
@@ -1194,7 +1195,7 @@ async function syncReturnPickup(db, ret, pushCafe24) {
   const xml = await epostCall(db, 'api.GetResInfo.jparcel', {
     custNo: db.epost.custNo, reqType: '2', orderNo, reqYmd
   });
-  const stus = xmlVal(xml, 'treatStusCd');
+  const stus = normalizeEpostStus(xmlVal(xml, 'treatStusCd'));
   const regiNo = xmlVal(xml, 'regiNo');
   if (!stus && !regiNo) throw new Error('아직 우체국 접수 결과가 없어요.');
   if (stus === '05') {
@@ -3361,7 +3362,7 @@ const server = http.createServer((req, res) => {
             custNo: db.epost.custNo, reqType: '1', orderNo: operation.orderNo, reqYmd: operation.reqYmd
           });
           const regiNo = xmlVal(xml, 'regiNo');
-          const stus = xmlVal(xml, 'treatStusCd');
+          const stus = normalizeEpostStus(xmlVal(xml, 'treatStusCd'));
           if (!regiNo || regiNo === 'TESTREGINOAPI') throw new Error('우체국 접수 결과를 아직 확인하지 못했습니다.');
           for (const { type, item } of entries) {
             item.invoice = regiNo;
@@ -3608,7 +3609,7 @@ const server = http.createServer((req, res) => {
           });
           const regiNo = xmlVal(xml, 'regiNo');
           if (!regiNo || regiNo === 'TESTREGINOAPI') throw new Error('우체국 접수 결과를 아직 확인하지 못했습니다.');
-          const stus = xmlVal(xml, 'treatStusCd') || '01';
+          const stus = normalizeEpostStus(xmlVal(xml, 'treatStusCd')) || '01';
           for (const { type, item } of entries) {
             item.invoice = regiNo;
             item.courier = '우체국';
@@ -3650,7 +3651,7 @@ const server = http.createServer((req, res) => {
             custNo: db.epost.custNo, reqType: '1',
             orderNo: item.epost.orderNo, reqYmd: item.epost.reqYmd || today().replace(/-/g, '')
           });
-          const stus = xmlVal(xml, 'treatStusCd');
+          const stus = normalizeEpostStus(xmlVal(xml, 'treatStusCd'));
           for (const it of targets) {
             if (it.epost.orderNo === item.epost.orderNo) {
               if (stus) it.epost.stus = stus;
