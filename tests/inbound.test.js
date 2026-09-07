@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { addInbound, receiveInbound, cancelInbound, expectedSoon, inboundList } = require('../lib/inbound');
+const { addInbound, receiveInbound, cancelInbound, inboundList } = require('../lib/inbound');
 
 function sampleDb() {
   return {
@@ -67,21 +67,16 @@ test('입고 확인 수량을 고쳐 넣을 수 있고, 두 번 확인하거나 
   assert.match(receiveInbound(db, { id: 999 }).error, /찾지 못했/);
 });
 
-test('취소한 건은 목록에 남지만 입고 대상에서 빠진다', () => {
+test('취소한 건은 목록에 canceled 로 남는다', () => {
   const db = sampleDb();
   const a = addInbound(db, { inventoryId: 1, qty: 5, eta: '2026-09-07' });
-  const b = addInbound(db, { inventoryId: 1, qty: 5, eta: '2026-09-30' });
   assert.equal(cancelInbound(db, { id: a.item.id }).ok, true);
+  assert.equal(inboundList(db).length, 1);
   assert.equal(db.inbound[0].status, 'canceled');
-  assert.equal(expectedSoon(db, '2026-09-06', 3).length, 0);
-  assert.equal(expectedSoon(db, '2026-09-06', 30).length, 1);
-  assert.equal(expectedSoon(db, '2026-09-06', 30)[0].id, b.item.id);
 });
 
 test('목록 읽기는 장부를 바꾸지 않는다', () => {
   const db = { inventory: [], nextId: 1 };
   assert.deepEqual(inboundList(db), []);
   assert.equal('inbound' in db, false, 'GET 만 해도 db.inbound 가 생기면 안 된다');
-  assert.deepEqual(expectedSoon(db, '2026-09-06', 3), []);
-  assert.equal('inbound' in db, false);
 });

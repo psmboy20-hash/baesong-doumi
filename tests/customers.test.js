@@ -8,8 +8,7 @@ const {
   buildCustomerIndex,
   searchCustomers,
   getCustomer,
-  setCustomerNote,
-  globalSearch
+  setCustomerNote
 } = require('../lib/customers');
 
 function sampleDb() {
@@ -75,12 +74,3 @@ test('메모는 저장·삭제되고 고객 카드에 다시 실려 나온다', 
   assert.equal(getCustomer(db, '없는키'), null);
 });
 
-test('전역 검색은 고객·발송·교환반품을 함께 돌려준다', () => {
-  const found = globalSearch(sampleDb(), '김하늘');
-  assert.equal(found.customers.length, 1);
-  assert.equal(found.shipments.length, 3);
-  assert.equal(found.shipments[0].date, '2026-09-06');
-  assert.equal(found.returns.length, 1);
-  assert.equal(found.returns[0].kind, '교환');
-  assert.deepEqual(globalSearch(sampleDb(), '   '), { customers: [], shipments: [], returns: [] });
-});

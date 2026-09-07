@@ -19,6 +19,8 @@ const { exec } = require('child_process');
 const XLSX = require('xlsx');
 const seed = require('./lib/seed128');
 const {
+  EPOST_DONE_CODES,
+  EPOST_CANCELABLE_CODES,
   releaseMissingEpostOperations,
   epostResponseRecognized,
   epostTreatmentStatus,
@@ -74,7 +76,7 @@ const {
   groupRecipientConflict
 } = require('./lib/operations');
 const { writeJsonAtomic, appendAudit, createMutationQueue } = require('./lib/storage');
-const { buildWorkbookBuffer, xlsxDownloadHeaders } = require('./lib/spreadsheet-export');
+const { buildWorkbookBuffer, xlsxDownloadHeaders, downloadHeaders } = require('./lib/spreadsheet-export');
 const {
   channelStockPolicy,
   stockInitialized,
@@ -115,15 +117,15 @@ const {
 const {
   searchCustomers,
   getCustomer,
-  setCustomerNote,
-  globalSearch
+  setCustomerNote
 } = require('./lib/customers');
 const {
   monthlyStats,
   shippingCostRows,
   shipmentCsvRows,
   SHIPPING_COST_COLUMNS,
-  SHIPMENT_COLUMNS
+  SHIPMENT_COLUMNS,
+  ymOf
 } = require('./lib/stats');
 const {
   addInbound,
@@ -172,7 +174,6 @@ const {
   cafe24PickupActive,
   findCafe24ClaimDetail,
   pickupOperationUnresolved,
-  canCompleteRma,
   shouldApplyPickupProgress,
   pickupCanceledFlowState,
   shouldCancelRecoveredPickup,
@@ -422,11 +423,6 @@ function excelDate(v) {
 function today() { // 한국 로컬 날짜 (UTC를 쓰면 오전 9시 전 접수가 전날로 찍힘)
   const d = new Date(), p = n => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-}
-// 수불부·CSV 의 ym 파라미터 — YYYY-MM 모양이 아니면 이번 달로 (파일명·필터에 그대로 쓰이므로)
-function monthParam(v) {
-  const s = String(v == null ? '' : v).trim();
-  return /^\d{4}-\d{2}$/.test(s) ? s : today().slice(0, 7);
 }
 function nowStamp() {
   const d = new Date();
@@ -1892,7 +1888,7 @@ function parseSeedingSheet(ws, schemaOut) {
 
 // ---------- 주문 시트/카페24 엑셀 파싱 ----------
 // 엑셀로 넣을 수 있는 판매채널 (주문 수집 자동 연동은 카페24만; 나머지는 채널 어드민에서 내려받은 주문 엑셀)
-const ORDER_CHANNELS = { cafe24: '카페24', '29cm': '29CM', musinsa: '무신사', gsshop: 'GS샵', other: '기타 채널' };
+const ORDER_CHANNELS = ['cafe24', '29cm', 'musinsa', 'gsshop', 'other']; // 이름표는 lib/channels 의 CHANNEL_LABELS 하나만 쓴다
 
 function parseOrderRows(rows) {
   // 헤더 행 찾기 (앞 10행 안에서 '수령인'류 + '주소'류가 함께 있는 행)
@@ -2349,17 +2345,11 @@ async function matchInvoices(db, rows) {
   return results;
 }
 
-// 여러 재고 행이 걸리면 옵션이 구체적으로 맞는 1건만 (이중 차감/유령 복구 방지)
-// 이름 비교 규칙(stockMatchesByName)은 lib/operations.js 에 있다 — 채널 재고 계산도 같은 규칙을 써야 해서 옮겼다
-function findStockMatches(db, item) {
-  return selectStockMatches(db.inventory, item);
-}
-
 function prepareReturnCompletion(db, ret, restock) {
   const returnItems = ret ? returnLineItems(ret) : [];
   const restockPlan = !ret || ret.localCompleted || restock === false
     ? { rows: [], missing: [] }
-    : buildReturnRestockPlan(returnItems, item => findStockMatches(db, item));
+    : buildReturnRestockPlan(returnItems, item => selectStockMatches(db.inventory, item));
   const safety = returnCompletionSafety(ret, { restock, stockMissing: restockPlan.missing });
   return { returnItems, restockPlan, safety };
 }
@@ -2487,7 +2477,7 @@ async function reconcileEpostCancellation(db, orderNo) {
         setEpostCancellationState(db, orderNo, 'epost_canceled', '');
         saveDb(db);
       } else {
-        if (!['00', '01', '02'].includes(status)) {
+        if (!EPOST_CANCELABLE_CODES.includes(status)) {
           const error = new Error(status === '03'
             ? '기사님이 이미 가져가서 우체국 접수를 취소할 수 없어요.'
             : '현재 우체국 상태에서는 접수를 취소할 수 없어요.');
@@ -2677,7 +2667,7 @@ async function postProcessShipped(db, matchedItems) {
     const planned = new Map();
     let missing = false;
     for (const stockItem of splitShipmentItems(item)) {
-      const matches = findStockMatches(db, stockItem);
+      const matches = selectStockMatches(db.inventory, stockItem);
       if (!matches.length || !inventoryCountKnown(matches[0])) {
         results.stockMissing.push({ name: item.name, product: stockItem.product, option: [stockItem.color, stockItem.size].filter(Boolean).join(' ') });
         missing = true;
@@ -2874,7 +2864,7 @@ function closingSummary(db) {
       printed,
       notPrinted: rows.length - printed,
       // 03 집하완료·05 취소를 뺀 나머지 = 아직 기사님이 안 가져간 것
-      notCollected: rows.filter(row => !['03', '05'].includes(row.stus || '01')).length,
+      notCollected: rows.filter(row => !EPOST_DONE_CODES.includes(row.stus || '01')).length,
       holds: holdCount(db)
     }
   };
@@ -2893,14 +2883,9 @@ function sendJson(res, code, obj) {
   res.end(body);
 }
 function sendCsv(res, filename, csv) {
-  // 엑셀에서 바로 열리도록 UTF-8 BOM 포함 텍스트를 그대로 내려준다 (파일명은 한글이라 RFC 5987)
+  // 엑셀에서 바로 열리도록 UTF-8 BOM 포함 텍스트를 그대로 내려준다 (헤더 조립은 xlsx 내려받기와 같은 함수)
   const body = Buffer.from(String(csv), 'utf8');
-  res.writeHead(200, {
-    'Content-Type': 'text/csv; charset=utf-8',
-    'Content-Disposition': `attachment; filename="stock.csv"; filename*=UTF-8''${encodeURIComponent(filename)}`,
-    'Content-Length': body.length,
-    'Cache-Control': 'no-store, max-age=0'
-  });
+  res.writeHead(200, downloadHeaders('text/csv; charset=utf-8', 'stock.csv', filename, body.length));
   res.end(body);
 }
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.ico': 'image/x-icon', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.woff': 'font/woff', '.txt': 'text/plain; charset=utf-8' };
@@ -2982,7 +2967,7 @@ const server = http.createServer((req, res) => {
       });
       return sendJson(res, 200, { rev: db.rev || 0, version: ver, viewOnly: VIEW_ONLY, c24Owner: !VIEW_ONLY || !(await storeAliveCached()), status });
     }
-    // ── 재고/출고 마스터 API (allin_v4 등 다른 시스템이 참조하는 읽기 전용 단일 기준) ──
+    // ---------- 재고/출고 마스터 API (allin_v4 등 다른 시스템이 참조하는 읽기 전용 단일 기준) ----------
     // 외부 시스템은 X-Ham-Code 헤더에 접속 코드를 넣어 호출한다.
     if (url.pathname === '/api/master/inventory' && req.method === 'GET') {
       const db = loadDb();
@@ -3024,6 +3009,7 @@ const server = http.createServer((req, res) => {
       rows.sort((a, b) => String(b.date).localeCompare(String(a.date)));
       return sendJson(res, 200, { ok: true, source: 'baesong-doumi', rev: db.rev || 0, count: rows.length, since: since || null, shipments: rows });
     }
+    // ---------- 재고 조정 · 실사 ----------
     if (url.pathname === '/api/inventory/adjust' && req.method === 'POST') {
       // 재고 수동 입고/차감 (＋/− 버튼) — 입출고 내역에 남도록 서버가 처리
       const b = JSON.parse((await readBody(req)).toString('utf8'));
@@ -3108,7 +3094,7 @@ const server = http.createServer((req, res) => {
       audit('inventory.min', { ref: inv.sku || inventorySku(inv), count: n, rev: db.rev });
       return sendJson(res, 200, { ok: true, db });
     }
-    // ── 채널 재고 자동 반영 ──
+    // ---------- 채널 재고 자동 반영 ----------
     if (url.pathname === '/api/channel-stock/preview' && req.method === 'GET') {
       const db = loadDb();
       const policy = channelStockPolicy(db);
@@ -3193,6 +3179,7 @@ const server = http.createServer((req, res) => {
       res.writeHead(200, xlsxDownloadHeaders(channel + '_재고_' + nowStamp() + '.xlsx', buffer.length));
       return res.end(buffer);
     }
+    // ---------- 입출고 장부 · 수불부 ----------
     if (url.pathname === '/api/master/stocklog' && req.method === 'GET') {
       // 입출고 변동 장부 (allin_v4 등 외부 시스템·앱 내역 화면 공용)
       const db = loadDb();
@@ -3217,7 +3204,7 @@ const server = http.createServer((req, res) => {
     if ((url.pathname === '/api/master/ledger' || url.pathname === '/api/master/ledger.csv') && req.method === 'GET') {
       // 월별 수불부 (기초 → 입고 → 출고 → 기말)
       const db = loadDb();
-      const ym = monthParam(url.searchParams.get('ym'));
+      const ym = ymOf(url.searchParams.get('ym'));
       const r = ledgerSummary(db.stockLog || [], db.inventory || [], ym);
       if (url.pathname === '/api/master/ledger.csv') {
         return sendCsv(res, `수불부_${r.ym}.csv`, toCsv(r.rows, LEDGER_COLUMNS));
@@ -3227,7 +3214,7 @@ const server = http.createServer((req, res) => {
     if (url.pathname === '/api/master/stocklog.csv' && req.method === 'GET') {
       // 그 달 입출고 내역 CSV (ym 이 YYYY-MM 이 아니면 이번 달)
       const db = loadDb();
-      const ym = monthParam(url.searchParams.get('ym'));
+      const ym = ymOf(url.searchParams.get('ym'));
       let rows = (db.stockLog || []).filter(r => String(r.date || '').startsWith(ym));
       rows = rows.slice(-3000).reverse();
       return sendCsv(res, `입출고내역_${ym}.csv`, toCsv(rows, STOCKLOG_COLUMNS));
@@ -3254,6 +3241,7 @@ const server = http.createServer((req, res) => {
       saveDb(db);
       return sendJson(res, 200, { ok: true, db, made: sizes });
     }
+    // ---------- 카페24 연결 ----------
     if (url.pathname === '/api/cafe24/authurl' && req.method === 'GET') {
       const db = loadDb();
       if (!cafe24Configured(db)) return sendJson(res, 200, { error: '먼저 설정에 카페24 쇼핑몰 아이디, Client ID, Client Secret을 저장해 주세요.' });
@@ -3296,6 +3284,7 @@ const server = http.createServer((req, res) => {
         return sendJson(res, 200, { error: e.message });
       }
     }
+    // ---------- 우체국 접수 ----------
     if (url.pathname === '/api/epost/connect' && req.method === 'POST') {
       const db = loadDb();
       if (!epostConfigured(db)) return sendJson(res, 200, { error: '먼저 우체국 인증키와 보안키를 저장해 주세요.' });
@@ -3482,6 +3471,7 @@ const server = http.createServer((req, res) => {
       saveDb(db);
       return sendJson(res, 200, { ok: true, db });
     }
+    // ---------- 합포장 · 분할 ----------
     if (url.pathname === '/api/packing/merge' && req.method === 'POST') {
       const b = JSON.parse((await readBody(req)).toString('utf8'));
       const db = loadDb();
@@ -3553,6 +3543,7 @@ const server = http.createServer((req, res) => {
       audit('packing.split_undo', { ref: orderNo, count: result.count, rev: db.rev });
       return sendJson(res, 200, { ok: true, db, count: result.count, orderNo });
     }
+    // ---------- 직접 발송 · 우체국 진행상태 ----------
     if (url.pathname === '/api/manual-ship' && req.method === 'POST') {
       // 앱 밖에서(우체국 창구, 다른 택배 등) 따로 보낸 건을 발송완료로 정리
       const body = JSON.parse((await readBody(req)).toString('utf8'));
@@ -3639,7 +3630,7 @@ const server = http.createServer((req, res) => {
         }
       }
       // 끝난 건(집하완료/취소)은 건너뛰어 호출 수를 줄임
-      const targets = [...db.orders, ...db.seeding].filter(x => x.epost && x.epost.orderNo && !['03', '05'].includes(x.epost.stus));
+      const targets = [...db.orders, ...db.seeding].filter(x => x.epost && x.epost.orderNo && !EPOST_DONE_CODES.includes(x.epost.stus));
       const done = new Set(recoveredOperations);
       let refreshed = 0;
       refreshed += recoveredOperations.size;
@@ -3710,7 +3701,8 @@ const server = http.createServer((req, res) => {
         warning: warnings.length ? warnings.join('\n') : null
       });
     }
-    // 우편번호 즉시 조회 (화면에서 ⚠️ 뜨는 순간 자동 호출)
+    // ---------- 우편번호 조회 ----------
+    // 즉시 조회 (화면에서 ⚠️ 뜨는 순간 자동 호출)
     if (url.pathname === '/api/zip/lookup' && req.method === 'POST') {
       const b = JSON.parse((await readBody(req)).toString('utf8'));
       const db = loadDb();
@@ -4105,7 +4097,7 @@ const server = http.createServer((req, res) => {
     if ((url.pathname === '/api/upload/cafe24' || url.pathname === '/api/upload/orders') && req.method === 'POST') {
       // 판매채널 주문 엑셀 넣기 — 카페24(자동 연동 안 될 때) · 29CM · 무신사 · 기타 (열 이름은 자동 인식)
       const channel = String(url.searchParams.get('channel') || 'cafe24').toLowerCase();
-      if (!ORDER_CHANNELS[channel]) return sendJson(res, 400, { error: '알 수 없는 판매채널이에요.' });
+      if (!ORDER_CHANNELS.includes(channel)) return sendJson(res, 400, { error: '알 수 없는 판매채널이에요.' });
       const buf = await readBody(req, 10 * 1024 * 1024);
       let fileName = '';
       try { fileName = decodeURIComponent(String(req.headers['x-file-name'] || '')); } catch (e) { fileName = ''; }
@@ -4235,15 +4227,10 @@ const server = http.createServer((req, res) => {
       audit('item.memo', { type, ref: type + ':' + item.id, rev: db.rev });
       return sendJson(res, 200, { ok: true, db });
     }
-    // ---------- 고객 이력 · 전역 검색 ----------
+    // ---------- 고객 이력 ----------
     if (url.pathname === '/api/customers' && req.method === 'GET') {
       const db = loadDb();
       return sendJson(res, 200, { ok: true, list: searchCustomers(db, url.searchParams.get('q'), 50) });
-    }
-    if (url.pathname === '/api/search' && req.method === 'GET') {
-      const db = loadDb();
-      const found = globalSearch(db, url.searchParams.get('q'));
-      return sendJson(res, 200, Object.assign({ ok: true }, found));
     }
     const customerNoteMatch = url.pathname.match(/^\/api\/customers\/([^/]+)\/note$/);
     if (customerNoteMatch && req.method === 'POST') {
@@ -4316,7 +4303,7 @@ const server = http.createServer((req, res) => {
     }
     if (url.pathname === '/api/stats/shipping.csv' && req.method === 'GET') {
       const db = loadDb();
-      const ym = monthParam(url.searchParams.get('ym'));
+      const ym = ymOf(url.searchParams.get('ym'));
       return sendCsv(res, '택배비_' + ym + '.csv', toCsv(shippingCostRows(db, ym), SHIPPING_COST_COLUMNS));
     }
     // ---------- 카페24 문의 수 ----------

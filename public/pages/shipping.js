@@ -1,8 +1,7 @@
 
 // ---------- 배송 확인 ----------
 function shipDefaultDate(offsetDays) {
-  const d = new Date(Date.now() + offsetDays * 86400000);
-  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  return ymd(new Date(Date.now() + offsetDays * 86400000));
 }
 function shipSetRange(which, val) {
   if (which === 'from') window._shipFrom = val; else window._shipTo = val;

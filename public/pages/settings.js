@@ -43,7 +43,7 @@ function renderSettings() {
     <div class="hint">주문·시딩·접수를 자동으로 처리하려면 아래 서비스와 연결하세요.</div>
 
     <div style="padding-bottom:16px;margin-bottom:16px;border-bottom:1px solid var(--line)">
-      <div style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:15px;margin-bottom:6px">카페24 ${chipEl(c24Connected ? 'ok' : 'idle', c24Connected ? '연결됨' : '연결 안 됨')}</div>
+      <div class="conn-title">카페24 ${chipEl(c24Connected ? 'ok' : 'idle', c24Connected ? '연결됨' : '연결 안 됨')}</div>
       <div class="hint">카페24 주문을 자동으로 가져와요. <a class="track-link" target="_blank" href="https://developers.cafe24.com">카페24 개발자센터</a>의 앱에서 아래 값을 확인해 넣어 주세요. (권한: 주문 조회)</div>
       <div class="form-row"><label for="set-c24mall">쇼핑몰 아이디 (mall id)</label><input id="set-c24mall" value="${esc(s.cafe24MallId)}" placeholder="예: nusolvere"></div>
       <div class="form-row"><label for="set-c24id">Client ID</label><input id="set-c24id" value="${esc(s.cafe24ClientId)}"></div>
@@ -61,7 +61,7 @@ function renderSettings() {
     </div>
 
     <div style="padding-bottom:16px;margin-bottom:16px;border-bottom:1px solid var(--line)">
-      <div style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:15px;margin-bottom:6px">구글시트 ${chipEl(sheetOn ? 'ok' : 'idle', sheetOn ? '켜짐' : '꺼짐')}</div>
+      <div class="conn-title">구글시트 ${chipEl(sheetOn ? 'ok' : 'idle', sheetOn ? '켜짐' : '꺼짐')}</div>
       <div class="hint">시딩 주문을 가져오고, 송장번호를 시트에 자동으로 적어줘요. 자동 기록은 시트에 스크립트를 한 번 설치해야 해요 — 프로젝트 폴더의 구글시트-자동기록-설치법.md 참고.</div>
       <div class="form-row"><label for="set-sheetid">시딩 구글시트 주소</label><input id="set-sheetid" value="${esc(s.sheetId)}" placeholder="구글시트 링크를 통째로 붙여넣으세요"></div>
       <div class="form-row"><label for="set-whurl">웹 앱 주소 (자동 기록, 선택)</label><input id="set-whurl" value="${esc(s.sheetWebhookUrl)}" placeholder="https://script.google.com/macros/s/..../exec"></div>
@@ -69,7 +69,7 @@ function renderSettings() {
     </div>
 
     <div style="padding-bottom:16px;margin-bottom:16px;border-bottom:1px solid var(--line)">
-      <div style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:15px;margin-bottom:6px">우체국 바로 접수 ${chipEl(epostConnected ? 'ok' : 'idle', epostConnected ? '연결됨' : '연결 안 됨')}</div>
+      <div class="conn-title">우체국 바로 접수 ${chipEl(epostConnected ? 'ok' : 'idle', epostConnected ? '연결됨' : '연결 안 됨')}</div>
       <div class="hint">연결하면 [주문 확인]에서 버튼 한 번으로 우체국 접수와 송장번호 발급이 됩니다. 계약고객시스템 → 고객센터 → 오픈API신청결과 화면의 인증키와 접수용 보안키를 붙여넣으세요.</div>
       <div class="form-row"><label for="set-epkey">인증키</label><input id="set-epkey" value="${esc(s.epostApiKey)}"></div>
       <div class="form-row"><label for="set-epsec">접수용 보안키</label><input id="set-epsec" type="password" value="${esc(s.epostSecKey)}"></div>
@@ -83,7 +83,7 @@ function renderSettings() {
     </div>
 
     <div>
-      <div style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:15px;margin-bottom:6px">주소 → 우편번호 자동 변환 ${chipEl(kakaoOn ? 'ok' : 'idle', kakaoOn ? '켜짐' : '꺼짐 (선택)')}</div>
+      <div class="conn-title">주소 → 우편번호 자동 변환 ${chipEl(kakaoOn ? 'ok' : 'idle', kakaoOn ? '켜짐' : '꺼짐 (선택)')}</div>
       <div class="hint">시딩 신청에 우편번호가 없으면 접수가 안 돼요. 켜두면 주소만으로 우편번호를 자동으로 찾아줍니다. <a class="track-link" target="_blank" href="https://developers.kakao.com">카카오 개발자 사이트</a>에서 무료로 REST API 키를 받아 붙여넣으세요. (없어도 목록에서 직접 5자리를 넣을 수 있어요)</div>
       <div class="form-row"><label for="set-kakao">카카오 REST API 키</label><input id="set-kakao" value="${esc(s.kakaoRestKey || '')}" placeholder="카카오에서 받은 긴 영문+숫자 키"></div>
     </div>
@@ -126,19 +126,13 @@ function renderSettings() {
 function cstkSettings() {
   return (DB.settings && DB.settings.channelStock) || { enabled: false, cafe24: true, reserve: 0, autoAfterChange: true };
 }
-// api()는 서버가 꺼졌을 때와 라우트가 아직 없을 때(404, JSON이 아닌 응답) 구분 없이 같은 안내를 준다.
-// 이 기능은 백엔드와 같이 만들어지는 중이라 아직 없는 라우트를 "서버가 꺼졌다"고 겁주지 않고 조용히 준비 중으로 안내한다.
-function cstkErrorMsg(r) {
-  const generic = '프로그램(서버)와 연결이 안 돼요. 검은 창이 꺼졌는지 확인하고, 바탕화면 아이콘으로 다시 켜주세요.';
-  return (r && r.error && r.error !== generic) ? r.error : '아직 준비 중이에요. 잠시 후 다시 시도해 주세요.';
-}
 function channelStockCardHtml() {
   const cs = cstkSettings();
   const scopeMissing = !!DB.channelStockScopeMissing;
   const statusChip = scopeMissing ? chipEl('bad', '권한 필요') : chipEl(cs.enabled ? 'ok' : 'idle', cs.enabled ? '켜짐' : '꺼짐');
   const permBanner = scopeMissing ? banner('bad', '카페24 재연결이 필요해요 (재고 수정 권한). 위 [카페24 연결]을 다시 누르고 다시 동의해 주세요.') : '';
   return `<div class="card">
-    <div style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:15px;margin-bottom:6px">채널 재고 자동 반영 ${statusChip}</div>
+    <div class="conn-title">채널 재고 자동 반영 ${statusChip}</div>
     <div class="hint">가용 수량 = 실물 − 아직 안 보낸 주문 − 예비. 실물재고가 바뀌면 카페24 판매가능 수량을 이 값으로 맞춰요.</div>
     ${permBanner}
     <div class="form-row"><label for="cs-reserve">예비 수량 (채널에 내놓지 않을 개수)</label>
@@ -174,7 +168,7 @@ async function cstkPreview() {
   if (box) box.innerHTML = '<div class="hint">불러오는 중…</div>';
   const r = await api('/api/channel-stock/preview');
   if (!box) return;
-  if (!r || !r.ok) { box.innerHTML = `<div class="hint">${esc(cstkErrorMsg(r))}</div>`; return; }
+  if (!r || !r.ok) { box.innerHTML = `<div class="hint">${esc(channelStockErrorMsg(r))}</div>`; return; }
   const rows = (r.plan && r.plan.rows) || [];
   const unverified = Number(r.plan && r.plan.skipped && r.plan.skipped.unverified) || 0;
   const unverifiedNote = unverified ? `<div class="hint">확인하지 않은 옵션 ${unverified}개는 반영하지 않아요. 재고 화면에서 실사하거나 [카페24 수량 가져오기]로 채우면 대상이 돼요.</div>` : '';
@@ -185,21 +179,8 @@ async function cstkPreview() {
     </table></div>
     <div class="hint" style="margin-top:8px">${rows.length}개 옵션이 카페24와 달라요.</div>${unverifiedNote}`;
 }
-async function cstkPushAll() {
-  const r = await api('/api/channel-stock/preview');
-  if (!r || !r.ok) { toast(cstkErrorMsg(r), 5000); return; }
-  const rows = (r.plan && r.plan.rows) || [];
-  if (!rows.length) { toast('지금 반영할 차이가 없어요.'); return; }
-  if (!confirm(`카페24 판매가능 수량 ${rows.length}건을 지금 반영할까요?`)) return;
-  busy(true, '카페24에 반영하는 중…');
-  const pr = await api('/api/channel-stock/push', { method: 'POST', body: JSON.stringify({ all: true, trigger: 'manual' }) });
-  busy(false);
-  if (!pr || !pr.ok) { toast(cstkErrorMsg(pr), 6000); return; }
-  if (pr.db) adoptDb(pr.db);
-  const failN = (pr.failed || []).length;
-  toast(`카페24에 ${pr.pushed || 0}건 반영했어요.` + (failN ? ` 실패 ${failN}건` : ''), 6000);
-  cstkPreview();
-  cstkLoadLog();
+function cstkPushAll() {
+  return channelStockPushAll(() => { cstkPreview(); cstkLoadLog(); });
 }
 async function cstkToggleEnabled() {
   const cs = cstkSettings();
@@ -208,7 +189,7 @@ async function cstkToggleEnabled() {
   const el = document.getElementById('cs-reserve');
   const reserve = el ? Math.max(0, Math.min(99, Math.floor(Number(el.value) || 0))) : (cs.reserve || 0);
   const r = await api('/api/channel-stock/settings', { method: 'POST', body: JSON.stringify({ enabled: next, reserve, autoAfterChange: cs.autoAfterChange !== false }) });
-  if (!r || !r.ok) { toast(cstkErrorMsg(r), 6000); return; }
+  if (!r || !r.ok) { toast(channelStockErrorMsg(r), 6000); return; }
   adoptDb(r.db);
   renderSettings();
   toast(next ? '자동 반영을 켰어요.' : '자동 반영을 껐어요.', 5000);
@@ -218,7 +199,7 @@ async function cstkSaveReserve() {
   const el = document.getElementById('cs-reserve');
   const reserve = Math.max(0, Math.min(99, Math.floor(Number(el.value) || 0)));
   const r = await api('/api/channel-stock/settings', { method: 'POST', body: JSON.stringify({ enabled: cs.enabled, reserve, autoAfterChange: cs.autoAfterChange !== false }) });
-  if (!r || !r.ok) { toast(cstkErrorMsg(r), 6000); return; }
+  if (!r || !r.ok) { toast(channelStockErrorMsg(r), 6000); return; }
   adoptDb(r.db);
   renderSettings();
   toast(`예비 수량을 ${reserve}개로 저장했어요.`, 5000);
@@ -227,7 +208,7 @@ async function cstkLoadLog() {
   const box = document.getElementById('cs-log');
   const r = await api('/api/channel-stock/log?limit=10');
   if (!box) return;
-  if (!r || !r.ok) { box.innerHTML = esc(cstkErrorMsg(r)); return; }
+  if (!r || !r.ok) { box.innerHTML = esc(channelStockErrorMsg(r)); return; }
   const log = (r.log || []).slice(0, 10);
   if (!log.length) { box.innerHTML = '아직 반영 기록이 없어요.'; return; }
   const rows = log.map(e => `<tr>

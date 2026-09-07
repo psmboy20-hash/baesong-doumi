@@ -8,26 +8,8 @@ function channelStockChip(i) {
   if (i.cafe24PushedAt && (Date.now() - new Date(i.cafe24PushedAt).getTime()) < 86400000) return ' ' + chipEl('ok', '반영됨');
   return '';
 }
-// api()는 서버가 꺼졌을 때와 라우트가 아직 없을 때(404)를 구분하지 않는다.
-// 이 기능은 백엔드와 같이 만들어지는 중이라 아직 없는 라우트를 "서버가 꺼졌다"고 겁주지 않고 조용히 준비 중으로 안내한다.
-function invChannelStockErrorMsg(r) {
-  const generic = '프로그램(서버)와 연결이 안 돼요. 검은 창이 꺼졌는지 확인하고, 바탕화면 아이콘으로 다시 켜주세요.';
-  return (r && r.error && r.error !== generic) ? r.error : '아직 준비 중이에요. 잠시 후 다시 시도해 주세요.';
-}
-async function invChannelPush() {
-  const r = await api('/api/channel-stock/preview');
-  if (!r || !r.ok) { toast(invChannelStockErrorMsg(r), 5000); return; }
-  const rows = (r.plan && r.plan.rows) || [];
-  if (!rows.length) { toast('지금 반영할 차이가 없어요.'); return; }
-  if (!confirm(`카페24 판매가능 수량 ${rows.length}건을 지금 반영할까요?`)) return;
-  busy(true, '카페24에 반영하는 중…');
-  const pr = await api('/api/channel-stock/push', { method: 'POST', body: JSON.stringify({ all: true, trigger: 'manual' }) });
-  busy(false);
-  if (!pr || !pr.ok) { toast(invChannelStockErrorMsg(pr), 6000); return; }
-  if (pr.db) adoptDb(pr.db);
-  const failN = (pr.failed || []).length;
-  toast(`카페24에 ${pr.pushed || 0}건 반영했어요.` + (failN ? ` 실패 ${failN}건` : ''), 6000);
-  renderInventory();
+function invChannelPush() {
+  return channelStockPushAll(renderInventory);
 }
 
 // ---------- 재고 ----------
@@ -74,7 +56,6 @@ function renderInventory() {
   const activeCafeRows = activeInventory.filter(i => i.variantCode && i.cafe24VariantActive !== false);
   const groupCafeTotal = g => g.filter(c24Sellable).reduce((sum, i) => sum + Number(i.cafe24Qty), 0);
   const totalQty = [...allGroups.values()].reduce((sum, g) => sum + groupTotal(g), 0);
-  const cafeTotalQty = activeInventory.filter(c24Sellable).reduce((sum, i) => sum + Number(i.cafe24Qty), 0);
   const hasCafeSnapshot = c24SnapshotComplete(activeCafeRows);
   const diffN = activeInventory.filter(hasDiff).length;
   const lowN = activeInventory.filter(isLow).length;
@@ -326,7 +307,7 @@ function inbForm() {
       <div class="form-row"><label>수량</label><input id="inb-qty" type="number" value="1" min="1" style="width:6rem"></div>
       <div class="form-row"><label>도착 예정일</label><input id="inb-eta" type="date"></div>
       <div class="form-row"><label>메모 (선택 — 예: 9월 2차 생산분)</label><input id="inb-memo" maxlength="80" placeholder="어디서 들어오는지"></div>
-      <div style="display:flex;gap:0.6rem;flex-wrap:wrap">
+      <div class="form-actions">
         ${btn({ label: '등록', onclick: 'inbSave()', kind: 'primary' })}
         ${btn({ label: '취소', onclick: "document.getElementById('inb-form').innerHTML=''", kind: 'text' })}
       </div>
@@ -505,7 +486,7 @@ function invAddForm() {
       <div class="form-row"><label>컬러 (없으면 비워두세요)</label><input id="inv-color" placeholder="예: Indigo Blue"></div>
       <div class="form-row"><label>사이즈 (없으면 비워두세요)</label><input id="inv-size" placeholder="예: M"></div>
       <div class="form-row"><label>개수</label><input id="inv-qty" type="number" value="1" min="0"></div>
-      <div style="display:flex;gap:0.6rem;flex-wrap:wrap">
+      <div class="form-actions">
         ${btn({ label: '저장', onclick: 'invAdd()', kind: 'primary' })}
         ${btn({ label: '취소', onclick: 'renderInventory()', kind: 'text' })}
       </div>
@@ -618,7 +599,7 @@ function invMoveForm() {
       </div>
       <div class="form-row"><label>수량</label><input id="mv-qty" type="number" value="1" min="1" style="width:6rem"></div>
       <div class="form-row"><label>메모 (선택 — 예: 9월 2차 생산분, OO매거진 협찬)</label><input id="mv-memo" maxlength="80" placeholder="어디서 왔는지 / 어디로 갔는지"></div>
-      <div style="display:flex;gap:0.6rem;flex-wrap:wrap">
+      <div class="form-actions">
         ${btn({ label: '기록하기', onclick: 'invMoveSave()', kind: 'primary' })}
         ${btn({ label: '취소', onclick: "$('#inv-form').innerHTML=''", kind: 'text' })}
       </div>
@@ -657,13 +638,11 @@ async function invMoveSave() {
 async function renderStockLog() {
   PAGE = 'stocklog';
   document.querySelectorAll('.side a[data-page]').forEach(a => a.classList.toggle('on', a.dataset.page === 'inventory')); // 재고 메뉴의 하위 화면
-  const now = new Date();
-  const thisYm = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
-  const ym = window._slMonth || thisYm;
+  const nowYm = thisYm();
+  const ym = window._slMonth || nowYm;
   const tab = window._slTab || 'log';
   const rf = window._slReason || 'all';
   const slq = (window._slQ || '').trim();
-  const shiftMonth = (s, d) => { const [y, m] = s.split('-').map(Number); const x = new Date(y, m - 1 + d, 1); return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0'); };
 
   const header = pageHeader({
     title: '입출고 내역 · 수불부',
@@ -672,10 +651,10 @@ async function renderStockLog() {
       + (tab !== 'stocktakes' ? btn({ label: '엑셀(CSV) 내려받기', onclick: 'slExportCsv()', icon: 'download' }) : '')
   });
   const monthNav = `<div style="display:flex;align-items:center;gap:8px">
-    ${btn({ onclick: `window._slMonth='${shiftMonth(ym, -1)}';window._slReason='all';renderStockLog()`, icon: 'chevronL', size: 'sm', title: '이전 달' })}
+    ${btn({ onclick: `window._slMonth='${shiftYm(ym, -1)}';window._slReason='all';renderStockLog()`, icon: 'chevronL', size: 'sm', title: '이전 달' })}
     <b style="font-size:16px;min-width:96px;text-align:center;display:inline-block">${esc(ym.replace('-', '년 '))}월</b>
-    ${btn({ onclick: `window._slMonth='${shiftMonth(ym, 1)}';window._slReason='all';renderStockLog()`, icon: 'chevronR', size: 'sm', title: '다음 달', disabled: ym >= thisYm })}
-    ${ym !== thisYm ? btn({ label: '이번 달', onclick: "window._slMonth='';window._slReason='all';renderStockLog()", kind: 'text', size: 'sm' }) : ''}
+    ${btn({ onclick: `window._slMonth='${shiftYm(ym, 1)}';window._slReason='all';renderStockLog()`, icon: 'chevronR', size: 'sm', title: '다음 달', disabled: ym >= nowYm })}
+    ${ym !== nowYm ? btn({ label: '이번 달', onclick: "window._slMonth='';window._slReason='all';renderStockLog()", kind: 'text', size: 'sm' }) : ''}
   </div>`;
   const tabSeg = seg([
     { key: 'log', label: '내역', on: tab === 'log', onclick: "window._slTab='log';window._slReason='all';renderStockLog()" },
@@ -839,9 +818,7 @@ function renderStocktakesTab() {
 }
 // 현재 탭·월 기준으로 CSV 내려받기 (팝업 차단·빈 탭이 안 생기게 같은 창에서 이동 → 첨부파일이라 화면은 그대로)
 function slExportCsv() {
-  const now = new Date();
-  const thisYm = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
-  const ym = window._slMonth || thisYm;
+  const ym = window._slMonth || thisYm();
   const tab = window._slTab || 'log';
   if (tab === 'stocktakes') return;
   const url = tab === 'ledger' ? `/api/master/ledger.csv?ym=${encodeURIComponent(ym)}` : `/api/master/stocklog.csv?ym=${encodeURIComponent(ym)}`;

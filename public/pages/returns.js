@@ -14,10 +14,6 @@ const RMA_FLOW = {
   completed: ['done', '전체 완료'],
   canceled: ['idle', '전체 취소']
 };
-// RET_STUS(pages/epost.js)의 상태 문구는 예전 이모지 표기가 남아 있을 수 있어 여기서 표시 직전에 걸러낸다
-function stripEmoji(s) {
-  return String(s || '').replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}]/gu, '').trim();
-}
 // 회수 신청/물건 도착 확인/취소 같은 행 액션 글자 버튼 (.tbl 규칙: kind:'text' size:'sm')
 function actLink(label, onclick, danger) {
   return `<button type="button" class="btn text sm"${danger ? ' style="color:var(--bad)"' : ''} onclick="${onclick}">${label}</button>`;
@@ -58,7 +54,7 @@ function rmaCells(x) {
 }
 function returnRow(x, epostOn) {
   const [cls, nm] = RMA_FLOW[x.flowState] || ['wait', x.status || '확인 필요'];
-  const stusNm = x.epost && x.epost.stus ? stripEmoji((RET_STUS[x.epost.stus] || [])[1] || '') : '';
+  const stusNm = x.epost && x.epost.stus ? (RET_STUS[x.epost.stus] || [])[1] || '' : '';
   const cafe24Line = x.sourceChannel === 'cafe24'
     ? `<div class="sub">카페24 ${esc(x.cafe24OrderStatus || '연결 중')}</div>` : '';
   const issues = (x.syncIssues || []).map(row => row.message).filter(Boolean);
@@ -309,9 +305,8 @@ async function markDelivered(kind, id, name) {
   const list = kind === 'seeding' ? DB.seeding : DB.orders;
   const x = list.find(i => i.id === id);
   if (!x) return;
-  const d = new Date(), p = n => String(n).padStart(2, '0');
   x.delivered = true;
-  x.deliveredDate = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  x.deliveredDate = ymd(new Date());
   x.deliverySource = 'manual';
   x.deliveryCheckStatus = '배달완료';
   delete x.deliveredAuto;

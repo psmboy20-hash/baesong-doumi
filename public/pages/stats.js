@@ -1,16 +1,5 @@
 
 // ---------- 통계 ----------
-function statsThisYm() {
-  const d = new Date();
-  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
-}
-function statsShiftYm(ym, delta) {
-  const [y, m] = ym.split('-').map(Number);
-  const d = new Date(y, (m - 1) + delta, 1);
-  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
-}
-const STATS_CHANNEL_LABEL = { cafe24: '카페24', seeding: '시딩', '29cm': '29CM', musinsa: '무신사', gsshop: 'GS샵', other: '기타 채널', exchange: '교환 재발송', direct: '직접 등록' };
-function statsChannelLabel(k) { return STATS_CHANNEL_LABEL[k] || k; }
 function statsCardTable(title, innerTableHtml) {
   return `<div class="card">
     <div class="step-title">${esc(title)}</div>
@@ -26,8 +15,8 @@ async function statsDownloadShippingCsv(ym) {
 
 async function renderStats() {
   PAGE = 'stats';
-  const thisYm = statsThisYm();
-  const ym = window._statsYm || thisYm;
+  const nowYm = thisYm();
+  const ym = window._statsYm || nowYm;
   window._statsYm = ym;
 
   const header = pageHeader({
@@ -36,10 +25,10 @@ async function renderStats() {
     actions: btn({ label: '택배비 CSV', onclick: `statsDownloadShippingCsv('${ym}')`, icon: 'download' })
   });
   const monthNav = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
-    ${btn({ onclick: `window._statsYm='${statsShiftYm(ym, -1)}';renderStats()`, icon: 'chevronL', size: 'sm', title: '이전 달' })}
+    ${btn({ onclick: `window._statsYm='${shiftYm(ym, -1)}';renderStats()`, icon: 'chevronL', size: 'sm', title: '이전 달' })}
     <b style="font-size:16px;min-width:96px;text-align:center;display:inline-block">${esc(ym.replace('-', '년 '))}월</b>
-    ${btn({ onclick: `window._statsYm='${statsShiftYm(ym, 1)}';renderStats()`, icon: 'chevronR', size: 'sm', title: '다음 달', disabled: ym >= thisYm })}
-    ${ym !== thisYm ? btn({ label: '이번 달', onclick: "window._statsYm='';renderStats()", kind: 'text', size: 'sm' }) : ''}
+    ${btn({ onclick: `window._statsYm='${shiftYm(ym, 1)}';renderStats()`, icon: 'chevronR', size: 'sm', title: '다음 달', disabled: ym >= nowYm })}
+    ${ym !== nowYm ? btn({ label: '이번 달', onclick: "window._statsYm='';renderStats()", kind: 'text', size: 'sm' }) : ''}
   </div>`;
 
   main().innerHTML = header + monthNav + `<div id="stats-body"><div class="loading-row">불러오는 중…</div></div>`;
@@ -85,7 +74,7 @@ function statsBodyHtml(r) {
     const c = byChannel[k] || {};
     const amt = c.amount == null ? '<span class="muted">—</span>' : (Number(c.amount) || 0).toLocaleString() + '원';
     return `<tr>
-      <td>${esc(statsChannelLabel(k))}</td>
+      <td>${esc(CHANNEL_LABEL[k] || k)}</td>
       <td class="num">${c.orders || 0}</td>
       <td class="num">${c.units || 0}</td>
       <td class="num">${amt}</td>

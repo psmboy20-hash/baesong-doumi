@@ -74,7 +74,7 @@ function renderHome() {
 
   // 이번 달 통계
   const _d = new Date();
-  const ym = _d.getFullYear() + '-' + String(_d.getMonth() + 1).padStart(2, '0');
+  const ym = ymOf(_d);
   const sentThis = all.filter(x => x.status === '발송완료' && (x.sentDate || '').startsWith(ym));
   const sentThisCount = shipmentCount(sentThis);
   const sentProductQty = productQuantity(sentThis);

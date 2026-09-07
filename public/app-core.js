@@ -316,6 +316,8 @@ function shipmentMemoHtml(x) {
   if (x.msg) lines.push(`<div class="ship-note"><b>배송메모</b> ${esc(x.msg)}</div>`);
   return lines.join('');
 }
+// 채널 키 → 사람이 읽는 이름 (주문 확인·통계·업로드 안내가 같이 쓴다)
+const CHANNEL_LABEL = { cafe24: '카페24', seeding: '시딩', '29cm': '29CM', musinsa: '무신사', gsshop: 'GS샵', other: '기타 채널', exchange: '교환 재발송', direct: '직접 등록' };
 function shipmentSourceLabel(x) {
   if (x.exchange || x.sourceChannel === 'exchange') return '교환 재발송';
   if (x.sourceChannel === 'seeding' || x._kind === '시딩') return seedingSourceLabel(x);
@@ -348,14 +350,39 @@ function externalSyncIssues() {
   return rows;
 }
 
-function trackLink(inv) {
-  if (!inv) return '';
-  const digits = String(inv).replace(/\D/g, '');
-  if (digits.length === 13) {
-    return `<a class="track-link" target="_blank" href="https://service.epost.go.kr/trace.RetrieveDomRigiTraceList.comm?sid1=${digits}">${esc(inv)}</a>`;
-  }
-  return esc(inv);
+// ---------- 날짜 포맷 (여러 화면이 같은 규칙을 쓴다) ----------
+const pad2 = n => String(n).padStart(2, '0');
+function ymd(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
+function ymOf(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1); }
+function thisYm() { return ymOf(new Date()); }
+function shiftYm(ym, delta) {
+  const [y, m] = ym.split('-').map(Number);
+  return ymOf(new Date(y, (m - 1) + delta, 1));
 }
+
+// ---------- 채널 재고 자동 반영 (재고 화면 · 설정 화면 공용) ----------
+// api()는 서버가 꺼졌을 때와 라우트가 아직 없을 때(404, JSON이 아닌 응답)를 구분하지 않는다.
+// 이 기능은 백엔드와 같이 만들어지는 중이라 아직 없는 라우트를 "서버가 꺼졌다"고 겁주지 않고 조용히 준비 중으로 안내한다.
+function channelStockErrorMsg(r) {
+  const generic = '프로그램(서버)와 연결이 안 돼요. 검은 창이 꺼졌는지 확인하고, 바탕화면 아이콘으로 다시 켜주세요.';
+  return (r && r.error && r.error !== generic) ? r.error : '아직 준비 중이에요. 잠시 후 다시 시도해 주세요.';
+}
+async function channelStockPushAll(onDone) {
+  const r = await api('/api/channel-stock/preview');
+  if (!r || !r.ok) { toast(channelStockErrorMsg(r), 5000); return; }
+  const rows = (r.plan && r.plan.rows) || [];
+  if (!rows.length) { toast('지금 반영할 차이가 없어요.'); return; }
+  if (!confirm(`카페24 판매가능 수량 ${rows.length}건을 지금 반영할까요?`)) return;
+  busy(true, '카페24에 반영하는 중…');
+  const pr = await api('/api/channel-stock/push', { method: 'POST', body: JSON.stringify({ all: true, trigger: 'manual' }) });
+  busy(false);
+  if (!pr || !pr.ok) { toast(channelStockErrorMsg(pr), 6000); return; }
+  if (pr.db) adoptDb(pr.db);
+  const failN = (pr.failed || []).length;
+  toast(`카페24에 ${pr.pushed || 0}건 반영했어요.` + (failN ? ` 실패 ${failN}건` : ''), 6000);
+  onDone();
+}
+
 function go(page, sub) {
   // 실사 중에는 화면을 다시 그리면 적어둔 숫자가 사라지니 먼저 물어본다
   if (window._invCount) {
@@ -371,7 +398,6 @@ function go(page, sub) {
   window.scrollTo(0, 0);
 }
 function pendingOf(list) { return list.filter(x => x.status === '대기'); }
-function processingOf(list) { return list.filter(x => x.status === '접수중'); }
 
 // ---------- 도움말 말풍선 ----------
 const HELP = {
@@ -433,16 +459,10 @@ function render() {
   else if (PAGE === 'inventory') renderInventory();
   else if (PAGE === 'stocklog') renderStockLog(); // 페이지로 등록해야 30초 자동 새로고침에 재고 화면으로 튕기지 않는다
   else if (PAGE === 'settings') renderSettings();
-  else if (PAGE === 'stats') { if (typeof renderStats === 'function') renderStats(); else renderStatsFallback(); }
+  else if (PAGE === 'stats') renderStats();
   injectHelp();
   updateNavBadge();
 }
-// renderStats()가 아직 없을 때(F3 배포 전)의 임시 화면 — 콘솔 에러 없이 조용히 빈 상태만 보여준다
-function renderStatsFallback() {
-  main().innerHTML = pageHeader({ title: '통계', sub: '월별 판매·발송·상품·클레임 요약' }) +
-    `<div class="card">${emptyState({ icon: 'chart', title: '통계 화면을 준비 중이에요', sub: '잠시 후 다시 열어 주세요.' })}</div>`;
-}
-
 
 // ---------- 동작: 불러오기 / 내보내기 / 업로드 ----------
 async function doSync() {
@@ -520,6 +540,8 @@ function updateSideStatus() {
 }
 
 // ---------- 자동 새로고침 (30초마다 확인) ----------
+// 검색어를 치는 중에 30초 재렌더가 포커스를 뺏으면 안 되는 화면들 (home 은 입력칸이 없다)
+const TYPING_GUARD_PAGES = ['stocklog', 'send', 'shipping', 'inventory', 'returns', 'epost', 'customers', 'stats'];
 async function refreshStatus(force) {
   try {
     const r = await api('/api/status');
@@ -540,7 +562,7 @@ async function refreshStatus(force) {
       const formOpen = PAGE === 'settings' || document.querySelector('#inv-form input') ||
         document.querySelector('#export-result .result-box') || document.querySelector('#ret-form input') ||
         (PAGE === 'inventory' && window._invCount) ||
-        (['stocklog', 'send', 'shipping', 'inventory', 'returns', 'epost', 'customers', 'stats'].includes(PAGE) && typing); // 검색어·입력 중이면 30초 재렌더가 포커스를 뺏지 않게
+        (TYPING_GUARD_PAGES.includes(PAGE) && typing);
       if (!formOpen) render();
       if (after > before) {
         toast(`새로 들어온 것이 ${after - before}건 있어요.`, 6000);

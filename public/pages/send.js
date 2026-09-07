@@ -1,8 +1,8 @@
 
 // ---------- 주문/시딩 목록 (보내기) ----------
 
-// 채널 송장 엑셀 대상(29CM·무신사·GS샵) — 라벨과 내보내기 버튼에서 같이 쓴다
-const CHANNEL_INVOICE_LABEL = { '29cm': '29CM', musinsa: '무신사', gsshop: 'GS샵' };
+// 채널 송장 엑셀 대상 — 세그먼트·내보내기 버튼이 같이 쓴다 (이름은 app-core.js의 CHANNEL_LABEL)
+const CHANNEL_INVOICE_CHANNELS = ['29cm', 'musinsa', 'gsshop'];
 
 // 제주·도서산간 우편번호 구간표 — 접수 화면 안내 칩 전용(접수 자체를 막지는 않는다).
 // lib/postal.js 의 remoteArea()(백엔드, 서버 판정용)와 반드시 같은 구간을 쓴다 — 화면(send.js)은
@@ -42,7 +42,7 @@ function sendCategory(g) {
   if (g.every(p => p.kind === 'seeding')) return 'seeding';
   const isCafe24 = g.every(p => p.kind === 'orders' && (!p.x.sourceChannel || p.x.sourceChannel === 'cafe24'));
   if (isCafe24) return 'cafe24';
-  for (const ch of Object.keys(CHANNEL_INVOICE_LABEL)) {
+  for (const ch of CHANNEL_INVOICE_CHANNELS) {
     if (g.every(p => p.kind === 'orders' && p.x.sourceChannel === ch)) return ch;
   }
   return 'direct';   // 기타 채널·직접 등록·채널이 섞인 묶음
@@ -52,7 +52,7 @@ function sendSourceLabel(category, first) {
   if (category === 'seeding') return seedingSourceLabel(first);
   if (category === 'cafe24') return '카페24 주문';
   // app-core.js의 shipmentSourceLabel엔 아직 없는 채널들
-  if (CHANNEL_INVOICE_LABEL[category]) return CHANNEL_INVOICE_LABEL[category];
+  if (CHANNEL_INVOICE_CHANNELS.includes(category)) return CHANNEL_LABEL[category];
   if (first.sourceChannel === 'gsshop') return 'GS샵';
   return shipmentSourceLabel(first);
 }
@@ -147,7 +147,7 @@ function sendMappingBanner() {
     .filter(key => SEND_REQUIRED_COLUMNS.includes(key))
     .map(key => (m.unmappedLabels || [])[m.unmapped.indexOf(key)] || key);
   if (!missing.length) return '';
-  const chName = CHANNEL_INVOICE_LABEL[m.channel] || { cafe24: '카페24', other: '기타 채널' }[m.channel] || m.channel;
+  const chName = CHANNEL_LABEL[m.channel] || m.channel;
   return banner('warn', `${esc(chName)} 엑셀에서 못 찾은 열이 있어요: ${esc(missing.join(', '))}`,
     btn({ label: '설정에서 매핑', kind: 'text', size: 'sm', onclick: "go('settings')" }) +
     btn({ label: '닫기', kind: 'text', size: 'sm', onclick: 'window._sendMappingBanner=null;renderSend()' }));
@@ -309,7 +309,7 @@ function renderSend() {
   const visible = metas.filter(m => (filter === 'all' || (filter === 'hold' ? m.hold : m.category === filter)) && (!q || matchQ(sendSearchText(m), q)));
 
   const epostConnected = !!(SYNC_STATUS && SYNC_STATUS.epost && SYNC_STATUS.epost.connected);
-  const invoiceExportChannels = Object.keys(CHANNEL_INVOICE_LABEL).filter(ch =>
+  const invoiceExportChannels = CHANNEL_INVOICE_CHANNELS.filter(ch =>
     DB.orders.some(x => x.sourceChannel === ch && x.status === '발송완료' && x.invoice));
   const headerActions = [
     btn({ kind: 'secondary', icon: 'refresh', label: '새로 고침', onclick: 'doSync()' }),
@@ -350,8 +350,8 @@ function renderSend() {
         { key: 'seeding', label: '시딩', count: catCount('seeding'), on: filter === 'seeding', onclick: "window._sendFilter='seeding';renderSend()" },
         { key: 'exchange', label: '교환 재발송', count: catCount('exchange'), on: filter === 'exchange', onclick: "window._sendFilter='exchange';renderSend()" },
         // 채널 세그먼트는 그 채널 건이 있을 때만 보인다 (평소엔 버튼이 늘지 않게)
-        ...Object.keys(CHANNEL_INVOICE_LABEL).filter(ch => catCount(ch) > 0).map(ch => ({
-          key: ch, label: CHANNEL_INVOICE_LABEL[ch], count: catCount(ch), on: filter === ch,
+        ...CHANNEL_INVOICE_CHANNELS.filter(ch => catCount(ch) > 0).map(ch => ({
+          key: ch, label: CHANNEL_LABEL[ch], count: catCount(ch), on: filter === ch,
           onclick: "window._sendFilter='" + ch + "';renderSend()"
         })),
         { key: 'direct', label: '직접 등록', count: catCount('direct'), on: filter === 'direct', onclick: "window._sendFilter='direct';renderSend()" },
@@ -398,33 +398,6 @@ function matchZipInAddr(addr) {
   const s = String(addr || '');
   return /\((\d{5})\)/.test(s) || /\(우\)?\s*\d{5}/.test(s) || /우편번호[:\s]*\d{5}/.test(s) || /(^|\s)\d{5}(\s|$|\))/.test(s);
 }
-// 우편번호 없는 건에 손으로 5자리 넣기
-async function fixZip(kind, id) {
-  const inp = document.getElementById(`zip-${kind}-${id}`);
-  const z = (inp ? inp.value : '').replace(/\D/g, '');
-  if (z.length !== 5) { toast('우편번호는 숫자 5자리예요. 예: 07997'); if (inp) inp.focus(); return; }
-  const list = kind === 'seeding' ? DB.seeding : DB.orders;
-  const x = list.find(i => i.id === id);
-  if (!x) return;
-  x.zip = z;
-  delete x.zipLookupError;
-  await saveDb();
-  render();
-  toast('우편번호를 저장했어요. 이제 접수할 수 있어요.');
-}
-// 엑셀로 만든 접수를 취소하고 다시 [보낼 준비]로
-async function cancelExcel(kind, id, name) {
-  if (!confirm(`${name}님 건의 엑셀 접수를 취소하고 [보낼 준비]로 되돌릴까요?\n(우체국 사이트에 이미 파일을 올렸다면 거기서도 지워 주세요)`)) return;
-  const list = kind === 'seeding' ? DB.seeding : DB.orders;
-  const x = list.find(i => i.id === id);
-  if (!x) return;
-  x.status = '대기';
-  await saveDb();
-  render();
-  toast('[보낼 준비]로 되돌렸어요.');
-}
-
-// "kind:id,kind:id" 묶음 스펙 → 실제 항목들
 // 우편번호 없는 건: 화면에 뜨는 즉시 자동 조회 (건당 1회)
 function zipAskKey(kind, id) {
   const list = kind === 'seeding' ? DB.seeding : DB.orders;
@@ -465,6 +438,7 @@ function selAll(v) {
   }
   render();
 }
+// "kind:id,kind:id" 묶음 스펙 → 실제 항목들
 function specItems(spec) {
   const out = [];
   for (const part of String(spec).split(',')) {
@@ -568,11 +542,11 @@ async function openMemo(spec, name, current) {
 }
 // 채널(29CM·무신사·GS샵) 송장 등록용 엑셀 — 발송완료 건이 있는 채널만 버튼에 뜬다
 async function exportChannelInvoices() {
-  const avail = Object.keys(CHANNEL_INVOICE_LABEL).filter(ch => DB.orders.some(x => x.sourceChannel === ch && x.status === '발송완료' && x.invoice));
+  const avail = CHANNEL_INVOICE_CHANNELS.filter(ch => DB.orders.some(x => x.sourceChannel === ch && x.status === '발송완료' && x.invoice));
   if (!avail.length) { toast('내보낼 채널 송장이 없어요.'); return; }
   let channel = avail[0];
   if (avail.length > 1) {
-    const listStr = avail.map((ch, i) => `${i + 1}) ${CHANNEL_INVOICE_LABEL[ch]}`).join('\n');
+    const listStr = avail.map((ch, i) => `${i + 1}) ${CHANNEL_LABEL[ch]}`).join('\n');
     const answer = prompt(`어느 채널 송장 엑셀을 내려받을까요?\n${listStr}\n\n번호를 입력하세요.`, '1');
     if (answer === null) return;
     const idx = Number(String(answer).trim()) - 1;
@@ -588,7 +562,7 @@ async function downloadChannelInvoices(channel, all) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ channel, all: !!all })
   }, channel + '_송장등록.xlsx');
-  if (r && r.ok) { toast((CHANNEL_INVOICE_LABEL[channel] || channel) + ' 송장 엑셀을 내려받았어요.', 5000); return; }
+  if (r && r.ok) { toast((CHANNEL_LABEL[channel] || channel) + ' 송장 엑셀을 내려받았어요.', 5000); return; }
   if (r && r.code === 'empty' && !all) {
     if (confirm('새로 내보낼 송장이 없어요.\n\n이미 내보낸 건까지 다시 만들까요?')) return downloadChannelInvoices(channel, true);
     return;
@@ -627,13 +601,6 @@ async function manualShipGroup(spec, name) {
   busy(false);
   render();
   toast(r.error ? '처리하지 못했어요: ' + r.error : `${name}님 포장 전체를 발송완료로 정리했어요.`, 7000);
-}
-
-function toggleSel(kind, id, checked) {
-  const list = kind === 'seeding' ? DB.seeding : DB.orders;
-  const item = list.find(x => x.id === id);
-  if (item) item._sel = checked;
-  render();
 }
 
 // "이미 보낸 것과 같은 내용" 차단을 확인받고 풀어줌 → 다시 접수하면 한 번 더 보내진다
@@ -762,24 +729,6 @@ async function doExportAll() {
   }
 }
 
-// 앱 밖에서 따로 보낸 건 정리 (우체국 창구, 다른 택배 등)
-async function manualShip(kind, id, name) {
-  if (!confirm(`${name}님 것을 우체국 창구 등 앱 밖에서 정말 이미 보내셨나요?\n\n· [발송 완료]로 확정돼요 (재고 차감 · 카페24 배송처리 · 시트 기록까지 자동)\n· 한 번 확정하면 되돌리기 어려워요`)) return;
-  const inv = prompt(`${name}님 것을 앱 밖에서 이미 보내셨군요.\n\n송장번호가 있으면 입력해 주세요.\n없으면 빈칸 그대로 [확인]을 누르세요.`);
-  if (inv === null) return;
-  busy(true, '발송완료로 정리하는 중…');
-  const r = await api('/api/manual-ship', { method: 'POST', body: JSON.stringify({ type: kind === 'seeding' ? 'seeding' : 'order', id, invoice: (inv || '').trim() }) });
-  busy(false);
-  if (r.error) { toast(r.error, 6000); return; }
-  adoptDb(r.db);
-  render();
-  const extras = [];
-  if (r.stock && r.stock.length) extras.push('재고 차감');
-  if (r.stockMissing && r.stockMissing.length) extras.push(`재고 확인 필요 ${r.stockMissing.length}개`);
-  if (r.cafe24 && r.cafe24.some(c => c.ok)) extras.push('카페24 배송처리');
-  if (r.sheet && r.sheet.ok) extras.push('구글시트 기록');
-  toast(`${name}님 건을 발송완료로 정리했어요.` + (extras.length ? ' (자동: ' + extras.join(' · ') + ')' : ''), 7000);
-}
 
 // 우체국 OpenAPI 바로 접수
 async function doEpostRegister() {
@@ -874,11 +823,10 @@ async function uploadFile(which, file) {
         ? { channel: r.channel, unmapped: r.unmapped, unmappedLabels: r.unmappedLabels || [], sampleHeaders: r.sampleHeaders }
         : null;
       render();
-      const chName = { cafe24: '카페24', '29cm': '29CM', musinsa: '무신사', gsshop: 'GS샵', other: '기타 채널' }[r.channel] || '';
+      const chName = CHANNEL_LABEL[r.channel] || '';
       toast(`${chName} 주문 ${r.added}건을 새로 가져왔어요.` + (r.total - r.added > 0 ? ` (이미 있던 ${r.total - r.added}건은 건너뜀)` : ''), 6000);
     } else {
       render();
-      const box = $('#invoice-result');
       let html = '';
       if (r.matched.length) {
         html += `<div class="result-box ok"><div class="big">${r.matched.length}건의 송장번호를 붙였어요.</div>` +
