@@ -521,7 +521,7 @@ test('예전 시딩 행에 고유번호가 없으면 송장 삭제 실패를 숨
   const item = { id: 7, canceledSheet: { sourceRowId: '', invoice: '6890000000003' } };
   assert.equal(flagMissingCanceledSheetSource(item, '2026-09-03T12:00:00.000Z'), true);
   assert.equal(item.syncOps.sheetInvoiceCancel.state, 'failed');
-  assert.match(item.syncIssues[0].message, /직접 지워/);
+  assert.match(item.syncIssues[0].message, /직접 취소 표시/);
   assert.equal(item.sheetCancelHold, true);
   assert.ok(item.canceledSheet);
   item.sheetWritten = true;

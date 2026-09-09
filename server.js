@@ -2615,27 +2615,23 @@ async function resumePendingEpostCancellations(db) {
   return { completed, errors: [...new Set(errors)] };
 }
 
-async function writeSeedingSheetRows(db, items, clear) {
+// cancel=true 면 시트의 송장을 지우지 않고 취소선+회색으로 표시한다 (스크립트 v4 필요)
+async function writeSeedingSheetRows(db, items, cancel) {
   const webhook = String(db.settings.sheetWebhookUrl || '').trim();
   if (!webhook) throw new Error('구글시트 자동기록 주소가 설정되지 않았어요.');
-  const updates = (items || []).map(item => ({
-    sourceRowId: item.sourceRowId || '',
-    name: item.name,
-    phone: item.phone,
-    invoice: clear ? '' : item.invoice,
-    sentDate: clear ? '' : item.sentDate
-  }));
+  const updates = (items || []).map(item => cancel
+    ? { sourceRowId: item.sourceRowId || '', name: item.name, phone: item.phone, invoice: String(item.canceledSheet && item.canceledSheet.invoice || item.canceledInvoice || ''), canceled: true }
+    : { sourceRowId: item.sourceRowId || '', name: item.name, phone: item.phone, invoice: item.invoice, sentDate: item.sentDate });
   const recipientCounts = new Map();
   for (const item of db.seeding) recipientCounts.set(seedKey(item), (recipientCounts.get(seedKey(item)) || 0) + 1);
   const needsSourceMatch = (items || []).some(item => (recipientCounts.get(seedKey(item)) || 0) > 1);
-  if (needsSourceMatch) {
+  if (needsSourceMatch || cancel) {
     const capability = await httpsJson('POST', webhook, { 'Content-Type': 'application/json' },
       { token: db.settings.sheetWebhookToken || '', action: 'capabilities' });
-    if (!(capability.status >= 200 && capability.status < 300 && capability.json && capability.json.sourceRowId === true)) {
-      const error = new Error('같은 사람이 여러 번 신청해 시트 행을 안전하게 고를 수 없습니다. 구글시트 자동기록 스크립트를 최신 버전으로 바꿔 주세요.');
-      error.responseReceived = true;
-      throw error;
-    }
+    const cap = capability.status >= 200 && capability.status < 300 && capability.json || {};
+    const fail = msg => { const error = new Error(msg); error.responseReceived = true; throw error; };
+    if (needsSourceMatch && cap.sourceRowId !== true) fail('같은 사람이 여러 번 신청해 시트 행을 안전하게 고를 수 없습니다. 구글시트 자동기록 스크립트를 최신 버전으로 바꿔 주세요.');
+    if (cancel && cap.cancelMark !== true) fail('취소한 송장에 취소선을 그으려면 구글시트 자동기록 스크립트를 최신 버전(v4)으로 바꿔야 해요.');
   }
   const result = await httpsJson('POST', webhook, { 'Content-Type': 'application/json' },
     { token: db.settings.sheetWebhookToken || '', updates });
@@ -2689,7 +2685,7 @@ async function retryCanceledExternalUpdates(db, allowCafe24) {
   const missingSourceItems = (db.seeding || []).filter(item => item.canceledSheet && !item.canceledSheet.sourceRowId);
   for (const item of missingSourceItems) {
     flagMissingCanceledSheetSource(item);
-    warnings.push('시트 행 고유번호가 없어 취소한 송장을 자동으로 지우지 못했어요. 구글시트에서 직접 확인해 주세요.');
+    warnings.push('시트 행 고유번호가 없어 취소한 송장에 취소선을 긋지 못했어요. 구글시트에서 직접 확인해 주세요.');
   }
   const sheetItems = (db.seeding || []).filter(item => item.canceledSheet && item.canceledSheet.sourceRowId);
   if (sheetItems.length) {
@@ -2706,7 +2702,7 @@ async function retryCanceledExternalUpdates(db, allowCafe24) {
     } catch (error) {
       const state = error.responseReceived ? 'failed' : 'unknown';
       const message = state === 'unknown'
-        ? '구글시트 응답이 끊겨 취소한 송장 삭제 여부를 확인 중이에요.'
+        ? '구글시트 응답이 끊겨 취소 표시가 됐는지 확인 중이에요.'
         : error.message;
       for (const item of sheetItems) setExternalSyncState(item, 'sheet', 'invoice-cancel', state, message, keyOf(item));
       warnings.push(message);

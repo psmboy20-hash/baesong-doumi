@@ -109,7 +109,18 @@ function pickSectionHtml() {
   </div>`;
 }
 
+// 출고 화면을 열면 우체국 상태를 바로 받아온다 (1분에 한 번만, 조용히) — 5분 동기화를 기다리지 않게
+let _epostAutoAt = 0;
+function epostAutoRefresh() {
+  if (Date.now() - _epostAutoAt < 60 * 1000) return;
+  _epostAutoAt = Date.now();
+  api('/api/epost/status', { method: 'POST' }).then(r => {
+    if (r.error || PAGE !== 'epost') return;
+    if (r.db.rev !== DB.rev) { adoptDb(r.db); render(); }
+  }).catch(() => {});
+}
 function renderEpost() {
+  epostAutoRefresh();
   const allItems = [
     ...DB.orders.filter(x => x.epost).map(x => ({ kind: 'order', x })),
     ...DB.seeding.filter(x => x.epost).map(x => ({ kind: 'seeding', x }))
