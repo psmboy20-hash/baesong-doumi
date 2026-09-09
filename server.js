@@ -1578,6 +1578,34 @@ async function syncGoogle(db) {
 // 우체국 배달완료 자동 확인 (키 불필요, 회당 10건):
 // 조회 페이지의 hidden input #deliveryVal 값이 "배달완료"/"수취함투함"일 때만 완료 —
 // 우체국 페이지 자신이 STEP4 표시에 쓰는 것과 동일한 기준 (본문 글자 검색은 항상 있는 라벨 때문에 오탐)
+// 우체국에 접수된 건들의 처리상태(예약/운송장출력/집하 등)를 새로 받아온다.
+// 끝난 건(집하완료/취소)은 건너뛰어 호출 수를 줄임. 수동 새로고침과 5분 동기화가 같이 쓴다.
+async function refreshEpostStatuses(db, skipOrderNos) {
+  const targets = [...db.orders, ...db.seeding].filter(x => x.epost && x.epost.orderNo && !EPOST_DONE_CODES.includes(x.epost.stus));
+  const done = new Set(skipOrderNos || []);
+  const errors = [];
+  let refreshed = 0, changed = false;
+  for (const item of targets) {
+    if (done.has(item.epost.orderNo)) continue;
+    done.add(item.epost.orderNo);
+    try {
+      const xml = await epostCall(db, 'api.GetResInfo.jparcel', {
+        custNo: db.epost.custNo, reqType: '1',
+        orderNo: item.epost.orderNo, reqYmd: item.epost.reqYmd || today().replace(/-/g, '')
+      });
+      const stus = normalizeEpostStus(xmlVal(xml, 'treatStusCd'));
+      const rn = xmlVal(xml, 'regiNo');
+      for (const it of targets) {
+        if (it.epost.orderNo !== item.epost.orderNo) continue;
+        if (stus && it.epost.stus !== stus) { it.epost.stus = stus; changed = true; }
+        if (rn && rn !== 'TESTREGINOAPI' && it.invoice !== rn) { it.invoice = rn; changed = true; } // 취소 후 재발급 등 반영
+      }
+      refreshed++;
+    } catch (e) { errors.push(item.name + ': ' + e.message); }
+  }
+  return { refreshed, errors, changed };
+}
+
 async function checkDelivered(db) {
   // 안 본 것·오래전에 본 것부터 10건 — 미배달이 쌓여도 신규 발송이 조회에서 영영 밀리지 않게
   const targets = deliveryCheckOrder([...db.orders, ...db.seeding].filter(x =>
@@ -1815,6 +1843,10 @@ async function syncAll() {
   if (cancelWarnings.length) changed = true;
   backupDb(); // 하루 1개 자동 백업
   try { if (await checkDelivered(db)) changed = true; } catch (e) { /* 무시 */ }
+  // 우체국 처리상태(운송장 출력 대기 → 수거됨)도 같이 갱신 — 안 하면 어제 나간 택배가 출고 목록에 계속 남는다
+  if (!VIEW_ONLY && epostConfigured(db) && db.epost) {
+    try { if ((await refreshEpostStatuses(db)).changed) changed = true; } catch (e) { /* 무시 */ }
+  }
   // 채널(카페24) 판매가능 수량을 앱의 가용 재고에 맞춘다 — 자동 반영이 켜져 있을 때만
   try { if (await reconcileChannelStock(db)) changed = true; } catch (e) { console.error('채널 재고 맞추기 실패:', e.message); }
   if (changed) saveDb(db);
@@ -3629,30 +3661,9 @@ const server = http.createServer((req, res) => {
           errors.push(entries[0].item.name + ': ' + error.message);
         }
       }
-      // 끝난 건(집하완료/취소)은 건너뛰어 호출 수를 줄임
-      const targets = [...db.orders, ...db.seeding].filter(x => x.epost && x.epost.orderNo && !EPOST_DONE_CODES.includes(x.epost.stus));
-      const done = new Set(recoveredOperations);
-      let refreshed = 0;
-      refreshed += recoveredOperations.size;
-      for (const item of targets) {
-        if (done.has(item.epost.orderNo)) continue;
-        done.add(item.epost.orderNo);
-        try {
-          const xml = await epostCall(db, 'api.GetResInfo.jparcel', {
-            custNo: db.epost.custNo, reqType: '1',
-            orderNo: item.epost.orderNo, reqYmd: item.epost.reqYmd || today().replace(/-/g, '')
-          });
-          const stus = normalizeEpostStus(xmlVal(xml, 'treatStusCd'));
-          for (const it of targets) {
-            if (it.epost.orderNo === item.epost.orderNo) {
-              if (stus) it.epost.stus = stus;
-              const rn = xmlVal(xml, 'regiNo');
-              if (rn && rn !== 'TESTREGINOAPI') it.invoice = rn; // 취소 후 재발급 등 반영
-            }
-          }
-          refreshed++;
-        } catch (e) { errors.push(item.name + ': ' + e.message); }
-      }
+      const st = await refreshEpostStatuses(db, recoveredOperations);
+      let refreshed = recoveredOperations.size + st.refreshed;
+      errors.push(...st.errors);
       for (const ret of db.returns.filter(returnPickupNeedsSync)) {
         try {
           await syncReturnPickup(db, ret, true);
