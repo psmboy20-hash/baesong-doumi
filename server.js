@@ -22,6 +22,7 @@ const {
   EPOST_DONE_CODES,
   EPOST_CANCELABLE_CODES,
   releaseMissingEpostOperations,
+  epostOrderMissing,
   epostResponseRecognized,
   epostTreatmentStatus,
   normalizeEpostStus,
@@ -1586,7 +1587,7 @@ async function refreshEpostStatuses(db, skipOrderNos) {
   const errors = [];
   let refreshed = 0, changed = false;
   for (const item of targets) {
-    if (done.has(item.epost.orderNo)) continue;
+    if (!item.epost || done.has(item.epost.orderNo)) continue;
     done.add(item.epost.orderNo);
     try {
       const xml = await epostCall(db, 'api.GetResInfo.jparcel', {
@@ -1596,14 +1597,36 @@ async function refreshEpostStatuses(db, skipOrderNos) {
       const stus = normalizeEpostStus(xmlVal(xml, 'treatStusCd'));
       const rn = xmlVal(xml, 'regiNo');
       for (const it of targets) {
-        if (it.epost.orderNo !== item.epost.orderNo) continue;
+        if (!it.epost || it.epost.orderNo !== item.epost.orderNo) continue;
         if (stus && it.epost.stus !== stus) { it.epost.stus = stus; changed = true; }
         if (rn && rn !== 'TESTREGINOAPI' && it.invoice !== rn) { it.invoice = rn; changed = true; } // 취소 후 재발급 등 반영
       }
       refreshed++;
-    } catch (e) { errors.push(item.name + ': ' + e.message); }
+    } catch (e) {
+      if (epostOrderMissing(e) && item.epost.reqNo && !(await parcelLeftPostOffice(item.invoice))) {
+        // 접수는 됐었는데 우체국에 더 이상 없고 집하 흔적도 없다 = 우체국 홈페이지에서 직접 취소한 것.
+        // 앱에서 [접수 취소]를 누른 것과 똑같이 정리한다 (대기로 복귀 · 송장 비움 · 재고 복구 · 카페24/시트 정리)
+        const type = db.seeding.includes(item) ? 'seeding' : 'order';
+        const orderNo = item.epost.orderNo;
+        prepareEpostCancellation(db, type, item.id);
+        const r = await reconcileEpostCancellation(db, orderNo);
+        audit('epost.site-cancel', { type, ref: type + ':' + item.id, orderNo, ok: r.ok });
+        if (r.ok) { changed = true; continue; }
+      }
+      errors.push(item.name + ': ' + e.message);
+    }
   }
   return { refreshed, errors, changed };
+}
+
+// 우체국 추적 페이지에 집하·배송 흔적이 있으면 true (송장이 살아 움직이는 건은 자동 취소 처리하면 안 된다)
+async function parcelLeftPostOffice(invoice) {
+  const no = String(invoice || '').replace(/\D/g, '');
+  if (no.length !== 13) return false;
+  try {
+    const html = (await fetchUrl('https://service.epost.go.kr/trace.RetrieveDomRigiTraceList.comm?sid1=' + no, 0)).toString('utf8');
+    return /집하완료|배달준비|배달완료|수취함투함|배송중/.test(html.replace(/<[^>]+>/g, ''));
+  } catch (e) { return true; } // 확인 못 하면 안전하게 '움직이는 중'으로 본다
 }
 
 async function checkDelivered(db) {
@@ -1839,14 +1862,14 @@ async function syncAll() {
       (issue.system === 'sheet' && issue.action === 'invoice')
     )).length;
   }
+  // 우체국 처리상태(운송장 출력 대기 → 수거됨 · 홈페이지 취소)도 같이 갱신 — 안 하면 어제 나간 택배가 출고 목록에 계속 남는다
+  if (!VIEW_ONLY && epostConfigured(db) && db.epost) {
+    try { if ((await refreshEpostStatuses(db)).changed) changed = true; } catch (e) { /* 무시 */ }
+  }
   const cancelWarnings = await retryCanceledExternalUpdates(db, !c24Skip);
   if (cancelWarnings.length) changed = true;
   backupDb(); // 하루 1개 자동 백업
   try { if (await checkDelivered(db)) changed = true; } catch (e) { /* 무시 */ }
-  // 우체국 처리상태(운송장 출력 대기 → 수거됨)도 같이 갱신 — 안 하면 어제 나간 택배가 출고 목록에 계속 남는다
-  if (!VIEW_ONLY && epostConfigured(db) && db.epost) {
-    try { if ((await refreshEpostStatuses(db)).changed) changed = true; } catch (e) { /* 무시 */ }
-  }
   // 채널(카페24) 판매가능 수량을 앱의 가용 재고에 맞춘다 — 자동 반영이 켜져 있을 때만
   try { if (await reconcileChannelStock(db)) changed = true; } catch (e) { console.error('채널 재고 맞추기 실패:', e.message); }
   if (changed) saveDb(db);
@@ -2541,13 +2564,19 @@ async function reconcileEpostCancellation(db, orderNo) {
         saveDb(db);
       }
     } catch (error) {
-      const unknown = !!error.indeterminate || !error.responseReceived;
-      const message = unknown
-        ? '우체국 응답이 중간에 끊겨 취소 여부를 자동 확인 중이에요. 다시 취소하지 마세요.'
-        : error.message;
-      setEpostCancellationState(db, orderNo, unknown ? 'unknown' : 'failed', message);
-      saveDb(db);
-      return { ok: false, pending: unknown, error: message };
+      if (epostOrderMissing(error)) {
+        // ERR-225 = 우체국에 그 접수가 더 이상 없다 (홈페이지에서 직접 취소한 경우) → 취소된 것으로 보고 앱 쪽만 정리
+        setEpostCancellationState(db, orderNo, 'epost_canceled', '');
+        saveDb(db);
+      } else {
+        const unknown = !!error.indeterminate || !error.responseReceived;
+        const message = unknown
+          ? '우체국 응답이 중간에 끊겨 취소 여부를 자동 확인 중이에요. 다시 취소하지 마세요.'
+          : error.message;
+        setEpostCancellationState(db, orderNo, unknown ? 'unknown' : 'failed', message);
+        saveDb(db);
+        return { ok: false, pending: unknown, error: message };
+      }
     }
   }
 
