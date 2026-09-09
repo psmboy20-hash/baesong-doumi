@@ -1625,7 +1625,9 @@ async function parcelLeftPostOffice(invoice) {
   if (no.length !== 13) return false;
   try {
     const html = (await fetchUrl('https://service.epost.go.kr/trace.RetrieveDomRigiTraceList.comm?sid1=' + no, 0)).toString('utf8');
-    return /집하완료|배달준비|배달완료|수취함투함|배송중/.test(html.replace(/<[^>]+>/g, ''));
+    // 페이지 상단 단계 표시(접수→배송중→배달완료)는 항상 있는 라벨이라 본문 전체 검색은 오탐 — 진행 표의 칸(td)만 본다
+    const cells = (html.match(/<td[^>]*>[\s\S]*?<\/td>/gi) || []).map(td => td.replace(/<[^>]+>/g, '').trim());
+    return cells.some(t => /집하완료|배달준비|배달완료|수취함투함|^발송$|^도착$/.test(t));
   } catch (e) { return true; } // 확인 못 하면 안전하게 '움직이는 중'으로 본다
 }
 
