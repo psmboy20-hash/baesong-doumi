@@ -1582,13 +1582,19 @@ async function syncGoogle(db) {
 // 우체국에 접수된 건들의 처리상태(예약/운송장출력/집하 등)를 새로 받아온다.
 // 끝난 건(집하완료/취소)은 건너뛰어 호출 수를 줄임. 수동 새로고침과 5분 동기화가 같이 쓴다.
 async function refreshEpostStatuses(db, skipOrderNos) {
-  const targets = [...db.orders, ...db.seeding].filter(x => x.epost && x.epost.orderNo && !EPOST_DONE_CODES.includes(x.epost.stus));
+  // 안 본 것·오래전에 본 것부터 25건 — 한 번에 너무 오래 잡고 있지 않게 (5분마다 돌아오니 결국 다 본다)
+  const targets = [...db.orders, ...db.seeding]
+    .filter(x => x.epost && x.epost.orderNo && !EPOST_DONE_CODES.includes(x.epost.stus))
+    .sort((a, b) => (Date.parse(a.epost.checkedAt || '') || 0) - (Date.parse(b.epost.checkedAt || '') || 0))
+    .slice(0, 25);
   const done = new Set(skipOrderNos || []);
   const errors = [];
+  const siteCanceled = [];
   let refreshed = 0, changed = false;
   for (const item of targets) {
     if (!item.epost || done.has(item.epost.orderNo)) continue;
     done.add(item.epost.orderNo);
+    const now = new Date().toISOString();
     try {
       const xml = await epostCall(db, 'api.GetResInfo.jparcel', {
         custNo: db.epost.custNo, reqType: '1',
@@ -1598,37 +1604,67 @@ async function refreshEpostStatuses(db, skipOrderNos) {
       const rn = xmlVal(xml, 'regiNo');
       for (const it of targets) {
         if (!it.epost || it.epost.orderNo !== item.epost.orderNo) continue;
+        it.epost.checkedAt = now;
+        if (it.epost.missingSince) { delete it.epost.missingSince; changed = true; }
         if (stus && it.epost.stus !== stus) { it.epost.stus = stus; changed = true; }
-        if (rn && rn !== 'TESTREGINOAPI' && it.invoice !== rn) { it.invoice = rn; changed = true; } // 취소 후 재발급 등 반영
+        // 취소 후 재발급 등 송장이 바뀐 경우 — 이미 라벨을 뽑은 건은 건드리지 않는다 (상자 라벨과 화면이 어긋나면 안 됨)
+        if (rn && rn !== 'TESTREGINOAPI' && it.invoice !== rn && !it.printed) { it.invoice = rn; changed = true; }
       }
       refreshed++;
+      // 우체국이 '취소됨(05)'이라고 확실히 답한 발송완료 건 = 홈페이지에서 취소된 것 → 앱도 정리
+      if (stus === '05' && item.status === '발송완료' && item.invoice && !VIEW_ONLY &&
+          !(item.epostCancelOp && ['pending', 'unknown', 'epost_canceled'].includes(item.epostCancelOp.state))) {
+        const r = await finalizeSiteCancellation(db, item, 'stus05');
+        if (r) { siteCanceled.push(r); changed = true; }
+      }
     } catch (e) {
-      if (epostOrderMissing(e) && item.epost.reqNo && !(await parcelLeftPostOffice(item.invoice))) {
-        // 접수는 됐었는데 우체국에 더 이상 없고 집하 흔적도 없다 = 우체국 홈페이지에서 직접 취소한 것.
-        // 앱에서 [접수 취소]를 누른 것과 똑같이 정리한다 (대기로 복귀 · 송장 비움 · 재고 복구 · 카페24/시트 정리)
-        const type = db.seeding.includes(item) ? 'seeding' : 'order';
-        const orderNo = item.epost.orderNo;
-        prepareEpostCancellation(db, type, item.id);
-        const r = await reconcileEpostCancellation(db, orderNo);
-        audit('epost.site-cancel', { type, ref: type + ':' + item.id, orderNo, ok: r.ok });
-        if (r.ok) { changed = true; continue; }
+      item.epost.checkedAt = now;
+      if (epostOrderMissing(e) && item.epost.reqNo && !VIEW_ONLY) {
+        // ERR-225(접수 없음)는 두 번(30분 이상 간격) 연속 나오고, 추적 페이지에 '신청취소'가 찍혀 있을 때만 홈페이지 취소로 본다.
+        // 한 번의 오답이나 조회 장애로 멀쩡한 접수를 취소 처리하지 않기 위해서다.
+        const first = item.epost.missingSince;
+        if (!first) { item.epost.missingSince = now; changed = true; }
+        else if (Date.now() - Date.parse(first) >= 30 * 60 * 1000 && (await parcelTrackingVerdict(item.invoice)) === 'canceled') {
+          const r = await finalizeSiteCancellation(db, item, 'ERR-225');
+          if (r) { siteCanceled.push(r); changed = true; continue; }
+        }
       }
       errors.push(item.name + ': ' + e.message);
     }
   }
-  return { refreshed, errors, changed };
+  return { refreshed, errors, changed, siteCanceled };
 }
 
-// 우체국 추적 페이지에 집하·배송 흔적이 있으면 true (송장이 살아 움직이는 건은 자동 취소 처리하면 안 된다)
-async function parcelLeftPostOffice(invoice) {
+// 우체국 쪽에서 이미 취소된 접수를 앱에서만 정리 — 앱에서 [접수 취소]를 누른 것과 같은 후처리(대기 복귀·송장 비움·재고 복구·카페24/시트 정리).
+// 우체국에 취소 명령은 절대 보내지 않는다 (이미 없는 접수를 취소하려다 멀쩡한 접수를 건드릴 여지를 없앰).
+async function finalizeSiteCancellation(db, item, why) {
+  const type = db.seeding.includes(item) ? 'seeding' : 'order';
+  const orderNo = item.epost.orderNo;
+  const invoice = String(item.invoice || '');
+  if (!prepareEpostCancellation(db, type, item.id)) return null;
+  setEpostCancellationState(db, orderNo, 'epost_canceled', '');
+  const r = await reconcileEpostCancellation(db, orderNo);
+  audit('epost.site-cancel', { type, ref: type + ':' + item.id, orderNo, why, ok: r.ok });
+  if (!r.ok) return null;
+  const note = `우체국 홈페이지에서 취소된 접수(송장 ${invoice})라 앱이 대기로 되돌렸어요. 다시 보낼지 확인해 주세요.`;
+  for (const entry of r.entries || []) entry.item.memo = [note, entry.item.memo].filter(Boolean).join(' / ');
+  return { type, id: item.id, name: item.name, invoice };
+}
+
+// 우체국 추적 페이지 판정: 'moving'(집하·배송 흔적 있음) / 'canceled'('신청취소'만 찍혀 있음) / 'unknown'(아무 기록 없음·조회 실패)
+// 자동 취소 처리는 'canceled'일 때만 한다 — 모르면 건드리지 않는다.
+async function parcelTrackingVerdict(invoice) {
   const no = String(invoice || '').replace(/\D/g, '');
-  if (no.length !== 13) return false;
+  if (no.length !== 13) return 'unknown';
   try {
     const html = (await fetchUrl('https://service.epost.go.kr/trace.RetrieveDomRigiTraceList.comm?sid1=' + no, 0)).toString('utf8');
     // 페이지 상단 단계 표시(접수→배송중→배달완료)는 항상 있는 라벨이라 본문 전체 검색은 오탐 — 진행 표의 칸(td)만 본다
-    const cells = (html.match(/<td[^>]*>[\s\S]*?<\/td>/gi) || []).map(td => td.replace(/<[^>]+>/g, '').trim());
-    return cells.some(t => /집하완료|배달준비|배달완료|수취함투함|^발송$|^도착$/.test(t));
-  } catch (e) { return true; } // 확인 못 하면 안전하게 '움직이는 중'으로 본다
+    const cells = (html.match(/<td[^>]*>[\s\S]*?<\/td>/gi) || [])
+      .map(td => td.replace(/<[^>]+>/g, '').replace(/&nbsp;/gi, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ''));
+    if (cells.some(t => /집하완료|배달준비|배달완료|수취함투함|배달출발|인수|접수|발송|도착/.test(t))) return 'moving';
+    if (cells.some(t => /신청취소/.test(t))) return 'canceled';
+    return 'unknown';
+  } catch (e) { return 'unknown'; }
 }
 
 async function checkDelivered(db) {
@@ -3705,6 +3741,7 @@ const server = http.createServer((req, res) => {
       saveDb(db);
       return sendJson(res, 200, {
         ok: true, refreshed, recovered: recoveredOperations.size, released, errors: errors.slice(0, 5),
+        siteCanceled: st.siteCanceled,
         stock: post.stock, stockMissing: post.stockMissing, cafe24: post.cafe24, sheet: post.sheet, db
       });
     }

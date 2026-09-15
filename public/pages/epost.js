@@ -110,14 +110,22 @@ function pickSectionHtml() {
 }
 
 // 출고 화면을 열면 우체국 상태를 바로 받아온다 (1분에 한 번만, 조용히) — 5분 동기화를 기다리지 않게
-let _epostAutoAt = 0;
+let _epostAutoAt = 0, _epostAutoBusy = false;
 function epostAutoRefresh() {
-  if (Date.now() - _epostAutoAt < 60 * 1000) return;
-  _epostAutoAt = Date.now();
-  api('/api/epost/status', { method: 'POST' }).then(r => {
+  if (_epostAutoBusy || Date.now() - _epostAutoAt < 60 * 1000) return;
+  _epostAutoBusy = true;
+  fetch('/api/epost/status', { method: 'POST' }).then(r => r.json()).then(r => {
     if (r.error || PAGE !== 'epost') return;
-    if (r.db.rev !== DB.rev) { adoptDb(r.db); render(); }
-  }).catch(() => {});
+    epostNoticeSiteCanceled(r);
+    if (r.db && r.db.rev !== DB.rev) { adoptDb(r.db); render(); }
+  }).catch(() => {}).finally(() => { _epostAutoAt = Date.now(); _epostAutoBusy = false; });
+}
+// 우체국 홈페이지에서 취소된 접수를 앱이 정리했으면 반드시 알려준다 (조용히 사라지면 다시 보내야 하는지 모른다)
+function epostNoticeSiteCanceled(r) {
+  if (!r.siteCanceled || !r.siteCanceled.length) return;
+  alert('우체국 홈페이지에서 취소된 접수를 앱이 정리했어요.\n\n' +
+    r.siteCanceled.map(x => `· ${x.name} (송장 ${x.invoice})`).join('\n') +
+    '\n\n[주문 확인] 목록으로 돌아갔고 재고도 복구됐어요. 다시 보낼지 확인해 주세요.');
 }
 function renderEpost() {
   epostAutoRefresh();
@@ -286,6 +294,7 @@ async function epostRefresh() {
   if (r.error) { toast(r.error, 6000); return; }
   adoptDb(r.db);
   render();
+  epostNoticeSiteCanceled(r);
   toast(`${r.refreshed}건 상태를 새로 확인했어요.` + (r.recovered ? ` 불확실했던 접수 ${r.recovered}건도 찾았어요.` : '') + (r.released ? ` 우체국에 접수되지 않은 ${r.released}건은 다시 선택할 수 있게 풀었어요.` : '') + (r.errors && r.errors.length ? ' 일부는 아직 확인 중이에요.' : ''), 6000);
 }
 async function epostCancel(kind, id, name) {
