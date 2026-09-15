@@ -1620,11 +1620,10 @@ async function refreshEpostStatuses(db, skipOrderNos) {
     } catch (e) {
       item.epost.checkedAt = now;
       if (epostOrderMissing(e) && item.epost.reqNo && !VIEW_ONLY) {
-        // ERR-225(접수 없음)는 두 번(30분 이상 간격) 연속 나오고, 추적 페이지에 '신청취소'가 찍혀 있을 때만 홈페이지 취소로 본다.
-        // 한 번의 오답이나 조회 장애로 멀쩡한 접수를 취소 처리하지 않기 위해서다.
-        const first = item.epost.missingSince;
-        if (!first) { item.epost.missingSince = now; changed = true; }
-        else if (Date.now() - Date.parse(first) >= 30 * 60 * 1000 && (await parcelTrackingVerdict(item.invoice)) === 'canceled') {
+        // ERR-225(접수 없음)만으로는 안 믿는다 — 추적 페이지에 '신청취소'가 실제로 찍혀 있을 때만 홈페이지 취소로 보고 바로 정리.
+        // (집하·배송 흔적이 있거나 아무 기록이 없으면 건드리지 않는다)
+        if (!item.epost.missingSince) { item.epost.missingSince = now; changed = true; }
+        if ((await parcelTrackingVerdict(item.invoice)) === 'canceled') {
           const r = await finalizeSiteCancellation(db, item, 'ERR-225');
           if (r) { siteCanceled.push(r); changed = true; continue; }
         }
