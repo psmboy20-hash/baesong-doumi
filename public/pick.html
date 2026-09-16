@@ -102,7 +102,7 @@ function optOf(x) {
     <h2>② 사람별 확인 (${items.length}명)</h2>
     <table><thead><tr><th></th><th>구분</th><th>이름</th><th>제품</th><th>포장·비고</th></tr></thead><tbody>`;
   for (const x of items) {
-    const kind = x.sourceChannel === 'seeding' ? seedingLabel(x) : x.exchange ? '교환 재발송' : '주문';
+    const kind = x.sourceChannel === 'seeding' ? seedingLabel(x) + (x.packMark === 'box' ? ' ⭐' : ' •') : x.exchange ? '교환 재발송' : '주문';
     const inlineNotes = HamItemLines.shipmentProductNotes(x);
     const memo = [inlineNotes.length ? `포장: ${inlineNotes.join(' / ')}` : '', x.note ? `비고: ${x.note}` : '', x.request ? `요청: ${x.request}` : '', x.msg ? `배송메모: ${x.msg}` : ''].filter(Boolean).join('\n');
     const products = HamItemLines.splitShipmentItems(x).map(line => {

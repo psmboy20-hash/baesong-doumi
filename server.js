@@ -1943,7 +1943,8 @@ function parseSeedingSheet(ws, schemaOut) {
     sentDate: findCol(H, ['발송일']),
     invoice: findCol(H, ['송장번호']),
     stock: findCol(H, ['재고반영']),
-    note: findCol(H, ['비고'])
+    note: findCol(H, ['비고']),
+    packMark: findCol(H, ['포장'])  // 없어도 됨 — 없으면 전부 일반포장(•)
   };
   const schema = inspectSeedingSchema(H, col, sourceIdCol);
   if (schemaOut && typeof schemaOut === 'object') Object.assign(schemaOut, schema);
@@ -1968,6 +1969,7 @@ function parseSeedingSheet(ws, schemaOut) {
       zip: String(col.zip >= 0 ? row[col.zip] : '').replace(/\D/g, '').slice(0, 5),
       seedType: String(col.type >= 0 ? row[col.type] : '').trim(),
       packType: normalizeSeedingPacking(col.pack >= 0 ? row[col.pack] : ''),
+      packMark: String(col.packMark >= 0 ? row[col.packMark] : '').trim(),
       email: String(col.email >= 0 ? row[col.email] : '').trim(),
       request: String(col.request >= 0 ? row[col.request] : '').trim(),
       sentDate: excelDate(col.sentDate >= 0 ? row[col.sentDate] : ''),

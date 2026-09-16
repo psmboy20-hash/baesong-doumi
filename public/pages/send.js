@@ -265,7 +265,7 @@ function renderSendRow(m) {
 
   return `<tr class="${m.allSel ? 'checked-row' : ''}${m.hold ? ' hold-row' : ''}">
     <td><input type="checkbox" ${m.allSel ? 'checked' : ''} ${blocked ? 'disabled' : ''} onchange="toggleSelGroup('${m.spec}',this.checked)"></td>
-    <td><b>${esc(first.name)}</b>${first.insta ? `<span class="sub">${esc(first.insta)}</span>` : ''}<span class="sub">${esc(first.phone)} · <span class="kind-tag">${kindIcon(m.category)}${esc(m.sourceLabel)}</span>${first.orderNo ? ' ' + esc(first.orderNo) : ''}</span></td>
+    <td><b>${esc(first.name)}</b>${first.insta ? `<span class="sub">${esc(first.insta)}</span>` : ''}<span class="sub">${esc(first.phone)} · <span class="kind-tag">${kindIcon(m.category)}${esc(m.sourceLabel)}${packMarkOf(first) ? ' ' + packMarkOf(first) : ''}</span>${first.orderNo ? ' ' + esc(first.orderNo) : ''}</span></td>
     <td style="min-width:240px;max-width:480px">${productsHtml}${packingAction}${notesHtml}${staffMemoHtml}</td>
     <td class="num">${m.groupProductQty}</td>
     <td style="max-width:420px">${addrHtml}</td>

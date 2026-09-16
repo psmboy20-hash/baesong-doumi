@@ -150,7 +150,7 @@ function lineRows(x, products) {
     const rows = g.flatMap(e => lineRows(e.x, products));
     const rowsHtml = rows.map(r => `<tr><td>${esc(r.name)}</td><td>${esc(r.opt)}</td><td class="qty">${r.qty}</td></tr>`).join('');
     html += `<div class="sheet">
-      <div class="head"><span class="kind">${isSeeding ? '시딩' : '주문'}</span><span>누솔베르 nu.solvere</span></div>
+      <div class="head"><span class="kind">${isSeeding ? '시딩 ' + (first.packMark === 'box' ? '⭐ 박스포장' : '• 일반포장') : '주문'}</span><span>누솔베르 nu.solvere</span></div>
       <div class="recipient">
         <div class="name">${esc(first.name)} 님<span class="phone">…${esc(phone4 || '----')}</span></div>
         <div class="addr">${esc(first.addr || '')}${first.zip ? ` (${esc(first.zip)})` : ''}</div>

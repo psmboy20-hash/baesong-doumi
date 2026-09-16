@@ -338,9 +338,15 @@ function shipmentKindOf(x, isSeeding) {
   if (x.sourceChannel === 'other') return { kind: 'order', label: '기타 채널' };
   return { kind: 'order', label: '주문' };
 }
+// 포장 표기: 주문은 없음, 시딩 일반포장 •, 시딩 박스포장 ⭐ (시트 '포장' 열에서 옴)
+function packMarkOf(x) {
+  if (!x || x.sourceChannel !== 'seeding') return '';
+  return x.packMark === 'box' ? '⭐' : '•';
+}
 function kindTag(x, isSeeding) {
   const k = shipmentKindOf(x, isSeeding);
-  return `<span class="kind-tag">${kindIcon(k.kind)}${esc(k.label)}</span>`;
+  const mark = packMarkOf(x);
+  return `<span class="kind-tag">${kindIcon(k.kind)}${esc(k.label)}${mark ? ' ' + mark : ''}</span>`;
 }
 function externalSyncIssues() {
   const rows = [];

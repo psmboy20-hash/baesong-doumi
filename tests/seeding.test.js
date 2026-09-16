@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   normalizeSeedingPacking,
+  normalizeSeedingPackMark,
   findExactSeedingCol,
   inspectSeedingSchema,
   seedingProductFields,
@@ -16,6 +17,10 @@ const helpers = {
 
 test('일반 패킹과 패키지 시딩을 작업자가 보는 두 이름으로 통일한다', () => {
   assert.equal(normalizeSeedingPacking('일반 패킹'), '시딩');
+  assert.equal(normalizeSeedingPackMark('⭐'), 'box');
+  assert.equal(normalizeSeedingPackMark('박스'), 'box');
+  assert.equal(normalizeSeedingPackMark('•'), 'plain');
+  assert.equal(normalizeSeedingPackMark(''), 'plain');
   assert.equal(normalizeSeedingPacking('일반패킹'), '시딩');
   assert.equal(normalizeSeedingPacking(''), '시딩');
   assert.equal(normalizeSeedingPacking('시딩 패키지'), '패키지 시딩');
