@@ -18,6 +18,8 @@ const helpers = {
 test('일반 패킹과 패키지 시딩을 작업자가 보는 두 이름으로 통일한다', () => {
   assert.equal(normalizeSeedingPacking('일반 패킹'), '시딩');
   assert.equal(normalizeSeedingPackMark('⭐'), 'box');
+  assert.equal(normalizeSeedingPackMark('패키지'), 'box');
+  assert.equal(normalizeSeedingPackMark('일반'), 'plain');
   assert.equal(normalizeSeedingPackMark('박스'), 'box');
   assert.equal(normalizeSeedingPackMark('•'), 'plain');
   assert.equal(normalizeSeedingPackMark(''), 'plain');
