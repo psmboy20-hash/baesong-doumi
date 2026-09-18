@@ -614,7 +614,21 @@ async function cafe24RegisterShipment(db, orderNo, invoice, requestedItemCodes) 
     throw error;
   }
   const existingState = classifyCafe24Shipment(existing.json.shipments || [], tracking, itemCodes);
-  if (existingState === 'exact') return { ok: true, reconciled: true };
+  if (existingState === 'exact') {
+    // 같은 송장이 이미 들어가 있어도(손으로 입력한 경우) 상태가 '배송대기'면 배송중으로 올려야 고객 화면이 바뀐다
+    const same = (existing.json.shipments || []).find(sh => String(sh.tracking_no || '').replace(/\D/g, '') === tracking);
+    const standby = same && (same.items || []).some(it => !['shipping', 'shipped'].includes(String(it.status || '')));
+    if (same && same.shipping_code && standby) {
+      const up = await cafe24Fetch(db, token, `/api/v2/admin/orders/${orderNo}/shipments/${same.shipping_code}`, 'PUT',
+        { shop_no: 1, request: { status: 'shipping', order_item_code: itemCodes } });
+      if (!(up.status >= 200 && up.status < 300)) {
+        const error = new Error('카페24에 송장은 있지만 배송중으로 바꾸지 못했어요: ' + ((up.json && up.json.error && up.json.error.message) || up.status));
+        error.responseReceived = true;
+        throw error;
+      }
+    }
+    return { ok: true, reconciled: true };
+  }
   if (existingState === 'conflict') {
     const error = new Error('같은 송장번호가 카페24에 다른 상품 구성으로 이미 등록돼 있어 자동 처리를 멈췄어요.');
     error.responseReceived = true;
