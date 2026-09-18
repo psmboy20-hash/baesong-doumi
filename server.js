@@ -2848,7 +2848,8 @@ async function pushCafe24Shipments(db, matchedItems) {
         results.push({ orderNo, ok: false, error: message });
         continue;
       }
-      if (items.every(item => item.syncOps && item.syncOps.cafe24Shipment &&
+      // 예전에 성공했더라도 그 뒤 취소로 지워졌으면(cafe24Shipped=false) 다시 등록해야 한다
+      if (items.every(item => item.cafe24Shipped && item.syncOps && item.syncOps.cafe24Shipment &&
         item.syncOps.cafe24Shipment.key === operationKey && item.syncOps.cafe24Shipment.state === 'success')) {
         results.push({ orderNo, ok: true, itemCount: itemCodes.length, skipped: true });
         continue;
@@ -2885,7 +2886,9 @@ async function retryCafe24Shipments(db) {
   const due = (db.orders || []).filter(o => {
     if (o.status !== '발송완료' || !o.invoice || !o.orderNo || o.cafe24Shipped) return false;
     const op = o.syncOps && o.syncOps.cafe24Shipment;
-    if (!op || !['failed', 'unknown'].includes(op.state)) return false;
+    if (!op) return false;
+    // success 인데 cafe24Shipped 가 아니면 등록 뒤 지워진 것 — 다시 올린다
+    if (!['failed', 'unknown', 'success'].includes(op.state)) return false;
     if ((o.cafe24ShipRetries || 0) >= 20) return false;
     return now - (Date.parse(op.at) || 0) >= 30 * 60 * 1000;
   }).slice(0, 5);

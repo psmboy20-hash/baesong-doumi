@@ -36,6 +36,36 @@ test('취소 확정 시 카페24·시트 반영 플래그를 즉시 내려 재�
   assert.equal(db.seeding[0].sheetWritten, false);
 });
 
+test('취소 뒤 다시 접수한 건을 또 취소하면 예전 취소 기록을 이어받지 않는다 (이유정 2026-09-15)', () => {
+  const db = {
+    inventory: [],
+    orders: [{
+      id: 1, name: '이유정', orderNo: '20260914-0000018', orderItemCode: '20260914-0000018-01', status: '발송완료',
+      invoice: '6890173798026', sentDate: '2026-09-15', cafe24Shipped: true,
+      // 첫 접수(HAM-1)를 취소한 기록이 남아 있는 상태에서 두 번째 접수(HAM-2)가 살아 있다
+      epostCancelOp: { orderNo: 'HAM-1', state: 'local_finalized', requestedAt: '2026-09-15T01:43:26.079Z', regiNo: '6890173795209' },
+      canceledInvoice: '6890173795209',
+      epost: { orderNo: 'HAM-2', reqNo: 'REQ2', resNo: 'RES2', reqYmd: '20260915', regiNo: '6890173798026' }
+    }],
+    seeding: []
+  };
+  const prepared = prepareEpostCancellation(db, 'order', 1, '2026-09-15T01:50:00.000Z');
+  assert.equal(prepared.operation.orderNo, 'HAM-2');
+  assert.equal(prepared.operation.state, 'pending'); // 새 취소로 시작 — 우체국에 실제 취소를 보내야 한다
+  assert.equal(prepared.operation.requestedAt, '2026-09-15T01:50:00.000Z');
+  // 우체국 취소가 안 끝난 상태에서는 아무것도 정리하지 않는다 (카페24 배송등록도 그대로)
+  const early = finalizeEpostCancellation(db, 'HAM-2', () => ({ missingSkus: [] }), '2026-09-15T01:51:00.000Z');
+  assert.equal(early.entries.length, 0);
+  assert.equal(db.orders[0].cafe24Shipped, true);
+  assert.equal(db.orders[0].status, '발송완료');
+  // 우체국 취소가 끝나면 그제야 전부 정리된다
+  setEpostCancellationState(db, 'HAM-2', 'epost_canceled', '', '2026-09-15T01:52:00.000Z');
+  finalizeEpostCancellation(db, 'HAM-2', () => ({ missingSkus: [] }), '2026-09-15T01:53:00.000Z');
+  assert.equal(db.orders[0].status, '대기');
+  assert.equal(db.orders[0].cafe24Shipped, false);
+  assert.equal(db.orders[0].canceledShipment.invoice, '6890173798026');
+});
+
 test('배달 조회는 한 번도 안 본 것과 오래전에 본 것을 먼저 본다', () => {
   const items = [
     { id: 'a', deliveryCheckedAt: '2026-09-03T00:00:00.000Z' },
