@@ -111,6 +111,7 @@ test('계획: 수량이 같은 줄·미추적 줄·옵션품번 없는 줄은 �
   assert.deepEqual(plan.skipped, { noVariant: 2, notTracked: 1, needsCount: 1, unverified: 0, same: 1 });
   assert.deepEqual(plan.rows[0], {
     id: 2, sku: 'C24V-12', name: 'Margot Denim Pants', color: '인디고', size: 'M',
+    productNo: 5, variantCode: '000B', alias: false,
     physical: 4, reserved: 0, available: 4, cafe24Qty: 9, delta: -5
   });
 });

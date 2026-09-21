@@ -145,6 +145,7 @@ function channelStockCardHtml() {
       ${btn({ label: '미리보기', onclick: 'cstkPreview()', kind: 'secondary', icon: 'search' })}
       ${btn({ label: '지금 카페24에 반영', onclick: 'cstkPushAll()', kind: 'secondary', icon: 'upload' })}
       ${btn({ label: cs.enabled ? '자동 반영 끄기' : '자동 반영 켜기', onclick: 'cstkToggleEnabled()', kind: 'secondary' })}
+      ${btn({ label: '품목코드 카페24에 쓰기', onclick: 'cstkWriteVariantCodes()', kind: 'secondary', icon: 'edit' })}
     </div>
     <div id="cs-preview"></div>
     <div style="margin-top:16px;padding-top:16px;border-top:1px dashed var(--line)">
@@ -178,6 +179,17 @@ async function cstkPreview() {
       <tbody>${rows.map(cstkPreviewRowHtml).join('')}</tbody>
     </table></div>
     <div class="hint" style="margin-top:8px">${rows.length}개 옵션이 카페24와 달라요.</div>${unverifiedNote}`;
+}
+// 카페24 옵션의 자체 품목코드를 배송도우미 품목코드로 채운다 — 같은 옷이 여러 상품(밀이 마켓 등)으로 올라가 있어도 한 재고로 묶이게
+async function cstkWriteVariantCodes() {
+  if (!confirm('카페24의 비어 있는 옵션 자체코드에 배송도우미 품목코드를 써넣을까요?\n이미 코드가 들어 있는 옵션은 건드리지 않아요.')) return;
+  busy(true, '카페24 옵션에 품목코드를 쓰는 중…');
+  const r = await api('/api/cafe24/variant-codes', { method: 'POST' });
+  busy(false);
+  if (r.error) { toast(r.error, 6000); return; }
+  adoptDb(r.db);
+  render();
+  toast(`옵션 ${r.written}개에 품목코드를 넣었어요.` + (r.failed && r.failed.length ? ` ${r.failed.length}개는 실패했어요: ${r.failed[0].name} · ${r.failed[0].error}` : '') + (r.planned === 0 ? ' (넣을 곳이 없었어요)' : ''), 7000);
 }
 function cstkPushAll() {
   return channelStockPushAll(() => { cstkPreview(); cstkLoadLog(); });

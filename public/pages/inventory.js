@@ -558,7 +558,8 @@ const normReason = r => {
   return LEGACY_REASON[s] || s || '기타';
 };
 const reasonKind = r => STOCK_IN_ALL_REASONS.has(normReason(r)) ? 'ok' : 'bad';
-const invLabel = i => esc(i.name) + (i.color ? ` <span class="muted">${esc(i.color)}</span>` : '') + (i.size ? ` <b>${esc(i.size)}</b>` : '');
+const invLabel = i => esc(i.name) + (i.color ? ` <span class="muted">${esc(i.color)}</span>` : '') + (i.size ? ` <b>${esc(i.size)}</b>` : '') +
+  (Array.isArray(i.aliases) && i.aliases.length ? ' ' + chipEl('idle', `묶음 ${i.aliases.length + 1}`, i.aliases.map(a => a.name).join(', ')) : '');
 const stockRefLabel = e => {
   const note = e.note ? esc(e.note) : '';
   let ref = '';

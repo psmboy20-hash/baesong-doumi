@@ -90,6 +90,7 @@ const {
   pushCafe24Stock,
   MAX_PUSH: CHANNEL_MAX_PUSH
 } = require('./lib/channel-stock');
+const { linkVariantAliases, rowForVariant, variantCodeWrites } = require('./lib/variant-alias');
 const {
   initFromCafe24,
   applyStocktake,
@@ -1284,6 +1285,7 @@ async function cafe24FetchProducts(db) {
         no: p.product_no,
         name: p.product_name || '',
         code: p.product_code || '',
+        customProductCode: p.custom_product_code || '',
         img: p.list_image || p.small_image || p.tiny_image || p.detail_image || '',
         variants
       });
@@ -1319,6 +1321,12 @@ function syncInventoryFromProducts(db) {
       }
       for (const v of p.variants) {
         let inv = db.inventory.find(i => v.variantCode && i.variantCode === v.variantCode);
+        if (!inv && v.variantCode) {
+          // 다른 줄이 alias 로 품고 있는 옵션이면 그 줄의 카페24 수량만 갱신하고 새 줄은 만들지 않는다
+          const holder = rowForVariant(db.inventory, v.variantCode);
+          const alias = holder && (holder.aliases || []).find(a => String(a.variantCode) === String(v.variantCode));
+          if (alias) { alias.cafe24Qty = v.cafe24Qty; alias.cafe24StockTracked = v.cafe24StockTracked; continue; }
+        }
         const ambiguousIdentity = variantIdentityAmbiguous(p.variants, v);
         if (!inv && !ambiguousIdentity) {
           const exactCandidates = db.inventory.filter(i =>
@@ -1869,6 +1877,12 @@ async function syncAll() {
   }
   // 카페24 제품이 재고 목록에 전부 있도록 자동 등록 (새 제품은 수량 0으로)
   if (syncInventoryFromProducts(db) > 0) changed = true;
+  // 같은 실물의 다른 카페24 옵션(밀이 마켓 등)을 대표 줄에 묶는다 (코드 기준: 품목 자체코드 → 상품 자체코드+색상·사이즈)
+  try {
+    const linked = linkVariantAliases(db);
+    if (linked.linked || linked.removed) changed = true;
+    db.variantAliasConflicts = linked.conflicts;
+  } catch (e) { console.error('옵션 묶기 실패:', e.message); }
   // 노트북에서 보낸 설정(카카오 키 등) 자동 반영
   if (applySyncedSettings(db)) changed = true;
   // 우편번호 없는 건 자동 채우기 (카카오 키 설정 시)
@@ -3224,6 +3238,29 @@ const server = http.createServer((req, res) => {
         lastPushAt: lastPushAt(db),
         failCount: channelFailedCount(db)
       });
+    }
+    // 카페24 옵션(품목)의 자체 품목코드를 배송도우미 품목코드(sku)로 채운다 — 같은 실물의 여러 상품을 코드로 묶기 위해
+    if (url.pathname === '/api/cafe24/variant-codes' && req.method === 'POST') {
+      const db = loadDb();
+      if (!(cafe24Configured(db) && db.cafe24Token)) return sendJson(res, 200, { error: '카페24가 아직 연결되지 않았어요.' });
+      const writes = variantCodeWrites(db);
+      const token = await cafe24EnsureToken(db);
+      let written = 0;
+      const failed = [];
+      for (const w of writes.slice(0, 200)) {
+        const r = await cafe24Fetch(db, token, `/api/v2/admin/products/${encodeURIComponent(w.productNo)}/variants/${encodeURIComponent(w.variantCode)}`,
+          'PUT', { shop_no: 1, request: { custom_variant_code: w.code } });
+        if (r.status >= 200 && r.status < 300) {
+          written++;
+          for (const p of db.products || []) for (const v of p.variants || []) if (String(v.variantCode) === String(w.variantCode)) v.customVariantCode = w.code;
+        } else {
+          failed.push({ name: w.name, variantCode: w.variantCode, error: (r.json && r.json.error && r.json.error.message) || ('' + r.status) });
+        }
+        await new Promise(resolve => setTimeout(resolve, 250));
+      }
+      if (written) { linkVariantAliases(db); saveDb(db); }
+      audit('cafe24.variant-codes', { written, failed: failed.length, rev: db.rev });
+      return sendJson(res, 200, { ok: true, planned: writes.length, written, failed: failed.slice(0, 10), db });
     }
     if (url.pathname === '/api/channel-stock/push' && req.method === 'POST') {
       const raw = (await readBody(req)).toString('utf8');
