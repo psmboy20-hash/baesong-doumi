@@ -156,7 +156,7 @@ function renderInventory() {
       return `
     <tr class="${idx === 0 ? 'g-start' : ''}">
       ${prodCell}
-      <td class="color">${esc(display.color) || '<span class="muted">-</span>'}<span class="sku-mini">${esc(i.sku || '')}</span></td>
+      <td class="color">${esc(display.color) || '<span class="muted">-</span>'}<span class="sku-mini">${esc(i.sku || '')}</span>${Array.isArray(i.aliases) && i.aliases.length ? ` <span class="chip idle" title="${esc(i.aliases.map(a => a.name).join(', '))}">묶음 ${i.aliases.length + 1}</span>` : ''}</td>
       <td class="sz">${esc(i.size) || '<span class="muted" style="font-weight:400">-</span>'}</td>
       <td class="qcell channel-stock" style="text-align:right"><span class="qty ${c24Sellable(i) && i.cafe24Qty <= 2 ? 'low' : ''}">${c24Known(i) ? i.cafe24Qty : '-'}</span></td>
       ${qtyCell}
@@ -559,7 +559,7 @@ const normReason = r => {
 };
 const reasonKind = r => STOCK_IN_ALL_REASONS.has(normReason(r)) ? 'ok' : 'bad';
 const invLabel = i => esc(i.name) + (i.color ? ` <span class="muted">${esc(i.color)}</span>` : '') + (i.size ? ` <b>${esc(i.size)}</b>` : '') +
-  (Array.isArray(i.aliases) && i.aliases.length ? ' ' + chipEl('idle', `묶음 ${i.aliases.length + 1}`, i.aliases.map(a => a.name).join(', ')) : '');
+  (Array.isArray(i.aliases) && i.aliases.length ? ` <span class="chip idle" title="${esc(i.aliases.map(a => a.name).join(', '))}">묶음 ${i.aliases.length + 1}</span>` : '');
 const stockRefLabel = e => {
   const note = e.note ? esc(e.note) : '';
   let ref = '';
