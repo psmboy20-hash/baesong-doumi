@@ -83,6 +83,12 @@ test('품목코드 쓰기 목록은 대표 sku 를 비어 있는 옵션 전부�
   db.products[1].variants[0].customVariantCode = 'C24V-P00000EF000A';
   assert.equal(linkVariantAliases(db).linked, 1);
   assert.ok(variantCodeWrites(db).some(w => w.variantCode === 'P00000EF000A' && w.code === 'C24V-P00000CQ000A'));
+  // 코드를 다 써넣은 뒤 상태: 대표는 자기 코드, 밀이 마켓 옵션은 대표 코드 → 여전히 한 묶음 (상품 자체코드가 달라져도)
+  db.products[0].variants[0].customVariantCode = 'C24V-P00000CQ000A';
+  db.products[1].variants[0].customVariantCode = 'C24V-P00000CQ000A';
+  db.products[1].customProductCode = 'OTHER';
+  assert.equal(linkVariantAliases(db).linked, 1);
+  assert.equal(variantCodeWrites(db).filter(w => w.code === 'C24V-P00000CQ000A').length, 0);
   // 이미 다른 코드가 있으면 건드리지 않는다
   db.products[2].variants[0].customVariantCode = 'MY-IVY';
   assert.equal(variantCodeWrites(db).some(w => w.variantCode === 'P00000BY000A'), false);
