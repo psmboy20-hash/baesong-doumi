@@ -1325,7 +1325,12 @@ function syncInventoryFromProducts(db) {
           // 다른 줄이 alias 로 품고 있는 옵션이면 그 줄의 카페24 수량만 갱신하고 새 줄은 만들지 않는다
           const holder = rowForVariant(db.inventory, v.variantCode);
           const alias = holder && (holder.aliases || []).find(a => String(a.variantCode) === String(v.variantCode));
-          if (alias) { alias.cafe24Qty = v.cafe24Qty; alias.cafe24StockTracked = v.cafe24StockTracked; continue; }
+          if (alias) {
+            // 방금 앱이 밀어 넣은 값보다 오래된 상품 조회값으로 되돌리지 않는다 (되돌리면 같은 값을 매번 다시 보낸다)
+            if (!(alias.cafe24PushedAt && db.productsStockAt && alias.cafe24PushedAt > db.productsStockAt)) alias.cafe24Qty = v.cafe24Qty;
+            alias.cafe24StockTracked = v.cafe24StockTracked;
+            continue;
+          }
         }
         const ambiguousIdentity = variantIdentityAmbiguous(p.variants, v);
         if (!inv && !ambiguousIdentity) {
@@ -1351,7 +1356,7 @@ function syncInventoryFromProducts(db) {
           if (!inv.color && v.color) inv.color = v.color;
           if (!inv.size && v.size) inv.size = v.size;
           inv.needsCount = inv.qty === null || inv.qty === undefined;
-          inv.cafe24Qty = v.cafe24Qty;
+          if (!(inv.cafe24PushedAt && db.productsStockAt && inv.cafe24PushedAt > db.productsStockAt)) inv.cafe24Qty = v.cafe24Qty;
           inv.cafe24StockTracked = v.cafe24StockTracked;
           inv.cafe24VariantActive = true;
           inv.cafe24Display = v.display;
