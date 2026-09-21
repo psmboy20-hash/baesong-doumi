@@ -1872,7 +1872,7 @@ async function syncAll() {
     }
     const productsStockAge = Date.now() - new Date(db.productsStockAt || 0).getTime();
     if (!db.products || db.productsSchema !== 3 || !Number.isFinite(productsStockAge) || productsStockAge >= 4 * 60 * 1000) {
-      try { await cafe24FetchProducts(db); changed = true; } catch (e) { /* 다음 동기화 때 재시도 */ }
+      try { await cafe24FetchProducts(db); changed = true; } catch (e) { console.error('카페24 상품 조회 실패:', e.message); /* 다음 동기화 때 재시도 */ }
     }
   }
   // 카페24 제품이 재고 목록에 전부 있도록 자동 등록 (새 제품은 수량 0으로)
