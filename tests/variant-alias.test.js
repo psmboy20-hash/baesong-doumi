@@ -79,6 +79,10 @@ test('품목코드 쓰기 목록은 대표 sku 를 비어 있는 옵션 전부�
   const writes = variantCodeWrites(db);
   const rosie = writes.filter(w => w.code === 'C24V-P00000CQ000A');
   assert.deepEqual(rosie.map(w => w.variantCode).sort(), ['P00000CQ000A', 'P00000EF000A']);
+  // 우리가 넣은 자기 자신 코드(C24V-옵션코드)는 대표 코드로 바꾼다 — 묶기 정보가 아니므로
+  db.products[1].variants[0].customVariantCode = 'C24V-P00000EF000A';
+  assert.equal(linkVariantAliases(db).linked, 1);
+  assert.ok(variantCodeWrites(db).some(w => w.variantCode === 'P00000EF000A' && w.code === 'C24V-P00000CQ000A'));
   // 이미 다른 코드가 있으면 건드리지 않는다
   db.products[2].variants[0].customVariantCode = 'MY-IVY';
   assert.equal(variantCodeWrites(db).some(w => w.variantCode === 'P00000BY000A'), false);
