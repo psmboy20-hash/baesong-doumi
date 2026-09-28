@@ -179,7 +179,7 @@ function splitColor(name) {
   return m ? { base: m[1], color: m[2] } : { base: String(name || ''), color: '' };
 }
 // 색상 비교용 정규화 — 한글/영문 같은 색이면 같게 (Navy = 네이비)
-const COLOR_KO = { '네이비': 'navy', '블랙': 'black', '화이트': 'white', '아이보리': 'ivory', '브라운': 'brown', '베이지': 'beige', '그레이': 'gray', '카키': 'khaki', '블루': 'blue', '스카이블루': 'skyblue', '라이트블루': 'lightblue', '인디고블루': 'indigoblue', '인디고': 'indigo', '레드': 'red', '핑크': 'pink', '그린': 'green', '옐로우': 'yellow', '퍼플': 'purple', '오렌지': 'orange', '민트': 'mint', '차콜': 'charcoal', '챠콜': 'charcoal', '크림': 'cream', '연청': 'lightblue', '진청': 'darkblue' };
+const COLOR_KO = { '네이비': 'navy', '블랙': 'black', '화이트': 'white', '아이보리': 'ivory', '브라운': 'brown', '베이지': 'beige', '그레이': 'gray', '카키': 'khaki', '블루': 'blue', '스카이블루': 'skyblue', '라이트블루': 'lightblue', '인디고블루': 'indigoblue', '인디고': 'indigo', '레드': 'red', '핑크': 'pink', '그린': 'green', '옐로우': 'yellow', '퍼플': 'purple', '오렌지': 'orange', '민트': 'mint', '차콜': 'charcoal', '챠콜': 'charcoal', '크림': 'cream', '연청': 'lightblue', '진청': 'darkblue', '중청': 'midblue', '밤색': 'brown', '멜란지그레이': 'melangegray', '스카이': 'skyblue' };
 function normOpt(s) {
   const t = String(s || '').toLowerCase().replace(/[^a-z0-9가-힣]/g, '');
   return COLOR_KO[t] || t;
