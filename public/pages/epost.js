@@ -115,7 +115,7 @@ function epostAutoRefresh() {
   if (_epostAutoBusy || Date.now() - _epostAutoAt < 60 * 1000) return;
   _epostAutoBusy = true;
   fetch('/api/epost/status', { method: 'POST' }).then(r => r.json()).then(r => {
-    if (r.error || PAGE !== 'epost') return;
+    if (r.error || !['epost', 'returns'].includes(PAGE)) return;
     epostNoticeSiteCanceled(r);
     if (r.db && r.db.rev !== DB.rev) { adoptDb(r.db); render(); }
   }).catch(() => {}).finally(() => { _epostAutoAt = Date.now(); _epostAutoBusy = false; });

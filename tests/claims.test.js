@@ -276,14 +276,15 @@ test('claim 복구는 모든 대상 품목이 같은 접수번호를 가질 때�
 });
 
 test('카페24에서 이미 진행 중인 회수 상태를 구분한다', () => {
-  assert.equal(cafe24PickupActive('W'), true);
+  // W = 수거 미접수(고객만 신청, 택배 접수 전) → 우리가 우체국에 접수해야 하므로 '진행 중' 아님
+  assert.equal(cafe24PickupActive('W'), false);
   assert.equal(cafe24PickupActive('S'), true);
   assert.equal(cafe24PickupActive('T'), true);
   assert.equal(cafe24PickupActive('E'), false);
   assert.equal(cafe24PickupActive('F'), false);
   assert.equal(cafe24PickupActive('N'), false);
   const ret = { flowState: 'accepted', status: '대기', events: [] };
-  applyCafe24ClaimSnapshot(ret, { orderStatus: 'E10', pickupState: 'W' });
+  applyCafe24ClaimSnapshot(ret, { orderStatus: 'E10', pickupState: 'T' });
   assert.equal(ret.externalPickupActive, true);
   assert.equal(ret.flowState, 'awaiting_pickup');
   const local = { flowState: 'pickup_booked', status: '회수중', epost: { orderNo: 'LOCAL' }, events: [] };

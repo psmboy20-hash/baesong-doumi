@@ -66,6 +66,22 @@ test('취소 뒤 다시 접수한 건을 또 취소하면 예전 취소 기록�
   assert.equal(db.orders[0].canceledShipment.invoice, '6890173798026');
 });
 
+test('우체국 배송조회 페이지에서 배달완료와 마지막 위치를 읽는다', () => {
+  const { parseEpostTrace } = require('../lib/operations');
+  const row = (d, t, o, s) => `<tr><td>${d}</td><td>${t}</td><td>${o}</td><td>${s}</td></tr>`;
+  const page = v => `<input type="hidden" id="deliveryVal" value="${v}"><table>
+    <tr><td>N*SOLVERE2026.09.18</td><td>이*정</td><td>x</td><td></td><td>배달완료</td></tr>
+    ${row('2026.09.18', '15:51', '서울양천우체국', '집하완료')}
+    ${row('2026.09.19', '09:43', '나주우체국 TEL : 061.330.5800', '배달준비 (집배원 정보 보기)')}
+    ${row('2026.09.19', '15:19', '나주우체국', '배달완료 ( 배달 ) (수령인:이*정님 - 본인)')}</table>`;
+  const done = parseEpostTrace(page('배달완료'));
+  assert.equal(done.delivered, true);
+  assert.deepEqual(done.last, { date: '2026-09-19', time: '15:19', office: '나주우체국', status: '배달완료' });
+  const moving = parseEpostTrace(page('배달준비'));
+  assert.equal(moving.delivered, false);
+  assert.equal(parseEpostTrace('<html>점검 중</html>').checked, false);
+});
+
 test('배달 조회는 한 번도 안 본 것과 오래전에 본 것을 먼저 본다', () => {
   const items = [
     { id: 'a', deliveryCheckedAt: '2026-09-03T00:00:00.000Z' },

@@ -69,6 +69,7 @@ const {
   stockLedgerRef,
   ensureOperationalFields,
   applyCarrierDeliveryResult,
+  parseEpostTrace,
   splitShipmentItems,
   parcelContent,
   buildReturnRestockPlan,
@@ -1693,6 +1694,36 @@ async function parcelTrackingVerdict(invoice) {
   } catch (e) { return 'unknown'; }
 }
 
+// 회수 송장을 우체국 배송조회로 따라가며 위치를 남기고, 우리 쪽에 배달되면 '도착'으로 넘긴다.
+// 반품은 화면에 "수거완료 · 환불 진행 대기", 교환은 "물건 도착 · 검수"로 보인다. 카페24에는 수거완료(pickup_completed)를 반영한다.
+async function checkReturnArrivals(db) {
+  let changed = false;
+  const targets = (db.returns || []).filter(ret =>
+    ['awaiting_pickup', 'pickup_booked', 'collected'].includes(ret.flowState) && !ret.localCompleted &&
+    /^\d{13}$/.test(String(ret.invoice || '').replace(/\D/g, ''))).slice(0, 10);
+  for (const ret of targets) {
+    let trace;
+    try {
+      trace = parseEpostTrace((await fetchUrl('https://service.epost.go.kr/trace.RetrieveDomRigiTraceList.comm?sid1=' + String(ret.invoice).replace(/\D/g, ''), 0)).toString('utf8'));
+    } catch (e) { continue; }
+    if (trace.last && JSON.stringify(trace.last) !== JSON.stringify(ret.trace || null)) { ret.trace = trace.last; changed = true; }
+    if (!trace.delivered) continue;
+    ret.arrivedAt = new Date().toISOString();
+    ret.flowState = 'received';
+    ret.status = statusForFlowState(ret.flowState);
+    appendClaimEvent(ret, 'received', 'epost', ret.invoice);
+    changed = true;
+    const collectedOk = ret.syncOps && ret.syncOps.collected && ret.syncOps.collected.state === 'success';
+    if (!VIEW_ONLY && ret.sourceChannel === 'cafe24' && ret.cafe24ClaimCode && !collectedOk) {
+      try {
+        const carrierId = await cafe24ClaimCarrierId(db, ret);
+        await cafe24WriteClaim(db, ret, 'collected', { invoice: ret.invoice || '', carrierId });
+      } catch (e) { /* cafe24WriteClaim 이 연동 이슈로 남긴다 */ }
+    }
+  }
+  return changed;
+}
+
 async function checkDelivered(db) {
   // 안 본 것·오래전에 본 것부터 10건 — 미배달이 쌓여도 신규 발송이 조회에서 영영 밀리지 않게
   const targets = deliveryCheckOrder([...db.orders, ...db.seeding].filter(x =>
@@ -1932,6 +1963,7 @@ async function syncAll() {
       (issue.system === 'sheet' && issue.action === 'invoice')
     )).length;
   }
+  try { if (await checkReturnArrivals(db)) changed = true; } catch (e) { /* 무시 */ }
   // 우체국 처리상태(운송장 출력 대기 → 수거됨 · 홈페이지 취소)도 같이 갱신 — 안 하면 어제 나간 택배가 출고 목록에 계속 남는다
   if (!VIEW_ONLY && epostConfigured(db) && db.epost) {
     try { if ((await refreshEpostStatuses(db)).changed) changed = true; } catch (e) { /* 무시 */ }
@@ -3797,6 +3829,7 @@ const server = http.createServer((req, res) => {
           errors.push(ret.name + '(회수): ' + error.message);
         }
       }
+      try { await checkReturnArrivals(db); } catch (e) { /* 다음에 다시 */ }
       const post = recoveredItems.length
         ? await postProcessShipped(db, recoveredItems)
         : { stock: [], stockMissing: [], cafe24: [], sheet: null };

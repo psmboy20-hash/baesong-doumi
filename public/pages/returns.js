@@ -6,17 +6,33 @@ const RMA_FLOW = {
   hold: ['warn', '카페24 보류'],
   awaiting_pickup: ['processing', '회수 기다림'],
   pickup_booked: ['processing', '기사님 방문 예정'],
-  collected: ['processing', '기사님 수거 완료'],
-  received: ['processing', '물건 도착 · 검수'],
+  collected: ['processing', '기사님 수거 · 이동 중'],
+  received: ['warn', '물건 도착 · 검수'],
   reship_ready: ['processing', '교환 재발송 준비'],
   processing: ['processing', '카페24 처리 중'],
-  refund_pending: ['processing', '반품 완료 · 환불 확인'],
+  refund_pending: ['warn', '환불 진행 대기'],
   completed: ['done', '전체 완료'],
   canceled: ['idle', '전체 취소']
 };
 // 회수 신청/물건 도착 확인/취소 같은 행 액션 글자 버튼 (.tbl 규칙: kind:'text' size:'sm')
 function actLink(label, onclick, danger) {
   return `<button type="button" class="btn text sm"${danger ? ' style="color:var(--bad)"' : ''} onclick="${onclick}">${label}</button>`;
+}
+// 회수품이 지금 어디쯤인지: 접수 › 회수 예약 › 이동 중 › 도착 › 환불(교환은 재발송)
+const RMA_STEP = { requested: 0, accepted: 0, hold: 0, awaiting_pickup: 0, pickup_booked: 1, collected: 2, received: 3, processing: 4, refund_pending: 4, reship_ready: 4, completed: 5 };
+function rmaSteps(x) {
+  const at = RMA_STEP[x.flowState];
+  if (at === undefined) return '';
+  const names = ['접수', '회수 예약', '이동 중', '도착', x.kind === '교환' ? '재발송' : '환불'];
+  return `<div class="sub">${names.map((n, i) => i === at ? `<b style="color:var(--text)">${n}</b>` : i < at ? n : `<span style="opacity:.45">${n}</span>`).join(' › ')}</div>`;
+}
+// 반품 환불은 돈이 움직이므로 자동으로 누르지 않는다 — 카페24 주문 상세(환불 탭이 있는 화면)만 열어 준다
+function returnRefund(id) {
+  const x = (DB.returns || []).find(r => r.id === id);
+  if (!x || !x.originalOrderNo) { toast('카페24 주문번호가 없어 열 수 없어요.', 5000); return; }
+  const mall = (DB.settings && DB.settings.cafe24MallId) || 'solvere';
+  window.open(`https://${mall}.cafe24.com/admin/php/shop1/s_new/order_detail.php?order_id=${encodeURIComponent(x.originalOrderNo)}`, '_blank');
+  toast('카페24 주문 상세를 열었어요. [환불] 탭에서 [환불완료]를 누르면 5분 안에 여기도 완료로 바뀌어요.', 9000);
 }
 function rmaLineItems(x) {
   return Array.isArray(x.items) && x.items.length ? x.items : [x];
@@ -53,7 +69,12 @@ function rmaCells(x) {
   }).join('');
 }
 function returnRow(x, epostOn) {
-  const [cls, nm] = RMA_FLOW[x.flowState] || ['wait', x.status || '확인 필요'];
+  let [cls, nm] = RMA_FLOW[x.flowState] || ['wait', x.status || '확인 필요'];
+  if (x.flowState === 'received' && x.kind !== '교환') nm = '수거완료 · 환불 진행 대기';
+  const traceLine = x.trace && !['completed', 'canceled'].includes(x.flowState)
+    ? `<div class="sub">현재 위치: ${esc(x.trace.office)} ${esc(x.trace.status)} · ${esc(x.trace.date.slice(5))} ${esc(x.trace.time)}</div>` : '';
+  const refundBtn = x.kind !== '교환' && x.sourceChannel === 'cafe24' && ['received', 'processing', 'refund_pending'].includes(x.flowState)
+    ? actLink('환불 진행', `returnRefund(${x.id})`) : '';
   const stusNm = x.epost && x.epost.stus ? (RET_STUS[x.epost.stus] || [])[1] || '' : '';
   const cafe24Line = x.sourceChannel === 'cafe24'
     ? `<div class="sub">카페24 ${esc(x.cafe24OrderStatus || '연결 중')}</div>` : '';
@@ -71,20 +92,20 @@ function returnRow(x, epostOn) {
   } else if (['requested', 'accepted', 'hold', 'awaiting_pickup'].includes(x.flowState)) {
     btns = (x.externalPickupActive
       ? '<span class="chip processing">카페24에서 회수 진행 중</span>'
-      : epostOn ? actLink('회수 신청', `returnPickup(${x.id},'${jsq(x.name)}')`) : '<span class="muted" style="font-size:13px">우체국 연결 필요</span>') +
+      : epostOn ? actLink(`${esc(x.kind)} 진행`, `returnPickup(${x.id},'${jsq(x.name)}')`) : '<span class="muted" style="font-size:13px">우체국 연결 필요</span>') +
       (x.sourceChannel === 'cafe24'
         ? (x.externalPickupActive
           ? actLink('취소 방법', 'externalPickupHelp()')
           : actLink('전체 취소', `returnCancel(${x.id},'entry','${jsq(x.name)}')`, true))
         : actLink('지우기', `returnCancel(${x.id},'delete','${jsq(x.name)}')`, true));
-  } else if (['pickup_booked', 'collected'].includes(x.flowState)) {
+  } else if (['pickup_booked', 'collected', 'received'].includes(x.flowState) || (x.flowState === 'refund_pending' && !x.localCompleted)) {
     const inspectButtons = completionBlock
       ? actLink('연동 다시 확인', 'doSync()') + '<span class="muted" style="font-size:13px">완료 버튼 잠김</span>'
       : actLink('양품 · 재고로', `returnComplete(${x.id},'${jsq(x.name)}','${jsq(x.kind)}','sellable')`) +
         actLink('불량 · 폐기', `returnComplete(${x.id},'${jsq(x.name)}','${jsq(x.kind)}','damaged')`, true);
-    btns = inspectButtons +
+    btns = refundBtn + inspectButtons +
       (x.epost && ['00', '01', '02', '04'].includes(x.epost.stus || '01') ? actLink('회수만 취소', `returnCancel(${x.id},'pickup','${jsq(x.name)}')`) : '') +
-      actLink('전체 취소', `returnCancel(${x.id},'entry','${jsq(x.name)}')`, true);
+      (x.flowState === 'received' || x.flowState === 'refund_pending' ? '' : actLink('전체 취소', `returnCancel(${x.id},'entry','${jsq(x.name)}')`, true));
   } else if (x.stockReviewNeeded) {
     btns = completionBlock
       ? actLink('연동 다시 확인', 'doSync()') + '<span class="muted" style="font-size:13px">재고·재발송 잠김</span>'
@@ -94,6 +115,8 @@ function returnRow(x, epostOn) {
     btns = completionBlock
       ? actLink('연동 다시 확인', 'doSync()') + '<span class="muted" style="font-size:13px">카페24 반영 잠김</span>'
       : actLink('카페24 다시 반영', `returnComplete(${x.id},'${jsq(x.name)}','${jsq(x.kind)}')`);
+  } else if (refundBtn) {
+    btns = refundBtn;
   } else if (x.flowState === 'canceled' && x.sourceChannel !== 'cafe24') {
     btns = actLink('다시 신청', `returnReopen(${x.id},'${jsq(x.name)}')`) +
       actLink('지우기', `returnCancel(${x.id},'delete','${jsq(x.name)}')`, true);
@@ -107,7 +130,7 @@ function returnRow(x, epostOn) {
       <td><b>${esc(x.name)}</b><div class="sub">${esc(x.phone || '')}</div></td>
       <td style="min-width:220px;max-width:380px">${rmaCells(x)}${reasonLine}${memoLine}</td>
       <td style="white-space:nowrap"><b>${esc(x.kind)}</b><div class="sub">${esc(x.rmaNo || 'RMA-' + x.id)}</div>${x.sourceChannel === 'cafe24' || x._src === 'c24' ? '<span class="note-badge">카페24 연결</span>' : ''}</td>
-      <td style="max-width:230px">${chipEl(cls, esc(nm))}${x.invoice ? `<div class="sub">${invoiceCell(x.invoice)}</div>` : ''}${stusNm ? `<div class="sub">${esc(stusNm)}</div>` : ''}${cafe24Line}${issueLine}</td>
+      <td style="max-width:230px">${chipEl(cls, esc(nm))}${rmaSteps(x)}${traceLine}${x.invoice ? `<div class="sub">${invoiceCell(x.invoice)}</div>` : ''}${stusNm ? `<div class="sub">${esc(stusNm)}</div>` : ''}${cafe24Line}${issueLine}</td>
       <td style="white-space:nowrap"><div class="btn-col">${btns}</div></td>
     </tr>`;
 }
@@ -116,13 +139,15 @@ function returnRow(x, epostOn) {
 function returnNeedsAction(x) {
   const cancelUnresolved = x.flowState !== 'canceled' && x.syncOps && x.syncOps.cancel && ['pending', 'unknown', 'failed'].includes(x.syncOps.cancel.state);
   if (cancelUnresolved) return true;
-  if (['requested', 'accepted', 'hold', 'awaiting_pickup', 'pickup_booked', 'collected'].includes(x.flowState)) return true;
+  if (['requested', 'accepted', 'hold', 'awaiting_pickup', 'pickup_booked', 'collected', 'received', 'refund_pending'].includes(x.flowState)) return true;
+  if (x.flowState === 'processing' && x.kind !== '교환') return true;
   if (x.stockReviewNeeded) return true;
   const issues = (x.syncIssues || []).map(row => row.message).filter(Boolean);
   if (issues.length && x.localCompleted) return true;
   return false;
 }
 function renderReturns() {
+  epostAutoRefresh();
   const items = (DB.returns || []).filter(x => !x.duplicateOf)
     .sort((a, b) => (b.regDate || '').localeCompare(a.regDate || '') || b.id - a.id);
   const active = items.filter(returnNeedsAction);
@@ -158,10 +183,11 @@ function renderReturns() {
     : '';
 
   const guide = `<div class="hint">
-    회수 신청은 우체국 기사님이 송장을 들고 고객 집으로 방문해요(출력 없음).<br>
+    [반품 진행]을 누르면 카페24 접수 승인 → 우체국 회수 접수 → 카페24에 회수 송장 등록까지 한 번에 돼요. 기사님이 송장을 들고 고객 집으로 방문해요(출력 없음).<br>
+    회수품이 우리한테 배달되면 자동으로 [수거완료 · 환불 진행 대기]로 바뀌고 카페24에도 수거완료가 들어가요.<br>
     물건 도착 확인은 검수 결과에 따라 재고가 들어오고, 교환이면 [주문 확인]에 재발송 1건이 생겨요.<br>
     회수만 취소는 우체국 방문만 취소하고 교환·반품 접수는 남겨요. 전체 취소는 우체국과 카페24 접수까지 같이 취소해요.<br>
-    반품 환불 결제는 돈이 움직이므로 자동 승인하지 않고 카페24의 환불 상태를 확인해 완료로 넘겨요.
+    [환불 진행]은 돈이 움직이는 단계라 자동으로 누르지 않고 카페24 주문 상세만 열어 줘요. 거기서 [환불완료]를 누르면 이 화면도 완료로 바뀌어요.
   </div>`;
 
   main().innerHTML = header +
@@ -331,7 +357,9 @@ function returnFormFrom(kind, id) {
   });
 }
 async function returnPickup(id, name) {
-  if (!confirm(`${name}님 집으로 우체국 기사님을 보낼까요?\n\n· 집배원이 운송장을 갖고 방문해 물건을 회수해요\n· 회수된 물건은 우리 발송지로 배달돼요\n· 택배 요금은 우리(계약) 앞으로 청구돼요`)) return;
+  const ret = (DB.returns || []).find(r => r.id === id) || {};
+  const c24 = ret.sourceChannel === 'cafe24' ? '\n· 카페24 교환·반품 접수를 승인하고 회수 송장을 등록해요' : '';
+  if (!confirm(`${name}님 ${ret.kind || '반품'}을 진행할까요?\n\n· 우체국에 회수를 접수해 기사님이 고객 집으로 방문해요${c24}\n· 회수된 물건은 우리 발송지로 배달돼요\n· 택배 요금은 우리(계약) 앞으로 청구돼요`)) return;
   busy(true, '우체국에 회수를 신청하는 중…');
   const r = await api('/api/return/pickup', { method: 'POST', body: JSON.stringify({ id }) });
   busy(false);
