@@ -82,6 +82,22 @@ test('우체국 배송조회 페이지에서 배달완료와 마지막 위치를
   assert.equal(parseEpostTrace('<html>점검 중</html>').checked, false);
 });
 
+test('제품 이름 매칭: 더 긴 후보 이름 안에 들어가는 짧은 이름은 빼고, 세트는 모두 남긴다', () => {
+  const { matchProducts } = require('../public/item-lines');
+  const P = [
+    { no: 110, name: "[밀이's PICK]K#01_Rosie Lace Satin Skirt(Black)" },
+    { no: 69, name: 'K#01_Rosie Lace Satin Skirt(Black)' },
+    { no: 77, name: 'S#03_Lace Satin Skirt(Pink)' },
+    { no: 5, name: 'W#01_Margot Denim(Indigoblue)' },
+    { no: 6, name: 'W#02_June Washed Loose Denim(Midblue)' }
+  ];
+  const nos = t => matchProducts(P, t).map(p => p.no);
+  assert.deepEqual(nos("[밀이's PICK]K#01_Rosie Lace Satin Skirt(Black)"), [110]);
+  assert.deepEqual(nos('K#01_Rosie Lace Satin Skirt(Black)'), [69]);
+  assert.deepEqual(nos('Margot Denim Pants (Indigo Blue)'), [5]);
+  assert.deepEqual(nos('데님 세트 W#01_Margot Denim(Indigoblue) + W#02_June Washed Loose Denim(Midblue)'), [5, 6]);
+});
+
 test('배달 조회는 한 번도 안 본 것과 오래전에 본 것을 먼저 본다', () => {
   const items = [
     { id: 'a', deliveryCheckedAt: '2026-09-03T00:00:00.000Z' },

@@ -172,27 +172,7 @@ function matchQ(text, q) {
   const tokens = norm(q).split(/\s+/).filter(Boolean);
   return tokens.every(t => hay.includes(t) || squashed.includes(t.replace(/\s+/g, '')));
 }
-function matchProducts(text) {
-  if (!DB.products || !DB.products.length) return [];
-  const t = lettersOnly(text);
-  if (!t) return [];
-  const hits = [];
-  for (const p of DB.products) {
-    const stripped = String(p.name).replace(/^[A-Za-z]#?\d+_?/, '');
-    const core = lettersOnly(stripped);
-    if (!core || core.length < 6) continue;
-    if (t.includes(core)) { hits.push({ p, pos: t.indexOf(core), exact: 1 }); continue; }
-    // 느슨한 매칭: 품번명 단어가 순서 상관없이 전부 들어있으면
-    // (예: "Margot Denim(Indigoblue)" ↔ "Margot Denim Pants (Indigo Blue)")
-    const words = stripped.split(/[^A-Za-z가-힣]+/).map(lettersOnly).filter(w => w.length >= 3);
-    if (words.length >= 2 && words.every(w => t.includes(w))) {
-      hits.push({ p, pos: t.indexOf(words[0]), exact: 0 });
-    }
-  }
-  hits.sort((a, b) => (b.exact - a.exact) || a.pos - b.pos);
-  const seen = new Set();
-  return hits.filter(h => !seen.has(h.p.no) && seen.add(h.p.no)).map(h => h.p);
-}
+function matchProducts(text) { return HamItemLines.matchProducts(DB.products || [], text); }
 // "B#05_Tessa Pigment Pants(Brown)" → 이름 "B#05_Tessa Pigment Pants" + 색상 "Brown"
 function splitColor(name) {
   const m = String(name || '').match(/^(.*?)\s*\(([^()]+)\)\s*$/);

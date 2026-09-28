@@ -278,7 +278,34 @@
     return 'sent|' + String(item.sentDate || '') + '|' + String(recipientKey || '');
   }
 
+  // 주문 상품명 → 카페24 제품 목록에서 해당 제품 찾기 (화면·쌀 목록·포장 명세 공용).
+  // 여러 제품이 이름에 걸리면(세트 상품) 모두 돌려주되, 다른 후보 이름 안에 통째로 들어가는 짧은 이름은 뺀다.
+  // 예: "[밀이's PICK]K#01_Rosie Lace Satin Skirt(Black)" 주문에 원본 "K#01_Rosie…"·"Lace Satin Skirt"까지 걸려
+  //     한 벌이 세 벌로 보이고 쌀 목록 수량도 세 배가 되던 문제.
+  function lettersOnly(s) { return String(s || '').toLowerCase().replace(/[^a-z가-힣]/g, ''); }
+  function matchProducts(products, text) {
+    const t = lettersOnly(text);
+    if (!t) return [];
+    const hits = [];
+    for (const p of (products || [])) {
+      const stripped = String(p.name).replace(/^[A-Za-z]#?\d+_?/, '');
+      const core = lettersOnly(stripped);
+      if (!core || core.length < 6) continue;
+      if (t.includes(core)) { hits.push({ p, core, pos: t.indexOf(core), exact: 1 }); continue; }
+      // 느슨한 매칭: 품번명 단어가 순서 상관없이 전부 들어있으면 ("Margot Denim(Indigoblue)" ↔ "Margot Denim Pants (Indigo Blue)")
+      const words = stripped.split(/[^A-Za-z가-힣]+/).map(lettersOnly).filter(w => w.length >= 3);
+      if (words.length >= 2 && words.every(w => t.includes(w))) hits.push({ p, core, pos: t.indexOf(words[0]), exact: 0 });
+    }
+    const exact = hits.filter(h => h.exact);
+    const pool = exact.length ? exact : hits;
+    const kept = pool.filter(h => !pool.some(g => g !== h && g.core.length > h.core.length && g.core.includes(h.core)));
+    kept.sort((a, b) => a.pos - b.pos);
+    const seen = new Set();
+    return kept.filter(h => !seen.has(h.p.no) && seen.add(h.p.no)).map(h => h.p);
+  }
+
   return {
+    matchProducts,
     splitShipmentItems,
     parcelContent,
     expandSelectedEpostItems,
