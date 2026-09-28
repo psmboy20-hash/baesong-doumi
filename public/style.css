@@ -15,8 +15,8 @@
   --ok: #0f9d58; --ok-soft: #e6f6ee; --ok-text: #0b7a44;
   --warn: #d97706; --warn-soft: #fff4e0; --warn-text: #a15c00;
   --bad: #d92d20; --bad-soft: #fdecec; --bad-text: #b42318;
-  --r: 8px; --r-lg: 12px; --fs: 15px;
-  --side-w: 220px; --content-max: 1240px;
+  --r: 8px; --r-lg: 12px; --fs: 16px;
+  --side-w: 220px; --content-max: 1480px; /* 큰 모니터에서 표가 옆으로 잘리지 않게 넓게 */
 
   /* 레거시 alias — 아직 새 컴포넌트로 안 바뀐 화면이 쓰던 변수 이름을 그대로 살려둔다 */
   --blue: var(--primary); --blue-dark: var(--primary-dark);
@@ -212,14 +212,14 @@ button.stat:focus-visible { outline: 2px solid var(--primary); outline-offset: 2
 /* ===== 표 ===== */
 table, .tbl { width: 100%; border-collapse: collapse; font-size: 15px; }
 th, td, .tbl th, .tbl td { padding: 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
-th, .tbl th { font-size: 13px; font-weight: 600; color: var(--text-2); background: var(--surface); position: sticky; top: 0; white-space: nowrap; border-bottom: 1px solid var(--line-strong); }
+th, .tbl th { font-size: 14px; font-weight: 600; color: var(--text-2); background: var(--surface); position: sticky; top: 0; white-space: nowrap; border-bottom: 1px solid var(--line-strong); }
 tr:hover td { background: #fafbfc; }
 tr.checked-row, tr.checked-row:hover td { background: var(--primary-soft); }
 .tbl .num { text-align: right; font-variant-numeric: tabular-nums; }
 .tbl .c { text-align: center; }
-.tbl .sub { display: block; font-size: 13px; color: var(--text-3); margin-top: 2px; margin-bottom: 0; }
+.tbl .sub { display: block; font-size: 14px; color: var(--text-3); margin-top: 2px; margin-bottom: 0; }
 .tbl .acts, .acts { text-align: right; white-space: nowrap; }
-.table-wrap { overflow-x: auto; max-height: 60vh; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--r-lg); }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--r-lg); }
 input[type="checkbox"] { width: 1.4rem; height: 1.4rem; accent-color: var(--primary); cursor: pointer; }
 .btn-col { display: flex; flex-direction: column; align-items: flex-start; gap: 0.2rem; }
 .btn-col .link-btn { padding: 0; text-align: left; }

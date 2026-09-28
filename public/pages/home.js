@@ -182,7 +182,11 @@ function renderHome() {
   const gooOk = SYNC_STATUS && SYNC_STATUS.google && SYNC_STATUS.google.ok;
   const epOk = SYNC_STATUS && SYNC_STATUS.epost && SYNC_STATUS.epost.connected;
   const connRow = (ok, label) => `<span>${chipEl(ok ? 'ok' : 'bad', ok ? '정상' : '확인 필요')}&nbsp; ${esc(label)}</span>`;
-  const connCard = `<div class="card">
+  // 연결이 전부 정상이면 상자를 숨기고 한 줄만 — 문제가 있을 때만 크게 보여준다
+  const connAllOk = c24ok && gooOk && epOk;
+  const connCard = connAllOk
+    ? `<div class="hint" style="margin:-4px 0 16px">${chipEl('ok', '연결 정상')}&nbsp; 카페24 · 구글시트 · 우체국 · 서버 모두 잘 연결돼 있어요.</div>`
+    : `<div class="card">
     <div class="step-title">연결 상태 <button class="link-btn" style="margin-left:auto" onclick="go('settings')">설정</button></div>
     <div style="display:flex;gap:22px;flex-wrap:wrap;font-size:15px">
       ${connRow(c24ok, '카페24 주문')}

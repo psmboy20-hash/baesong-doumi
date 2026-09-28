@@ -101,7 +101,7 @@ function pickSectionHtml() {
   ].join('');
   const header = `<div class="step-title">오늘 쌀 목록<span style="margin-left:auto;display:flex;gap:8px">${headerActions}</span></div>`;
   if (!targets.length) {
-    return `<div style="margin-bottom:20px">${header}<div class="card">${emptyState({ title: '오늘 접수한 택배가 없어요' })}</div></div>`;
+    return `<div style="margin-bottom:20px">${header}<div class="hint">오늘 접수한 택배가 없어요. [주문 확인]에서 우체국 접수를 하면 여기에 쌀 목록이 생겨요.</div></div>`;
   }
   const rows = todayPickAggregate(targets);
   return `<div style="margin-bottom:20px">${header}
@@ -213,14 +213,14 @@ function renderEpost() {
     { key: 'problem', label: '확인 필요', count: filterCounts.problem, on: filter === 'problem', onclick: "go('epost','problem')" }
   ])}</div>`;
 
-  const guideCard = `<div class="card">
-    <div class="step-title">우체국 사이트에서 인쇄하기</div>
+  // 평소엔 [운송장 출력] 버튼으로 끝나므로 사이트 인쇄 안내는 접어 둔다 (사이트 출력 대상이 있을 때만 펼침)
+  const guideCard = `<div class="card"><details${needSite.length ? ' open' : ''}>
+    <summary style="font-size:15px;font-weight:700;cursor:pointer">라벨기 없이 우체국 사이트에서 인쇄하려면</summary>
     <div class="hint">라벨기가 없으면 우체국 사이트(오즈뷰어)에서 직접 인쇄할 수 있어요.${needSite.length ? ` 지금 <b>${needSite.length}장</b>이 사이트 출력 대상이에요.` : ''}</div>
     <div class="hint">로그인(아이디 ${esc((DB.settings && DB.settings.epostMemberId) || '')}) 후 <b>계약소포 → 신청정보등록</b>에서 오늘 접수 목록을 조회하고 체크한 뒤 <b>라벨인쇄</b>를 누르세요. 인쇄한 뒤에는 표의 <b>[출력함 표시]</b>를 눌러 기록해 주세요.</div>
     <div class="hint">우체국 홈페이지에서 출력했으면 [출력함 표시]는 눌러도 되고 안 눌러도 돼요. 기사님이 가져가면 자동으로 수거됨이 돼요.</div>
     <div style="margin-top:10px">${btn({ label: '우체국 사이트 열기', onclick: 'epostSitePrint()', icon: 'external' })}</div>
-    <div id="epost-page-result"></div>
-  </div>`;
+  </details><div id="epost-page-result"></div></div>`;
 
   const tableSection = parcels.length
     ? tableWrap(`
