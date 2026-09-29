@@ -783,6 +783,13 @@ async function cafe24FetchOrders(db) {
     const orders = await cafe24FetchOrderPages(db, token, start, end, dateType);
     for (const order of orders) orderMap.set(String(order.order_id || ''), order);
   }
+  // 진행 중인 교환·반품의 주문이 기간 밖이라 안 딸려 왔으면 하나씩 직접 본다 — 카페24에서 철회하면 claim 날짜 검색에서 빠지기 때문
+  const openOrderNos = [...new Set((db.returns || []).filter(ret => ret.sourceChannel === 'cafe24' && ret.originalOrderNo &&
+    !['completed', 'canceled'].includes(ret.flowState)).map(ret => String(ret.originalOrderNo)))].filter(no => !orderMap.has(no)).slice(0, 20);
+  for (const no of openOrderNos) {
+    const r = await cafe24Fetch(db, token, `/api/v2/admin/orders/${encodeURIComponent(no)}?embed=items,receivers,buyer,return,exchange,cancellation`);
+    if (r.status === 200 && r.json && r.json.order) orderMap.set(no, r.json.order);
+  }
   const parsed = [];
   for (const o of orderMap.values()) {
       const rc = (o.receivers && o.receivers[0]) || {};
