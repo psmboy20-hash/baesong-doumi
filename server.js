@@ -4142,6 +4142,35 @@ const server = http.createServer((req, res) => {
         return sendJson(res, 200, { error: '회수 접수 결과를 확정하지 못했어요. 중복 방지를 위해 다시 접수하지 않았습니다: ' + e.message, db });
       }
     }
+    // 앱 밖(우체국 사이트·카페24)에서 이미 회수를 접수했을 때 그 회수 송장만 연결 — 우체국에 새로 접수하지 않는다
+    if (url.pathname === '/api/return/manual-pickup' && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req)).toString('utf8'));
+      const db = loadDb();
+      const ret = db.returns.find(x => x.id === b.id);
+      if (!ret) return sendJson(res, 200, { error: '해당 건을 찾지 못했어요.' });
+      if (['completed', 'canceled'].includes(ret.flowState)) return sendJson(res, 200, { error: '이미 끝났거나 취소된 건이에요.' });
+      if (ret.epost) return sendJson(res, 200, { error: '앱에서 접수한 회수가 이미 있어요.' });
+      const invoice = String(b.invoice || '').replace(/\D/g, '');
+      if (invoice.length < 10) return sendJson(res, 200, { error: '회수 송장번호를 숫자로 적어 주세요.' });
+      ret.invoice = invoice;
+      ret.manualPickup = true;
+      ret.externalPickupActive = false;
+      ret.flowState = 'pickup_booked';
+      ret.status = statusForFlowState(ret.flowState);
+      appendClaimEvent(ret, 'pickup_booked', 'manual', invoice);
+      saveDb(db);
+      let warning = '';
+      if (ret.sourceChannel === 'cafe24' && ret.cafe24ClaimCode) {
+        try {
+          const carrierId = await cafe24ClaimCarrierId(db, ret);
+          await cafe24WriteClaim(db, ret, 'invoice', { invoice, carrierId });
+        } catch (error) {
+          warning = '송장은 연결했지만 카페24 회수 송장 반영을 못 했어요: ' + error.message;
+        }
+      }
+      audit('return.manual-pickup', { ref: ret.rmaNo, rev: db.rev });
+      return sendJson(res, 200, { ok: true, db, warning });
+    }
     if (url.pathname === '/api/return/cancel' && req.method === 'POST') {
       // scope: 'pickup'(회수 신청만 취소, 건은 대기로) | 'entry'(건 자체를 취소됨으로) | 'delete'(목록에서 삭제)
       const b = JSON.parse((await readBody(req)).toString('utf8'));

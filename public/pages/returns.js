@@ -93,6 +93,7 @@ function returnRow(x, epostOn) {
     btns = (x.externalPickupActive
       ? '<span class="chip processing">카페24에서 회수 진행 중</span>'
       : epostOn ? actLink(`${esc(x.kind)} 진행`, `returnPickup(${x.id},'${jsq(x.name)}')`) : '<span class="muted" style="font-size:13px">우체국 연결 필요</span>') +
+      (x.externalPickupActive ? '' : actLink('회수 송장 입력', `returnManualPickup(${x.id},'${jsq(x.name)}')`)) +
       (x.sourceChannel === 'cafe24'
         ? (x.externalPickupActive
           ? actLink('취소 방법', 'externalPickupHelp()')
@@ -406,6 +407,22 @@ async function returnPickup(id, name) {
     ${esc(name)}님 집으로 기사님이 갈 거예요. 회수 송장번호 <b>${esc(r.regiNo || '')}</b>${r.price ? ' · 요금 ' + esc(r.price) + '원' : ''}<br>
     <span style="font-weight:400">진행상황은 이 화면의 [회수 진행상태 새로고침]으로 확인해요.</span>`);
   toast('회수 신청 완료', 5000);
+  if (r.warning) setTimeout(() => alert(r.warning), 200);
+}
+// 우체국 사이트·카페24에서 이미 회수를 접수했으면 [반품 진행] 대신 송장만 연결 (중복 회수 방지)
+async function returnManualPickup(id, name) {
+  const v = prompt(`${name}님 회수를 우체국 사이트나 카페24에서 이미 접수했나요?
+그때 받은 회수 송장번호를 적어 주세요.
+
+(앱이 우체국에 새로 접수하지 않고, 이 송장으로 위치를 따라가요)`);
+  if (v === null) return;
+  busy(true, '회수 송장을 연결하는 중…');
+  const r = await api('/api/return/manual-pickup', { method: 'POST', body: JSON.stringify({ id, invoice: v }) });
+  busy(false);
+  if (r.error) { toast(r.error, 7000); return; }
+  adoptDb(r.db);
+  render();
+  toast('회수 송장을 연결했어요. 물건이 도착하면 자동으로 [수거완료 · 환불 진행 대기]로 바뀌어요.', 7000);
   if (r.warning) setTimeout(() => alert(r.warning), 200);
 }
 async function returnComplete(id, name, kind, inspection) {
