@@ -37,7 +37,13 @@ test('카페24 교환 반품 상태를 하나의 RMA 단계로 바꾼다', () =>
   assert.equal(cafe24ClaimStage('R42'), 'refund_pending');
   assert.equal(cafe24ClaimStage('R40'), 'completed');
   assert.equal(cafe24ClaimStage('E31'), 'collected');
-  assert.equal(cafe24ClaimStage('E30'), 'processing');
+  assert.equal(cafe24ClaimStage('E30'), 'awaiting_pickup'); // 교환처리중 - 수거전 (공식 문서)
+  assert.equal(cafe24ClaimStage('E20'), 'accepted');
+  assert.equal(cafe24ClaimStage('R34'), 'refund_pending');
+  // 예전 매핑으로 '처리 중'이 된 교환도 앱에서 한 일이 없으면 회수 전으로 바로잡힌다
+  const stuck = { flowState: 'processing', status: '처리중', events: [] };
+  applyCafe24ClaimSnapshot(stuck, { claimCode: 'B1', orderStatus: 'E30' });
+  assert.equal(stuck.flowState, 'awaiting_pickup');
   assert.equal(cafe24ClaimStage('E40'), 'completed');
   assert.equal(cafe24ClaimStage('E50'), 'canceled');
   assert.equal(cafe24ClaimStage('E51'), 'canceled');
