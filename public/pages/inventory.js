@@ -141,7 +141,7 @@ function renderInventory() {
         ? `<td class="qcell"><input type="text" inputmode="numeric" class="inv-count-input" data-id="${i.id}" data-orig="${Number(i.qty) || 0}" value="${Number(i.qty) || 0}" oninput="this.value=this.value.replace(/[^0-9]/g,'');this.dataset.touched='1';invStocktakeMark()" onfocus="this.select()">${i.needsCount ? '<span class="count-badge" title="아직 실사로 확인하지 않은 줄이에요">미확인</span>' : ''}</td>`
         : `<td class="qcell">
         <button class="qty-btn sm" onclick="invAdj(${i.id},-1)">−</button>
-        <span class="qty ${i.needsCount || isLow(i) || isZero(i) ? 'low' : ''}">${i.needsCount ? '?' : i.qty}</span>
+        <input class="qty qty-input ${i.needsCount || isLow(i) || isZero(i) ? 'low' : ''}" type="text" inputmode="numeric" value="${i.needsCount ? '' : Number(i.qty) || 0}" placeholder="?" title="숫자를 바로 고치고 Enter" onfocus="this.select()" onkeydown="if(event.key==='Enter')this.blur();if(event.key==='Escape'){this.value=this.defaultValue;this.blur()}" onchange="invSetQty(${i.id},this.value)">
         <button class="qty-btn sm" onclick="invAdj(${i.id},1)">＋</button>
         ${i.needsAllocation ? `<span class="stock-note">${i.allocationTotal != null ? `배분 ${i.allocationTotal}/${i.allocationExpected}` : '옵션 배분 필요'}</span>` : i.needsCount ? '<span class="stock-note">실사 필요</span>' : ''}
       </td>`;
@@ -533,6 +533,19 @@ async function invSplit(id) {
   window._invHistCache = new Map();
   renderInventory();
   toast(`${r.made.join('/')} 사이즈 줄로 나눴어요. 각 사이즈의 실제 개수를 ＋로 채워 주세요.`, 6000);
+}
+// 수량 칸에 숫자를 바로 적으면 차이만큼 입고·차감으로 기록 (입출고 내역에 남음)
+async function invSetQty(id, value) {
+  const item = DB.inventory.find(i => i.id === id);
+  if (!item) return;
+  const next = Number(String(value).replace(/[^0-9]/g, ''));
+  if (String(value).trim() === '' || !Number.isFinite(next)) { renderInventory(); return; }
+  const delta = next - (Number(item.qty) || 0);
+  if (!delta && !item.needsCount) return;
+  if (Math.abs(delta) >= 20 && !confirm(`${item.name} ${item.color || ''} ${item.size || ''}\n${Number(item.qty) || 0}개 → ${next}개로 바꿀까요?`)) { renderInventory(); return; }
+  if (!delta) { toast('수량이 그대로예요.'); return; }
+  await invAdj(id, delta);
+  toast(`${next}개로 바꿨어요.`, 2500);
 }
 async function invAdj(id, d) {
   const item = DB.inventory.find(i => i.id === id);

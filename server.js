@@ -2233,7 +2233,11 @@ function mergeOrders(db, parsed) {
           addr: p.addr,
           qty: ret.qty
         });
-        if (ret.cafe24ClaimCode) clearClaimSyncIssue(ret, 'cafe24', 'lookup');
+        if (ret.cafe24ClaimCode) {
+          clearClaimSyncIssue(ret, 'cafe24', 'lookup');
+          clearClaimSyncIssue(ret, 'cafe24', 'create');
+          if (ret.syncOps && ret.syncOps.create && ret.syncOps.create.state !== 'success') ret.syncOps.create.state = 'success';
+        }
         if (!missingCafe24ExchangeTargets(ret).length) clearClaimSyncIssue(ret, 'cafe24', 'exchange-target');
         ret.sourceId = ret.sourceId || ex && ex.id || null;
         ret.sourceProductNo = ret.sourceProductNo || p.productNo || null;
@@ -2246,6 +2250,21 @@ function mergeOrders(db, parsed) {
     const src = p._src;
     p.sourceChannel = src === 'c24' ? 'cafe24' : (p.sourceChannel || 'direct');
     if (!p.sku && (p.variantCode || p.productNo)) p.sku = inventorySku(p);
+    // 카페24에서 직접 철회한 교환·반품: 그 품목이 다시 일반 주문 상태로 돌아왔는데 앱에는 진행 중으로 남아 있으면 취소로 맞춘다
+    if (p.orderItemCode) {
+      for (const ret of (db.returns || []).filter(row => row.sourceChannel === 'cafe24' && row.cafe24ClaimCode &&
+        !['completed', 'canceled'].includes(row.flowState) && !row.localCompleted &&
+        String(row.originalOrderNo || '') === String(p.orderNo || '') &&
+        returnLineItems(row).some(line => String(line.orderItemCode || '') === String(p.orderItemCode)))) {
+        ret.flowState = 'canceled';
+        ret.status = statusForFlowState('canceled');
+        if (ret.epost || (ret.pickupOp && ['pending', 'unknown', 'success'].includes(ret.pickupOp.state))) ret.needsEpostCancel = true;
+        clearClaimSyncIssue(ret, 'cafe24', 'cancel');
+        if (ret.syncOps && ret.syncOps.cancel) ret.syncOps.cancel.state = 'success';
+        appendClaimEvent(ret, 'canceled', 'cafe24', '카페24에서 철회됨');
+        claimsUpdated++;
+      }
+    }
     delete p._shipped;
     delete p._src;
     const fuzzyMatch = fuzzy.get(fuzzyOrderKey(p));
@@ -4206,6 +4225,15 @@ const server = http.createServer((req, res) => {
             logStock(db, row.inv, row.qty, ret.kind === '교환' ? '교환 회수 입고' : '반품 입고', stockLedgerRef(ret, 'return'));
           }
           clearClaimSyncIssue(ret, 'inventory', 'restock');
+        }
+        const cafe24Resends = ret.kind === '교환' && ret.sourceChannel === 'cafe24' && ret.originalOrderNo
+          ? db.orders.filter(o => o.exchange && o.orderItemCode && !o.returnId && String(o.orderNo || '') === String(ret.originalOrderNo))
+          : [];
+        if (cafe24Resends.length && !ret.resendId && !(ret.resendIds || []).length) {
+          for (const o of cafe24Resends) o.returnId = ret.id;
+          ret.resendIds = cafe24Resends.map(o => o.id);
+          ret.resendId = ret.resendIds[0];
+          out.resend = { name: ret.name, product: cafe24Resends.map(o => o.product).join(', '), count: cafe24Resends.length, fromCafe24: true };
         }
         if (ret.kind === '교환' && !ret.resendId && !(ret.resendIds || []).length) {
           const resendIds = [];

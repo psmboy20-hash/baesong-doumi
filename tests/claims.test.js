@@ -85,11 +85,12 @@ test('교환 생성은 목표 옵션 variant와 동일상품 여부를 명시한
     sourceProductNo: 10, exchangeProductNo: 10, exchangeVariantCode: '  V-M  '
   });
   assert.deepEqual(body.request.items, [{
-    order_item_code: 'ITEM2', quantity: 1, exchange_variant_code: 'V-M', same_product: 'T'
+    order_item_code: 'ITEM2', quantity: 1, exchange_variant_code: 'V-M'
   }]);
+  assert.equal(body.request.same_product, 'T'); // request 바로 아래 (품목 안 아님)
   assert.deepEqual(buildCafe24ClaimCreate({
     kind: '교환', orderItemCode: 'ITEM2', exchangeVariantCode: '   '
-  }).request.items, [{ order_item_code: 'ITEM2', quantity: 1, exchange_variant_code: '', same_product: 'T' }]);
+  }).request.items, [{ order_item_code: 'ITEM2', quantity: 1, exchange_variant_code: '' }]);
   assert.equal(hasValidExchangeTargets({
     kind: '교환', orderItemCode: 'ITEM2', exchangeVariantCode: '   '
   }), false);
@@ -105,9 +106,11 @@ test('카페24 교환 한 건에 여러 상품을 한 claim으로 보낸다', ()
   };
   const body = buildCafe24ClaimCreate(ret);
   assert.deepEqual(body.request.items, [
-    { order_item_code: 'ITEM-A', quantity: 1, exchange_variant_code: 'V-A', same_product: 'T' },
-    { order_item_code: 'ITEM-B', quantity: 2, exchange_variant_code: 'V-B', same_product: 'F' }
+    { order_item_code: 'ITEM-A', quantity: 1, exchange_variant_code: 'V-A' },
+    { order_item_code: 'ITEM-B', quantity: 2, exchange_variant_code: 'V-B' }
   ]);
+  assert.equal(body.request.same_product, 'F'); // 하나라도 다른 상품이면 F
+  assert.equal(buildCafe24ClaimUpdate(ret, 'cancel').request.items, undefined); // 철회에는 items 금지
   assert.deepEqual(buildCafe24ClaimUpdate(ret, 'complete').request.items, [
     { order_item_code: 'ITEM-A' }, { order_item_code: 'ITEM-B' }
   ]);
@@ -168,7 +171,8 @@ test('카페24에서 이미 신청된 claim 승인도 POST 접수 계약을 쓴�
   const accepted = buildCafe24ClaimCreate({ kind: '교환', orderItemCode: 'ITEM4', exchangeVariantCode: 'V4' });
   assert.equal(accepted.request.status, 'accepted');
   assert.equal(accepted.request.recover_inventory, 'F');
-  assert.deepEqual(accepted.request.items, [{ order_item_code: 'ITEM4', quantity: 1, exchange_variant_code: 'V4', same_product: 'T' }]);
+  assert.deepEqual(accepted.request.items, [{ order_item_code: 'ITEM4', quantity: 1, exchange_variant_code: 'V4' }]);
+  assert.equal(accepted.request.same_product, 'T');
   assert.equal(isClaimPostAction('accept'), true);
   assert.equal(isClaimPostAction('create'), true);
   assert.equal(isClaimPostAction('complete'), false);

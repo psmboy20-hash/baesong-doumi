@@ -358,6 +358,11 @@ input[type="checkbox"] { width: 1.4rem; height: 1.4rem; accent-color: var(--prim
 .inv-table .qcell { white-space: nowrap; text-align: center; }
 .inv-table .qcell .qty { display: inline-block; min-width: 2.6rem; text-align: center; font-size: 1.2rem; font-weight: 700; vertical-align: middle; }
 .inv-table .qcell .qty.low { color: var(--bad); }
+.inv-table .qcell .qty-input { width: 3.4rem; height: 2.1rem; padding: 0 4px; border: 1px solid var(--line-strong); border-radius: var(--r-1); background: #fff; font: inherit; font-size: 1.1rem; font-weight: 700; }
+.ret-pick-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; max-height: 320px; overflow-y: auto; }
+.ret-pick-list button { text-align: left; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); font: inherit; font-size: 15px; line-height: 1.45; cursor: pointer; }
+.ret-pick-list button:hover { border-color: var(--primary); background: var(--primary-soft); }
+.inv-table .qcell .qty-input:focus { outline: 2px solid var(--primary); border-color: var(--primary); }
 .inv-table .channel-stock { background: #f7faff; }
 .inv-table .stock-note { display: block; margin-top: 0.18rem; color: var(--warn-text); font-size: 0.72rem; font-weight: 600; }
 .qty-btn { width: 2.7rem; height: 2.7rem; font-size: 1.4rem; font-weight: 700; border-radius: var(--r); border: 1px solid var(--line-strong); background: #fff; cursor: pointer; }

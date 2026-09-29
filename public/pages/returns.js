@@ -209,19 +209,14 @@ function returnForm(pre) {
     ...DB.orders.filter(x => x.status === '발송완료').map(x => ({ kind: 'orders', x })),
     ...DB.seeding.filter(x => x.status === '발송완료').map(x => ({ kind: 'seeding', x }))
   ].sort((a, b) => (b.x.sentDate || '').localeCompare(a.x.sentDate || '')).slice(0, 80);
-  const pickOpts = shipped.map(({ kind, x }) =>
-    `<option value="${kind}:${x.id}">${esc(x.name)} — ${esc(String(x.product || '').slice(0, 40))} (${esc(x.sentDate || '날짜없음')})</option>`).join('');
-  const exchangeOpts = (DB.inventory || []).filter(x => x.variantCode && x.cafe24VariantActive !== false)
-    .sort((a, b) => [a.name, a.color, a.size].join('|').localeCompare([b.name, b.color, b.size].join('|')))
-    .map(x => `<option value="${esc(x.sku || '')}" ${pre.exchangeSku === x.sku ? 'selected' : ''}>${esc([x.name, x.color, x.size].filter(Boolean).join(' · '))}</option>`).join('');
+  window._retShipped = shipped;
+  const exchangeItem = pre.exchangeSku ? (DB.inventory || []).find(x => x.sku === pre.exchangeSku) : null;
   box.innerHTML = `
     <div class="card">
       <div class="step-title">교환/반품 등록</div>
-      <div class="form-row"><label>보낸 것에서 고르기 — 고르면 아래 칸이 저절로 채워져요</label>
-        <select id="ret-pick" onchange="retPick(this.value)">
-          <option value="">직접 입력할래요</option>
-          ${pickOpts}
-        </select>
+      <div class="form-row"><label>주문자 이름·주문번호·송장으로 찾기 — 고르면 아래 칸이 저절로 채워져요</label>
+        <input id="ret-find" placeholder="예: 박순이, 20260915, 6890…" autocomplete="off" oninput="retFind(this.value)">
+        <div id="ret-find-list" class="ret-pick-list"></div>
       </div>
       <div class="form-row"><label>구분</label>
         <div style="display:flex;gap:1.2rem;font-size:1.1rem">
@@ -238,7 +233,12 @@ function returnForm(pre) {
       <div class="form-row"><label>수량</label><input id="ret-qty" type="number" min="1" value="${Number(pre.qty) || 1}"></div>
       <div class="form-row"><label>사유</label><input id="ret-reason" placeholder="예: 사이즈가 작아요"></div>
       <div class="form-row"><label>원래 보낸 송장번호 (있으면)</label><input id="ret-orig" value="${esc(pre.origInvoice || '')}"></div>
-      <div class="form-row" id="ret-ex-row" style="${pre.kind === '교환' ? '' : 'display:none'}"><label>교환으로 새로 보낼 제품 · 컬러 · 사이즈</label><select id="ret-exchange-sku"><option value="">꼭 골라 주세요</option>${exchangeOpts}</select></div>
+      <div class="form-row" id="ret-ex-row" style="${pre.kind === '교환' ? '' : 'display:none'}"><label>교환으로 새로 보낼 제품 · 컬러 · 사이즈 — 제품명으로 찾아서 고르세요</label>
+        <input type="hidden" id="ret-exchange-sku" value="${esc(exchangeItem ? exchangeItem.sku : '')}">
+        <div id="ret-ex-chosen" class="hint" style="margin:0 0 6px">${exchangeItem ? '고른 제품: <b>' + esc([exchangeItem.name, exchangeItem.color, exchangeItem.size].filter(Boolean).join(' · ')) + '</b>' : '아직 안 골랐어요'}</div>
+        <input id="ret-ex-find" placeholder="예: 마고, margot 블루 M" autocomplete="off" oninput="retExFind(this.value)">
+        <div id="ret-ex-list" class="ret-pick-list"></div>
+      </div>
       <div style="display:flex;gap:8px">
         ${btn({ label: '등록', onclick: `returnSubmit(${pre.sourceType === 'seeding' ? "'seeding'" : pre.sourceType === 'orders' ? "'orders'" : "''"})`, kind: 'primary' })}
         ${btn({ label: '취소', onclick: "document.getElementById('ret-form').innerHTML=''", kind: 'secondary' })}
@@ -246,6 +246,41 @@ function returnForm(pre) {
     </div>`;
   box.scrollIntoView({ behavior: 'smooth' });
   $('#ret-name').focus();
+}
+// 보낸 건 전체에서 이름·주문번호·송장·제품으로 찾기 (전엔 최근 80건 목록에서만 골랐다)
+function retFind(q) {
+  const box = $('#ret-find-list');
+  if (!box) return;
+  q = String(q || '').trim();
+  if (!q) { box.innerHTML = ''; return; }
+  const all = [
+    ...DB.orders.filter(x => x.status === '발송완료').map(x => ({ kind: 'orders', x })),
+    ...DB.seeding.filter(x => x.status === '발송완료').map(x => ({ kind: 'seeding', x }))
+  ].filter(({ x }) => matchQ([x.name, x.phone, x.orderNo, x.invoice, x.product].join(' '), q))
+    .sort((a, b) => (b.x.sentDate || '').localeCompare(a.x.sentDate || '')).slice(0, 15);
+  box.innerHTML = all.length
+    ? all.map(({ kind, x }) => `<button type="button" onclick="retPick('${kind}:${x.id}');document.getElementById('ret-find-list').innerHTML='';document.getElementById('ret-find').value='${jsq(x.name)}'">
+        <b>${esc(x.name)}</b> <span class="muted">${esc(x.sentDate || '')}${x.orderNo ? ' · ' + esc(x.orderNo) : ''}</span><br>${esc(String(x.product || ''))} <span class="muted">${esc(x.option || [x.color, x.size].filter(Boolean).join(', '))}</span></button>`).join('')
+    : '<div class="muted" style="padding:8px">찾는 건이 없어요.</div>';
+}
+function retExFind(q) {
+  const box = $('#ret-ex-list');
+  if (!box) return;
+  q = String(q || '').trim();
+  if (!q) { box.innerHTML = ''; return; }
+  const rows = (DB.inventory || []).filter(x => x.variantCode && x.cafe24VariantActive !== false &&
+    matchQ([x.name, x.color, x.size, x.sku].join(' '), q)).slice(0, 20);
+  box.innerHTML = rows.length
+    ? rows.map(x => `<button type="button" onclick="retExChoose('${jsq(x.sku || '')}')">${esc(x.name)} <b>${esc([x.color, x.size].filter(Boolean).join(' · '))}</b> <span class="muted">재고 ${x.needsCount ? '?' : Number(x.qty) || 0}개</span></button>`).join('')
+    : '<div class="muted" style="padding:8px">찾는 제품이 없어요.</div>';
+}
+function retExChoose(sku) {
+  const x = (DB.inventory || []).find(i => i.sku === sku);
+  if (!x) return;
+  $('#ret-exchange-sku').value = x.sku;
+  $('#ret-ex-chosen').innerHTML = '고른 제품: <b>' + esc([x.name, x.color, x.size].filter(Boolean).join(' · ')) + '</b>';
+  $('#ret-ex-list').innerHTML = '';
+  $('#ret-ex-find').value = '';
 }
 async function returnSubmit(sourceType) {
   const kind = document.querySelector('input[name="ret-kind"]:checked').value;
