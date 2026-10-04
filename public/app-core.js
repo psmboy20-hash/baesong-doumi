@@ -331,6 +331,7 @@ function kindTag(x, isSeeding) {
 function externalSyncIssues() {
   const rows = [];
   for (const item of [...(DB.orders || []), ...(DB.seeding || []), ...(DB.returns || [])]) {
+    if (item.flowState === 'canceled' && !item.needsEpostCancel) continue; // 이미 취소로 끝난 교환·반품의 옛 오류는 할 일이 아니다
     for (const issue of item.syncIssues || []) rows.push({ item, issue });
   }
   return rows;
