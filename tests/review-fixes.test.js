@@ -122,12 +122,12 @@ test('한 포장 안의 받는 사람·주소가 갈리면 접수를 막고, 같
 });
 
 test('접속 코드 비교는 길이가 달라도 안전하게 동작하고 빈 코드는 절대 통과하지 않는다', () => {
-  assert.equal(codeMatches('840007', '840007'), true);
-  assert.equal(codeMatches('840008', '840007'), false);
-  assert.equal(codeMatches('84000', '840007'), false);
+  assert.equal(codeMatches('123456', '123456'), true);
+  assert.equal(codeMatches('123457', '123456'), false);
+  assert.equal(codeMatches('12345', '123456'), false);
   assert.equal(codeMatches('', ''), false);
   assert.equal(codeMatches('anything', ''), false);
-  assert.equal(codeMatches(undefined, '840007'), false);
+  assert.equal(codeMatches(undefined, '123456'), false);
 });
 
 test('우체국 처리상태 06(집하 이후)은 03(수거됨)으로 본다', () => {
