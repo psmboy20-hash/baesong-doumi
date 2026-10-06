@@ -113,6 +113,7 @@ function shipmentKey(x) {
   if (sentKey) return sentKey;
   if (x.status === '취소됨') return 'canceled|' + String(x.orderNo || x.regDate || x.id || '') + '|' + shipmentRecipientKey(x);
   if (x.packGroupId) return 'pending|pack|' + x.packGroupId;
+  if (x.exchange) return 'pending|exchange|' + x.id;
   if (x.orderNo && x.parcelSplitId) return 'pending|split|' + x.orderNo + '|' + x.parcelSplitId;
   if (x.orderNo) return 'pending|order|' + x.orderNo;
   if (x.returnId) return 'pending|return|' + x.returnId;
@@ -120,6 +121,7 @@ function shipmentKey(x) {
 }
 function pendingFulfillmentKey(kind, x) {
   if (x.packGroupId) return 'pack|' + x.packGroupId;
+  if (kind === 'orders' && x.exchange) return 'exchange|' + x.id;
   if (kind === 'orders' && x.orderNo && x.parcelSplitId) return 'split|' + x.orderNo + '|' + x.parcelSplitId;
   if (kind === 'orders' && x.orderNo) return 'order|' + x.orderNo;
   if (x.returnId) return 'return|' + x.returnId;

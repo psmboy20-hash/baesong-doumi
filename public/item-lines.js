@@ -169,10 +169,11 @@
   }
 
   // 받는 사람이 같은데 따로 나갈 택배(주문끼리 · 시딩끼리 · 주문+시딩)를 찾아 합포장을 권한다
-  // 단위: 카페24 주문은 주문번호, 시딩은 시트 행(건) 하나
+  // 단위: 카페24 주문은 주문번호, 교환·시딩은 행(건) 하나
   function mergeUnitOf(entry) {
     const item = entry && entry.x;
     if (!item) return '';
+    if (entry.kind === 'orders' && item.exchange) return 'exchange:' + String(item.id);
     if (entry.kind === 'orders' && item.orderNo) return 'order:' + String(item.orderNo).trim();
     if (entry.kind === 'seeding') return 'seeding:' + String(item.id);
     return '';
@@ -213,7 +214,7 @@
         name: groupedEntries[0].x.name || '',
         orderNos: unitKeys,
         units: {
-          orders: unitKeys.filter(key => key.startsWith('order:')).length,
+          orders: unitKeys.filter(key => key.startsWith('order:') || key.startsWith('exchange:')).length,
           seeding: unitKeys.filter(key => key.startsWith('seeding:')).length
         },
         entries: groupedEntries
@@ -272,6 +273,7 @@
   function sentShipmentKey(item, recipientKey) {
     if (!item || item.status !== '발송완료') return '';
     if (item.packGroupId) return 'sent|pack|' + item.packGroupId;
+    if (item.exchange) return 'sent|exchange|' + item.id;
     if (item.orderNo && item.parcelSplitId) return 'sent|split|' + item.orderNo + '|' + item.parcelSplitId;
     if (item.orderNo) return 'sent|order|' + item.orderNo;
     if (item.returnId) return 'sent|return|' + item.returnId;

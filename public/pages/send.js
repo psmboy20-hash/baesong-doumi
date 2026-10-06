@@ -190,8 +190,8 @@ function renderSendRow(m) {
     const cell = productCell(p.x);
     let action = '';
     if (p.kind === 'orders' && p.x.orderNo) {
-      const originalRows = DB.orders.filter(row => row.orderNo === p.x.orderNo && row.status !== '취소됨');
-      const canSplitOrder = originalRows.length > 1 && originalRows.every(row =>
+      const originalRows = DB.orders.filter(row => row.orderNo === p.x.orderNo && !row.exchange && row.status !== '취소됨');
+      const canSplitOrder = !p.x.exchange && originalRows.length > 1 && originalRows.every(row =>
         row.status === '대기' && !row.invoice && !row.epost && !epostOperationUnresolved(row) &&
         !row.packGroupId && !row.parcelSplitId && !row.shippingHold
       );
@@ -666,7 +666,7 @@ async function undoSplit(orderNo, name) {
   const r = await api('/api/packing/split/undo', { method: 'POST', body: JSON.stringify({ orderNo }) });
   if (r.error) { toast(r.error, 6000); return; }
   adoptDb(r.db);
-  for (const item of DB.orders.filter(row => row.orderNo === orderNo)) item._sel = true;
+  for (const item of DB.orders.filter(row => row.orderNo === orderNo && !row.exchange)) item._sel = true;
   renderSend();
   toast('원래 주문 한 송장으로 다시 합쳤어요.', 5000);
 }

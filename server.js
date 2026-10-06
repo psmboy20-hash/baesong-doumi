@@ -46,6 +46,7 @@ const {
   splitOrderLineForLater,
   releaseSplitOrderLine,
   undoSplitOrder,
+  cafe24ExistingShipmentOrderNos,
   groupCafe24ShipmentItems,
   cafe24ShipmentItemsReady,
   shipmentOperationKey,
@@ -1893,7 +1894,7 @@ async function syncAll() {
       }
       // 카페24에서 직접 배송처리한 주문의 송장번호를 회수해 채움 (앱 밖 발송 매칭)
       const codeMap = { '0012': '우체국', '0013': '우체국', '0079': '롯데', '0006': 'CJ대한통운', '0018': '한진', '0004': '로젠' };
-      const needInv = db.orders.filter(o => o.status === '발송완료' && !o.invoice && o.orderNo).slice(0, 5);
+      const needInv = db.orders.filter(o => o.status === '발송완료' && !o.exchange && !o.invoice && o.orderNo).slice(0, 5);
       for (const o of needInv) {
         try {
           const token2 = await cafe24EnsureToken(db);
@@ -1901,7 +1902,7 @@ async function syncAll() {
           const sh = r2.json && r2.json.shipments && r2.json.shipments.find(x => x.tracking_no);
           if (sh) {
             for (const oo of db.orders) {
-              if (oo.orderNo === o.orderNo && !oo.invoice) {
+              if (oo.orderNo === o.orderNo && !oo.exchange && !oo.invoice) {
                 oo.invoice = sh.tracking_no;
                 oo.courier = codeMap[String(sh.shipping_company_code)] || oo.courier || '';
                 oo.cafe24Shipped = true;
@@ -2913,7 +2914,7 @@ async function cafe24ExistingShipment(db, orderNo) {
 function adoptExternalShipment(db, g, found) {
   const courier = found.carrierCode === '0012' ? '우체국' : '기타';
   for (const { type, item } of g.items) {
-    if (type !== 'order') continue;
+    if (type !== 'order' || item.exchange) continue;
     item.invoice = found.tracking;
     item.courier = courier;
     item.status = '발송완료';
@@ -3604,7 +3605,7 @@ const server = http.createServer((req, res) => {
         idx++;
         const orderNo = 'HAM' + Date.now() + '-' + idx;
         // 접수 전 검증 0: 카페24에 이미 이 주문의 송장이 있으면(다른 컴퓨터·매장 PC에서 먼저 접수) 이중 접수 금지
-        const c24OrderNos = [...new Set(g.items.filter(({ type, item }) => type === 'order' && item.orderNo && /^\d{8}-\d{7}$/.test(String(item.orderNo))).map(({ item }) => String(item.orderNo)))];
+        const c24OrderNos = cafe24ExistingShipmentOrderNos(g.items);
         let external = null;
         for (const no of c24OrderNos) {
           try { external = await cafe24ExistingShipment(db, no); if (external) break; }
@@ -3729,7 +3730,8 @@ const server = http.createServer((req, res) => {
       // 보류 중인 포장은 접수 대상에서 빠져 있다 — 나눠 봐야 나가지 않으므로 먼저 보류를 풀게 한다
       const target = (db.orders || []).find(row => row.id === Number(b.id));
       if (target && (db.orders || []).some(row =>
-        row.hold && row.status !== '취소됨' && (row.id === target.id || (target.orderNo && row.orderNo === target.orderNo)))) {
+        row.hold && row.status !== '취소됨' && (row.id === target.id ||
+          (!target.exchange && !row.exchange && target.orderNo && row.orderNo === target.orderNo)))) {
         return sendJson(res, 200, { error: '보류 중인 건이에요. 보내기 화면에서 [보류 해제]를 먼저 눌러 주세요.' });
       }
       const splitId = 'SPLIT-' + Date.now().toString(36).toUpperCase() + '-' + Number(b.id);

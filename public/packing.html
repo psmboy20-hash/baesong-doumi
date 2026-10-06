@@ -68,6 +68,7 @@ function parseOpt(line) {
 // 택배 1건 묶기 — app-core.js의 pendingFulfillmentKey와 같은 규칙(합포장·분리배송 반영)
 function fulfillKey(type, x) {
   if (x.packGroupId) return 'pack:' + x.packGroupId;
+  if (type === 'order' && x.exchange) return 'exchange:' + x.id;
   if (type === 'order' && x.orderNo && x.parcelSplitId) return 'split:' + x.orderNo + ':' + x.parcelSplitId;
   if (type === 'order' && x.orderNo) return 'order:' + x.orderNo;
   if (x.returnId) return 'return:' + x.returnId;
