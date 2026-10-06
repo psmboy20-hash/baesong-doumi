@@ -80,9 +80,10 @@ test('택배비 CSV 는 포장 1건에 한 줄', () => {
 test('발송 내역 CSV 는 단계 필터·검색·기간을 그대로 따른다', () => {
   const db = sampleDb();
   assert.equal(shipmentCsvRows(db, { filter: 'all' }).length, 6);
-  assert.equal(shipmentCsvRows(db, { filter: 'pending' }).length, 1);
+  assert.equal(shipmentCsvRows(db, { filter: 'pending' }).length, 5);
   assert.equal(shipmentCsvRows(db, { filter: 'done' }).length, 1);
-  assert.equal(shipmentCsvRows(db, { filter: 'moving' }).length, 4);
+  assert.equal(shipmentCsvRows(db, { filter: 'moving' }).length, 0);
+  assert.equal(shipmentCsvRows(db, { filter: 'ready' }).length, 4);
   assert.equal(shipmentCsvRows(db, { from: '2026-09-01', to: '2026-09-03' }).length, 2);
   const found = shipmentCsvRows(db, { q: '2222' });
   assert.equal(found.length, 1);

@@ -23,6 +23,9 @@ function invTabSeg() {
 }
 function renderInventory() {
   if ((window._invTab || 'stock') === 'inbound') { renderInboundTab(); return; }
+  const scroll = { x: window.scrollX, y: window.scrollY };
+  const oldTable = document.querySelector('.inv-table-wrap');
+  const tableScroll = oldTable ? { top: oldTable.scrollTop, left: oldTable.scrollLeft } : null;
   const q = (window._invQ || '').trim();
   const filter = window._invFilter || 'all'; // all | diff | low | zero | unknown
   const counting = !!window._invCount;
@@ -140,9 +143,13 @@ function renderInventory() {
       const qtyCell = counting
         ? `<td class="qcell"><input type="text" inputmode="numeric" class="inv-count-input" data-id="${i.id}" data-orig="${Number(i.qty) || 0}" value="${Number(i.qty) || 0}" oninput="this.value=this.value.replace(/[^0-9]/g,'');this.dataset.touched='1';invStocktakeMark()" onfocus="this.select()">${i.needsCount ? '<span class="count-badge" title="아직 실사로 확인하지 않은 줄이에요">미확인</span>' : ''}</td>`
         : `<td class="qcell">
-        <button class="qty-btn sm" onclick="invAdj(${i.id},-1)">−</button>
-        <input class="qty qty-input ${i.needsCount || isLow(i) || isZero(i) ? 'low' : ''}" type="text" inputmode="numeric" value="${i.needsCount ? '' : Number(i.qty) || 0}" placeholder="?" title="숫자를 바로 고치고 Enter" onfocus="this.select()" onkeydown="if(event.key==='Enter')this.blur();if(event.key==='Escape'){this.value=this.defaultValue;this.blur()}" onchange="invSetQty(${i.id},this.value)">
-        <button class="qty-btn sm" onclick="invAdj(${i.id},1)">＋</button>
+        <label class="inv-adjust-label">재고 조정
+        <input class="qty qty-input ${i.needsCount || isLow(i) || isZero(i) ? 'low' : ''}" type="text" inputmode="numeric" value="${i.needsCount ? '' : Number(i.qty) || 0}" placeholder="?" aria-label="재고 조정: 실제 수량" title="실제로 센 수량으로 조정하고 Enter" onfocus="this.select()" onkeydown="if(event.key==='Enter')this.blur();if(event.key==='Escape'){this.value=this.defaultValue;this.blur()}" onchange="invSetQty(${i.id},this.value)">
+        </label>
+        <div class="inv-row-actions">
+          ${btn({ label: '입고', onclick: `invRowMove(${i.id},'in',this)`, size: 'sm' })}
+          ${btn({ label: '출고', onclick: `invRowMove(${i.id},'out',this)`, size: 'sm' })}
+        </div>
         ${i.needsAllocation ? `<span class="stock-note">${i.allocationTotal != null ? `배분 ${i.allocationTotal}/${i.allocationExpected}` : '옵션 배분 필요'}</span>` : i.needsCount ? '<span class="stock-note">실사 필요</span>' : ''}
       </td>`;
       const minCell = counting
@@ -206,6 +213,10 @@ function renderInventory() {
       ${btn({ label: '취소', onclick: 'invStocktakeCancel()', kind: 'text' })}
     </div>` : '';
 
+  const search = !counting ? `<div class="inv-search-sticky">${searchBox({
+    id: 'inv-search', placeholder: '🔍 제품 이름으로 찾기', value: q,
+    oninput: "window._invQ=this.value; renderInventory(); const el=document.getElementById('inv-search'); if (el) { el.focus({preventScroll:true}); el.setSelectionRange(el.value.length,el.value.length); }"
+  })}</div>` : '';
   const toolbar = !counting ? `
     <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:16px">
       ${seg([
@@ -215,7 +226,6 @@ function renderInventory() {
         { key: 'zero', label: '품절', count: zeroN, on: filter === 'zero', onclick: "window._invFilter='zero';renderInventory()" },
         { key: 'unknown', label: '확인 필요', count: unknownN, on: filter === 'unknown', onclick: "window._invFilter='unknown';renderInventory()" }
       ])}
-      ${searchBox({ id: 'inv-search', placeholder: '제품 이름으로 찾기', value: q, oninput: "window._invQ=this.value; renderInventory(); const el=document.getElementById('inv-search'); if (el) { el.focus(); el.setSelectionRange(el.value.length,el.value.length); }" })}
       <div style="margin-left:auto;display:flex;gap:4px">${toolbarExtras}</div>
     </div>
     <div id="inv-form"></div>` : '';
@@ -236,9 +246,12 @@ function renderInventory() {
       actionHtml: btn({ label: '전체 보기', onclick: "window._invQ='';window._invFilter='all';renderInventory()", kind: 'text' })
     });
 
-  main().innerHTML = header + invTabSeg() + kpis + bannerHtml + invStocktakeResultHtml() + (counting ? countBar : toolbar) + tableOrEmpty;
+  main().innerHTML = header + search + invTabSeg() + kpis + bannerHtml + invStocktakeResultHtml() + (counting ? countBar : toolbar) + tableOrEmpty;
   injectHelp();
   if (counting) invStocktakeMark();
+  const table = document.querySelector('.inv-table-wrap');
+  if (table && tableScroll) { table.scrollTop = tableScroll.top; table.scrollLeft = tableScroll.left; }
+  window.scrollTo(scroll.x, scroll.y);
 }
 
 // ---------- 재고: 입고 예정 ----------
@@ -532,37 +545,42 @@ async function invSplit(id) {
   adoptDb(r.db);
   window._invHistCache = new Map();
   renderInventory();
-  toast(`${r.made.join('/')} 사이즈 줄로 나눴어요. 각 사이즈의 실제 개수를 ＋로 채워 주세요.`, 6000);
+  toast(`${r.made.join('/')} 사이즈 줄로 나눴어요. 각 사이즈의 실제 개수를 재고 조정 칸에 적어 주세요.`, 6000);
 }
-// 수량 칸에 숫자를 바로 적으면 차이만큼 입고·차감으로 기록 (입출고 내역에 남음)
+// 실제로 센 수량을 입력하면 차이만큼 재고 조정으로 기록한다.
 async function invSetQty(id, value) {
   const item = DB.inventory.find(i => i.id === id);
   if (!item) return;
-  const next = Number(String(value).replace(/[^0-9]/g, ''));
-  if (String(value).trim() === '' || !Number.isFinite(next)) { renderInventory(); return; }
+  const next = Number(value);
+  if (String(value).trim() === '' || !Number.isSafeInteger(next) || next < 0) {
+    toast('실제 수량을 0 이상의 정수로 적어 주세요.'); renderInventory(); return;
+  }
   const delta = next - (Number(item.qty) || 0);
-  if (!delta && !item.needsCount) return;
-  if (Math.abs(delta) >= 20 && !confirm(`${item.name} ${item.color || ''} ${item.size || ''}\n${Number(item.qty) || 0}개 → ${next}개로 바꿀까요?`)) { renderInventory(); return; }
-  if (!delta) { toast('수량이 그대로예요.'); return; }
-  await invAdj(id, delta);
-  toast(`${next}개로 바꿨어요.`, 2500);
+  if (!delta) return;
+  if (Math.abs(delta) >= 10 && !confirm(`${item.name} ${item.color || ''} ${item.size || ''}\n${Number(item.qty) || 0}개 → ${next}개로 조정할까요?`)) { renderInventory(); return; }
+  const r = await invAdjustStock(id, delta, delta > 0 ? '재고 조정 (+)' : '재고 조정 (−)', '');
+  if (r && r.ok) toast(`${next}개로 조정했어요.`, 2500);
 }
-async function invAdj(id, d) {
-  const item = DB.inventory.find(i => i.id === id);
-  if (!item) return;
-  // 서버가 처리해야 입출고 내역에 남는다
-  const r = await api('/api/inventory/adjust', { method: 'POST', body: JSON.stringify({ id, delta: d }) });
-  if (r.error) { toast(r.error, 4000); return; }
-  adoptDb(r.db);
-  window._invHistCache = new Map();
-  renderInventory();
+// 행별 폼과 별도 입출고 등록 폼이 같은 요청·갱신 로직을 쓴다.
+async function invAdjustStock(id, delta, reason, memo) {
+  if (window._invAdjustBusy) { toast('앞선 재고 변경을 저장하는 중이에요.'); return null; }
+  window._invAdjustBusy = true;
+  try {
+    const r = await api('/api/inventory/adjust', { method: 'POST', body: JSON.stringify({ id, delta, reason, memo }) });
+    if (!r.ok) { toast(r.error || '재고를 저장하지 못했어요.', 5000); renderInventory(); return r; }
+    adoptDb(r.db);
+    window._invHistCache = new Map();
+    const popover = document.getElementById('inv-row-move');
+    if (popover) popover.remove();
+    renderInventory();
+    return r;
+  } finally { window._invAdjustBusy = false; }
 }
-
 
 // ── 입출고 내역 ──
 // ── 재고수불: 입출고 구분 (서버 STOCK_MOVE_REASONS와 같은 이름) ──
-const STOCK_IN_REASONS = ['본사 입고', '반품 입고', '교환 회수 입고', '입고 (직접)', '재고 조정 (+)'];
-const STOCK_OUT_REASONS = ['샘플 출고', '본사 출고', '폐기·불량', '차감 (직접)', '재고 조정 (−)']; // 주문·시딩·교환 출고는 접수할 때 자동
+const STOCK_IN_REASONS = ['본사 입고', '반품 입고', '기타 입고', '교환 회수 입고', '입고 (직접)', '재고 조정 (+)'];
+const STOCK_OUT_REASONS = ['샘플 출고', '본사 출고', '폐기·불량', '기타 출고', '차감 (직접)', '재고 조정 (−)']; // 주문·시딩·교환 출고는 접수할 때 자동
 const STOCK_IN_ALL_REASONS = new Set([...STOCK_IN_REASONS, '기초 재고', '접수 취소 복구']);
 // 옛 장부에 남아 있는 사유 이름 → 지금 쓰는 이름 (lib/stock-ledger.js 의 LEGACY_REASONS 와 같게)
 const LEGACY_REASON = { '출고': '주문 출고' };
@@ -630,22 +648,47 @@ function invMoveReasonPreview() {
   box.innerHTML = chipEl(isIn ? 'ok' : 'bad', isIn ? '입고' : '출고');
 }
 async function invMoveSave() {
-  const sel = $('#mv-item');
-  if (!sel.value) { toast('제품을 골라 주세요.'); return; }
-  const id = Number(sel.value);
-  const reason = $('#mv-reason').value;
-  const qty = Math.max(1, Math.floor(Number($('#mv-qty').value) || 0));
-  const memo = $('#mv-memo').value.trim();
-  const isIn = STOCK_IN_REASONS.includes(reason);
+  await invSaveMovement(Number($('#mv-item').value), $('#mv-reason').value, $('#mv-qty').value, $('#mv-memo').value);
+}
+async function invSaveMovement(id, reason, value, memo) {
   const item = DB.inventory.find(i => i.id === id);
   if (!item) { toast('제품을 골라 주세요.'); return; }
+  const qty = Number(value);
+  if (!Number.isSafeInteger(qty) || qty <= 0) { toast('수량은 1 이상의 정수로 적어 주세요.'); return; }
+  const isIn = STOCK_IN_REASONS.includes(reason);
+  if (!isIn && !STOCK_OUT_REASONS.includes(reason)) { toast('입출고 사유를 골라 주세요.'); return; }
   if (!isIn && qty > item.qty && !confirm(`지금 재고가 ${item.qty}개인데 ${qty}개를 빼려고 해요.\n재고는 0개까지만 줄어요. 계속할까요?`)) return;
-  const r = await api('/api/inventory/adjust', { method: 'POST', body: JSON.stringify({ id, delta: isIn ? qty : -qty, reason, memo }) });
-  if (r.error && !r.ok) { toast(r.error, 5000); return; }
-  adoptDb(r.db);
-  window._invHistCache = new Map();
-  renderInventory();
-  toast(`${reason} ${qty}개 기록했어요.` + (r.short ? ' ' + r.error : ''), 6000);
+  const r = await invAdjustStock(id, isIn ? qty : -qty, reason, String(memo || '').trim());
+  if (r && r.ok) toast(`${reason} ${r.short ? Math.abs(r.applied) : qty}개 기록했어요.` + (r.short ? ' ' + r.error : ''), 6000);
+}
+function invRowMove(id, direction, anchor) {
+  const item = DB.inventory.find(i => i.id === id);
+  if (!item) return;
+  const previous = document.getElementById('inv-row-move');
+  if (previous) previous.remove();
+  const incoming = direction === 'in';
+  const reasons = incoming ? ['본사 입고', '반품 입고', '기타 입고'] : ['샘플 출고', '본사 출고', '폐기·불량', '기타 출고'];
+  const popover = document.createElement('div');
+  popover.id = 'inv-row-move';
+  popover.className = 'inv-move-popover';
+  popover.setAttribute('popover', 'auto');
+  popover.setAttribute('role', 'dialog');
+  popover.setAttribute('aria-labelledby', 'row-move-title');
+  popover.innerHTML = `<form onsubmit="event.preventDefault();invSaveMovement(${id},$('#row-move-reason').value,$('#row-move-qty').value,$('#row-move-note').value)">
+    <b id="row-move-title">${incoming ? '입고' : '출고'} 등록</b>
+    <div class="hint">${esc(item.name)} ${esc(item.color || '')} ${esc(item.size || '')} · 지금 ${Number(item.qty) || 0}개</div>
+    <div class="form-row"><label for="row-move-qty">수량</label><input id="row-move-qty" type="number" inputmode="numeric" value="1" min="1" step="1" required autofocus></div>
+    <div class="form-row"><label for="row-move-reason">사유</label><select id="row-move-reason">${reasons.map(reason => `<option>${reason}</option>`).join('')}</select></div>
+    <div class="form-row"><label for="row-move-note">메모 (선택)</label><input id="row-move-note" maxlength="80" placeholder="어디서 왔는지 / 어디로 갔는지"></div>
+    <div class="form-actions"><button type="submit" class="btn primary">기록하기</button>${btn({ label: '취소', kind: 'text', onclick: "document.getElementById('inv-row-move').hidePopover()" })}</div>
+  </form>`;
+  document.body.appendChild(popover);
+  if (innerWidth > 640 && anchor) {
+    const rect = anchor.getBoundingClientRect();
+    popover.style.left = Math.max(12, Math.min(rect.left, innerWidth - 352)) + 'px';
+    popover.style.top = Math.max(12, Math.min(rect.bottom + 8, innerHeight - 460)) + 'px';
+  }
+  popover.showPopover();
 }
 
 // ── 입출고 내역 · 수불부 ──

@@ -5,20 +5,13 @@ const RET_STUS = { '00': ['processing', '회수 준비중'], '01': ['processing'
 
 // 우체국 처리코드 + 인쇄 여부 → 쉬운 말 (발송용). 인쇄가 됐는지는 우체국 코드와 별개 축이라 먼저 확인한다.
 function epostStatusOf(x) {
-  if (x.delivered) return ['done', '배달완료'];
-  const stus = x.epost.stus || '01';
-  if (stus === '03') return ['done', '수거됨'];
-  if (stus === '04') return ['bad', '수거 안 됨 · 확인'];
-  if (stus === '05') return ['idle', '취소됨'];
-  if (x.printed) return ['processing', '출력됨 · 수거 대기'];
-  if (stus === '02') return ['warn', '운송장 출력 대기'];
-  if (stus === '00' || stus === '01') return ['processing', '접수됨'];
-  return ['processing', '확인 필요'];
+  const stage = shippingStage(x);
+  return [stage.kind, stage.label];
 }
 
 // ---------- 오늘 쌀 목록 (우체국 접수됐고 아직 안 걷어간 택배) ----------
 function todayPickTargets() {
-  const inPickStage = x => x.epost && !x.delivered && ['00', '01', '02', '04'].includes(x.epost.stus || '01');
+  const inPickStage = x => x.epost && ['ready', 'pickup', 'problem'].includes(shippingStage(x).key);
   return [
     ...DB.orders.filter(inPickStage).map(x => ({ type: 'order', kind: 'orders', x })),
     ...DB.seeding.filter(inPickStage).map(x => ({ type: 'seeding', kind: 'seeding', x }))
@@ -138,17 +131,16 @@ function renderEpost() {
     const bp = !b.x.printed ? 0 : 1;
     return ap - bp || (b.x.sentDate || '').localeCompare(a.x.sentDate || '');
   });
-  const filter = window._epostFilter || 'all';
-  const items = allItems.filter(entry => HamItemLines.epostFilterMatches(entry.x, filter));
-  const filterCounts = {
-    all: shipmentCount(allItems, entry => entry.x),
-    print: shipmentCount(allItems.filter(entry => HamItemLines.epostFilterMatches(entry.x, 'print')), entry => entry.x),
-    printedWait: shipmentCount(allItems.filter(entry => HamItemLines.epostFilterMatches(entry.x, 'printedWait')), entry => entry.x),
-    collected: shipmentCount(allItems.filter(entry => HamItemLines.epostFilterMatches(entry.x, 'collected')), entry => entry.x),
-    problem: shipmentCount(allItems.filter(entry => HamItemLines.epostFilterMatches(entry.x, 'problem')), entry => entry.x)
-  };
-  const filterLabelMap = { all: '전체 접수', print: '출력 대기', printedWait: '출력됨 · 수거 대기', collected: '수거됨', problem: '확인 필요', pickup: '수거 대기' };
-  const filterLabel = filterLabelMap[filter] || '전체 접수';
+  const aliases = { print: 'ready', printedWait: 'pickup', collected: 'moving' };
+  const filter = aliases[window._epostFilter] || window._epostFilter || 'all';
+  const matches = (x, key) => key === 'all' || (key === 'problem'
+    ? ['problem', 'unknown', 'canceled'].includes(shippingStage(x).key)
+    : shippingStage(x).key === key);
+  const items = allItems.filter(entry => matches(entry.x, filter));
+  const TABS = [['all', '전체'], ['ready', '배송준비'], ['pickup', '우체국 픽업 대기'], ['moving', '배송중'], ['done', '배송완료'], ['problem', '확인 필요']];
+  const filterCounts = Object.fromEntries(TABS.map(([key]) => [key,
+    shipmentCount(allItems.filter(entry => matches(entry.x, key)), entry => entry.x)]));
+  const filterLabel = (TABS.find(([key]) => key === filter) || TABS[0])[1];
   const parcels = shipmentGroups(items, entry => entry.x);
   const parcelSpec = group => group.map(entry => entry.kind + ':' + entry.x.id).join(',');
 
@@ -205,20 +197,16 @@ function renderEpost() {
     actions: headerActions
   });
 
-  const segRow = `<div style="margin-bottom:16px">${seg([
-    { key: 'all', label: '전체', count: filterCounts.all, on: filter === 'all', onclick: "go('epost','all')" },
-    { key: 'print', label: '출력 대기', count: filterCounts.print, on: filter === 'print', onclick: "go('epost','print')" },
-    { key: 'printedWait', label: '출력됨 · 수거 대기', count: filterCounts.printedWait, on: filter === 'printedWait', onclick: "go('epost','printedWait')" },
-    { key: 'collected', label: '수거됨', count: filterCounts.collected, on: filter === 'collected', onclick: "go('epost','collected')" },
-    { key: 'problem', label: '확인 필요', count: filterCounts.problem, on: filter === 'problem', onclick: "go('epost','problem')" }
-  ])}</div>`;
+  const segRow = `<div style="margin-bottom:16px">${seg(TABS.map(([key, label]) => ({
+    key, label, count: filterCounts[key], on: filter === key, onclick: `go('epost','${key}')`
+  })))}</div>`;
 
   // 평소엔 [운송장 출력] 버튼으로 끝나므로 사이트 인쇄 안내는 접어 둔다 (사이트 출력 대상이 있을 때만 펼침)
   const guideCard = `<div class="card"><details${needSite.length ? ' open' : ''}>
     <summary style="font-size:15px;font-weight:700;cursor:pointer">라벨기 없이 우체국 사이트에서 인쇄하려면</summary>
     <div class="hint">라벨기가 없으면 우체국 사이트(오즈뷰어)에서 직접 인쇄할 수 있어요.${needSite.length ? ` 지금 <b>${needSite.length}장</b>이 사이트 출력 대상이에요.` : ''}</div>
     <div class="hint">로그인(아이디 ${esc((DB.settings && DB.settings.epostMemberId) || '')}) 후 <b>계약소포 → 신청정보등록</b>에서 오늘 접수 목록을 조회하고 체크한 뒤 <b>라벨인쇄</b>를 누르세요. 인쇄한 뒤에는 표의 <b>[출력함 표시]</b>를 눌러 기록해 주세요.</div>
-    <div class="hint">우체국 홈페이지에서 출력했으면 [출력함 표시]는 눌러도 되고 안 눌러도 돼요. 기사님이 가져가면 자동으로 수거됨이 돼요.</div>
+    <div class="hint">우체국 홈페이지에서 출력했으면 [출력함 표시]는 눌러도 되고 안 눌러도 돼요. 기사님이 가져가면 자동으로 배송중이 돼요.</div>
     <div style="margin-top:10px">${btn({ label: '우체국 사이트 열기', onclick: 'epostSitePrint()', icon: 'external' })}</div>
   </details><div id="epost-page-result"></div></div>`;
 
@@ -272,8 +260,8 @@ async function confirmSitePrinted(sel, name) {
 // 인쇄가 필요한(접수됐는데 아직 안 뽑은) 건 수
 function needPrintList() {
   const items = [
-    ...DB.orders.filter(x => HamItemLines.epostFilterMatches(x, 'print')).map(x => ({ kind: 'order', x })),
-    ...DB.seeding.filter(x => HamItemLines.epostFilterMatches(x, 'print')).map(x => ({ kind: 'seeding', x }))
+    ...DB.orders.filter(x => x.epost && shippingStage(x).key === 'ready').map(x => ({ kind: 'order', x })),
+    ...DB.seeding.filter(x => x.epost && shippingStage(x).key === 'ready').map(x => ({ kind: 'seeding', x }))
   ];
   return shipmentGroups(items, entry => entry.x).map(group => group[0]);
 }

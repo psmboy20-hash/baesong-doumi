@@ -317,10 +317,7 @@ function renderSend() {
     btn({ kind: 'secondary', icon: 'print', label: '오늘 쌀 목록 인쇄', onclick: "window.open('/pick.html','_blank')" }),
     btn({ kind: 'secondary', icon: 'print', label: '포장 명세 인쇄', onclick: 'printPackingSlip()' }),
     invoiceExportChannels.length ? btn({ kind: 'secondary', icon: 'download', label: '채널 송장 엑셀 만들기', onclick: 'exportChannelInvoices()' }) : '',
-    epostConnected ? btn({ kind: 'secondary', icon: 'download', label: '엑셀로 접수', onclick: 'doExportAll()', title: '우체국 바로 접수가 안 될 때 엑셀 파일로 접수' }) : '',
-    epostConnected
-      ? btn({ kind: 'primary', label: `체크한 ${selCount}건 우체국 접수`, onclick: 'doEpostRegister()' })
-      : btn({ kind: 'primary', label: `체크한 ${selCount}건 엑셀로 접수`, onclick: 'doExportAll()' })
+    epostConnected ? btn({ kind: 'secondary', icon: 'download', label: '엑셀로 접수', onclick: 'doExportAll()', title: '우체국 바로 접수가 안 될 때 엑셀 파일로 접수' }) : ''
   ].join('');
 
   const header = pageHeader({
@@ -376,11 +373,15 @@ function renderSend() {
       <tbody>${rowsHtml}</tbody>
     </table>`);
     body = toolbar + table +
-      `<div class="hint" style="margin-top:0.9rem">현재 선택: <b>${selCount}건</b> · 포장할 상품 <b>${selProductQty}개</b></div>
-      <div id="export-result"></div>`;
+      `<div class="hint" style="margin-top:0.9rem">현재 선택: <b>${selCount}건</b> · 포장할 상품 <b>${selProductQty}개</b></div>`;
   }
 
-  main().innerHTML = header + connBanner + mappingBanner + mergeBanner + issueBanner + uploadCard + body;
+  const actionBar = selCount ? `<div class="send-action-space"></div><div class="send-action-bar" role="region" aria-label="선택한 택배 접수">
+    <span>선택 <b>${selCount}건</b> · 상품 ${selProductQty}개</span>
+    ${btn({ kind: 'primary', label: `체크한 ${selCount}건 ${epostConnected ? '우체국' : '엑셀로'} 접수`, onclick: epostConnected ? 'doEpostRegister()' : 'doExportAll()' })}
+  </div>` : '';
+  main().innerHTML = header + connBanner + mappingBanner + mergeBanner + issueBanner + uploadCard + body + '<div id="export-result"></div>' + actionBar;
+  if (window._sendResultHtml) $('#export-result').innerHTML = window._sendResultHtml;
   setupDropzones();
   // 우편번호 없는 건은 즉시 자동 조회 시작
   setTimeout(() => {
@@ -721,6 +722,7 @@ async function doExportAll() {
         이 컴퓨터의 <b>다운로드 폴더</b>에서 <b>${esc(filename)}</b> 파일을 찾으세요.<br>
         우체국에서 <b>계약소포 → 파일등록 → [찾기]</b>를 누른 뒤 이 파일을 선택하면 됩니다.
       </div>`;
+    window._sendResultHtml = box ? box.innerHTML : '';
     window.scrollTo(0, document.body.scrollHeight);
   } catch (error) {
     toast(error.message || '엑셀 파일을 만들지 못했어요.', 7000);
@@ -785,8 +787,9 @@ async function doEpostRegister() {
   if (r.sheet) extra.push(r.sheet.ok ? `구글시트에도 송장 ${r.sheet.count}건 기록 완료` : `구글시트 기록 실패: ${esc(r.sheet.error)}`);
   if (extra.length) html += `<div class="result-box ok" style="font-weight:400">${extra.join('<br>')}</div>`;
   const box = $('#export-result');
+  window._sendResultHtml = html;
   if (box) box.innerHTML = html;
-  window.scrollTo(0, document.body.scrollHeight);
+  sendRegistrationNotice(ok, fail);
 }
 
 
@@ -879,4 +882,20 @@ function setupDropzones() {
       if (e.dataTransfer.files[0]) uploadFile(which, e.dataTransfer.files[0]);
     });
   }
+}
+
+// 접수 결과는 현재 스크롤 위치와 무관하게 화면 위에서 확인하고 직접 닫는다.
+function sendRegistrationNotice(ok, fail) {
+  const previous = document.getElementById('send-registration-notice');
+  if (previous) previous.remove();
+  const notice = document.createElement('div');
+  notice.id = 'send-registration-notice';
+  notice.className = 'registration-notice';
+  notice.setAttribute('role', 'status');
+  notice.setAttribute('aria-live', 'polite');
+  notice.innerHTML = `<div class="notice-head"><b>${ok.length ? `✅ ${ok.length}건 우체국 접수가 정상적으로 완료됐어요` : '우체국 접수를 완료하지 못했어요'}</b>
+    ${btn({ label: '닫기', kind: 'text', onclick: "document.getElementById('send-registration-notice').remove()" })}</div>
+    ${ok.length ? `<div class="notice-invoices">${ok.map(x => `${esc(x.name)} · 송장 <b>${esc(x.regiNo)}</b>`).join('<br>')}</div>` : ''}
+    ${fail.length ? `<div class="notice-errors"><b>접수 실패 ${fail.length}건</b><br>${fail.map(x => `${esc(x.name)}: ${esc(x.error)}`).join('<br>')}</div>` : ''}`;
+  document.body.appendChild(notice);
 }

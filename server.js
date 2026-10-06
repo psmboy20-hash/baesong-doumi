@@ -1620,7 +1620,7 @@ async function syncGoogle(db) {
 async function refreshEpostStatuses(db, skipOrderNos) {
   // 안 본 것·오래전에 본 것부터 25건 — 한 번에 너무 오래 잡고 있지 않게 (5분마다 돌아오니 결국 다 본다)
   const targets = [...db.orders, ...db.seeding]
-    .filter(x => x.epost && x.epost.orderNo && !EPOST_DONE_CODES.includes(x.epost.stus))
+    .filter(x => x.epost && x.epost.orderNo && !x.delivered && !EPOST_DONE_CODES.includes(x.epost.stus))
     .sort((a, b) => (Date.parse(a.epost.checkedAt || '') || 0) - (Date.parse(b.epost.checkedAt || '') || 0))
     .slice(0, 25);
   const done = new Set(skipOrderNos || []);
@@ -2545,8 +2545,8 @@ function prepareReturnCompletion(db, ret, restock) {
 // 재고 변동 장부: 입고/출고/복구가 일어날 때마다 한 줄씩 남긴다 (입출고 내역 화면·마스터 API용)
 // 재고수불 구분 — 화면·수불부·마스터 API가 같은 이름을 쓴다
 const STOCK_MOVE_REASONS = {
-  in: ['기초 재고', '본사 입고', '반품 입고', '교환 회수 입고', '입고 (직접)', '재고 조정 (+)'],
-  out: ['주문 출고', '시딩 출고', '교환 재발송 출고', '샘플 출고', '본사 출고', '폐기·불량', '차감 (직접)', '재고 조정 (−)']
+  in: ['기초 재고', '본사 입고', '반품 입고', '기타 입고', '교환 회수 입고', '입고 (직접)', '재고 조정 (+)'],
+  out: ['주문 출고', '시딩 출고', '교환 재발송 출고', '샘플 출고', '본사 출고', '폐기·불량', '기타 출고', '차감 (직접)', '재고 조정 (−)']
 };
 function shipmentStockReason(type, item) {
   if (type === 'seeding' || (item && item.sourceChannel === 'seeding')) return '시딩 출고';
@@ -3204,12 +3204,13 @@ const server = http.createServer((req, res) => {
     }
     // ---------- 재고 조정 · 실사 ----------
     if (url.pathname === '/api/inventory/adjust' && req.method === 'POST') {
-      // 재고 수동 입고/차감 (＋/− 버튼) — 입출고 내역에 남도록 서버가 처리
+      // 재고 수동 입출고·실물 수량 조정 — 입출고 내역에 남도록 서버가 처리
       const b = JSON.parse((await readBody(req)).toString('utf8'));
       const db = loadDb();
       const inv = (db.inventory || []).find(i => i.id === b.id);
       if (!inv) return sendJson(res, 200, { error: '해당 재고를 찾지 못했어요.' });
-      const d = Number(b.delta) || 0;
+      const d = Number(b.delta);
+      if (!Number.isSafeInteger(d)) return sendJson(res, 200, { error: '수량은 정수로 적어 주세요.' });
       if (!d) return sendJson(res, 200, { error: '변경할 개수가 없어요.' });
       const before = Number(inv.qty) || 0;
       inv.qty = Math.max(0, before + d);

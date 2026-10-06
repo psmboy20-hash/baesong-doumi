@@ -58,9 +58,9 @@ function renderHome() {
   const toSendGroups = shipmentGroups(toSendItems);
   const toSend = toSendGroups.length;
   const toSendQty = productQuantity(toSendItems);
-  const waitPickup = shipmentCount(all.filter(x => HamItemLines.epostFilterMatches(x, 'pickup')));
+  const waitPickup = shipmentCount(all.filter(x => shippingStage(x).key === 'pickup'));
   const notPickedUp = shipmentCount(all.filter(x => HamItemLines.epostFilterMatches(x, 'problem')));
-  const moving = shipmentCount(all.filter(x => x.status === '발송완료' && !x.delivered && !(x.epost && ['00', '01', '02', '04'].includes(x.epost.stus || '01'))));
+  const moving = shipmentCount(all.filter(x => shippingStage(x).key === 'moving'));
   const overdueUnconfirmed = shipmentCount(all.filter(x => x.status === '발송완료' && !x.delivered && daysSince(x.sentDate) >= 7));
   const epostOpPending = shipmentCount(all.filter(x => epostOperationUnresolved(x)));
   // 실물재고를 아직 한 번도 입력하지 않았으면(합계 0) "부족 145개" 같은 헛경고 대신 시작 안내를 띄운다
@@ -101,7 +101,7 @@ function renderHome() {
       btn({ label: '출고 열기', onclick: "go('epost','problem')" })));
   }
   if (overdueUnconfirmed > 0) {
-    rows.push(todoRow('clock', 'w', `배달 확인이 안 된 택배 ${overdueUnconfirmed}건`, '받았으면 [배달 끝 처리]로 옮겨 주세요',
+    rows.push(todoRow('clock', 'w', `배달 확인이 안 된 택배 ${overdueUnconfirmed}건`, '받았으면 [배송완료 처리]로 옮겨 주세요',
       btn({ label: '배송 확인 열기', onclick: "go('shipping','moving')" })));
   }
   if (stockNotStarted) {
@@ -174,7 +174,7 @@ function renderHome() {
     { label: '보낼 준비', value: toSend, unit: '건', tone: toSend > 0 ? 'hot' : '', onclick: "go('send')" },
     { label: '수거 기다림', value: waitPickup, unit: '건', onclick: "go('epost','pickup')" },
     { label: '가는 중', value: moving, unit: '건', onclick: "go('shipping','moving')" },
-    { label: '이달 배달 끝', value: dlvThis, unit: '건', onclick: "go('shipping','done')" }
+    { label: '이달 배송완료', value: dlvThis, unit: '건', onclick: "go('shipping','done')" }
   ]);
   const monthLine = `<div class="hint" style="margin:-4px 0 16px">이번 달(${Number(ym.slice(5))}월) 보낸 택배 <b>${sentThisCount}건</b> · 상품 <b>${sentProductQty}개</b> · 택배비 <b>${cost.toLocaleString()}원</b></div>`;
 

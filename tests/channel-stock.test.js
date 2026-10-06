@@ -392,3 +392,25 @@ test('clearSettledDirty: 카페24와 같은 값·반영 대상 아님인 줄의 
   assert.equal(db.inventory[1].channelDirty, true); // 차이가 있는 줄은 그대로 대기
   assert.equal(db.inventory[2].channelDirty, undefined);
 });
+
+test('라우트: 기타 입출고와 재고 조정 사유·메모는 실제 장부에 남는다', async () => {
+  const server = await startServer(fixtureDb(true));
+  try {
+    for (const [delta, reason] of [[3, '기타 입고'], [-1, '기타 출고'], [2, '재고 조정 (+)'], [-1, '재고 조정 (−)']]) {
+      const r = await post('/api/inventory/adjust', { id: 1, delta, reason, memo: '수량 확인' });
+      assert.equal(r.ok, true);
+      const entry = r.db.stockLog.at(-1);
+      assert.equal(entry.reason, reason);
+      assert.equal(entry.delta, delta);
+      assert.equal(entry.note, '수량 확인');
+    }
+    const before = await get('/api/db');
+    for (const delta of [1.5, 'abc']) {
+      const bad = await post('/api/inventory/adjust', { id: 1, delta, reason: '기타 입고' });
+      assert.match(bad.error, /정수/);
+    }
+    const after = await get('/api/db');
+    assert.equal(after.inventory.find(i => i.id === 1).qty, before.inventory.find(i => i.id === 1).qty);
+    assert.equal(after.stockLog.length, before.stockLog.length);
+  } finally { await server.stop(); }
+});

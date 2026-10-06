@@ -34,16 +34,16 @@ function renderShipping() {
   ].sort((a, b) => (b.sentDate || b.regDate || '').localeCompare(a.sentDate || a.regDate || ''));
   // 단계 필터 (홈 타일에서 넘어오면 그 단계만)
   const f = window._shipFilter || 'all';
-  const byF = x =>
-    f === 'pending' ? (x.status === '대기' || x.status === '접수중') :
-    f === 'moving' ? (x.status === '발송완료' && !x.delivered) :
-    f === 'done' ? (x.status === '발송완료' && !!x.delivered) :
-    f === 'canceled' ? x.status === '취소됨' : true;
-  const cnt = k => shipmentCount(all.filter(x => (k === 'all' ? true : (
-    k === 'pending' ? (x.status === '대기' || x.status === '접수중') :
-    k === 'moving' ? (x.status === '발송완료' && !x.delivered) :
-    k === 'done' ? (x.status === '발송완료' && !!x.delivered) : x.status === '취소됨'))));
-  const TABS = [['all', '전체'], ['pending', '보낼 준비'], ['moving', '가는 중'], ['done', '배달 끝'], ['canceled', '취소됨']];
+  const matches = (x, key) => {
+    const stage = shippingStage(x).key;
+    if (key === 'all') return true;
+    if (key === 'pending') return ['before', 'ready'].includes(stage); // 기존 홈 링크
+    if (key === 'problem') return ['problem', 'unknown'].includes(stage);
+    return stage === key;
+  };
+  const byF = x => matches(x, f);
+  const cnt = k => shipmentCount(all.filter(x => matches(x, k)));
+  const TABS = [['all', '전체'], ['before', '접수 전'], ['ready', '배송준비'], ['pickup', '우체국 픽업 대기'], ['moving', '배송중'], ['done', '배송완료'], ['problem', '확인 필요'], ['canceled', '취소됨']];
   const segRow = seg(TABS.map(([k, label]) => ({ key: k, label, count: cnt(k), on: f === k, onclick: `go('shipping','${k}')` })));
 
   const base = all.filter(byF);
@@ -58,18 +58,19 @@ function renderShipping() {
 
   const kindOf = x => x._kind === '시딩' ? 'seeding' : 'orders';
   const rows = filtered.slice(0, 200).map(x => {
+    const stage = shippingStage(x);
     const pp = productParts(x);
     const memo = shipmentMemoHtml(x);
     const kind = kindOf(x);
     const daysLate = x.sentDate ? Math.floor((Date.now() - new Date(x.sentDate)) / 86400000) : 0;
     const noteBadges = [];
     if (!x.delivered && x.status === '발송완료' && x.deliveryCheckStatus === '확인필요') noteBadges.push('<span class="note-badge">택배사 확인 필요</span>');
-    if (!x.delivered && x.status === '발송완료' && x.sentDate && daysLate >= 7) noteBadges.push(`<span class="note-badge" title="택배사에서 배달완료가 확인되지 않았어요. 실제로 받았다면 [배달 끝 처리]를 눌러 주세요.">${daysLate}일째 배달 확인 안 됨</span>`);
+    if (!x.delivered && x.status === '발송완료' && x.sentDate && daysLate >= 7) noteBadges.push(`<span class="note-badge" title="택배사에서 배송완료가 확인되지 않았어요. 실제로 받았다면 [배송완료 처리]를 눌러 주세요.">${daysLate}일째 배달 확인 안 됨</span>`);
 
     let actionsHtml;
     if (x.status === '발송완료') {
       const parts = [];
-      if (!x.delivered) parts.push(btn({ label: '배달 끝 처리', onclick: `markDelivered('${kind}',${x.id},'${jsq(x.name)}')`, kind: 'text', size: 'sm' }));
+      if (!x.delivered) parts.push(btn({ label: '배송완료 처리', onclick: `markDelivered('${kind}',${x.id},'${jsq(x.name)}')`, kind: 'text', size: 'sm' }));
       parts.push(btn({ label: '교환/반품 등록', onclick: `returnFormFrom('${kind}',${x.id})`, kind: 'text', size: 'sm' }));
       actionsHtml = parts.join('');
     } else if (x.status === '취소됨') {
@@ -86,7 +87,7 @@ function renderShipping() {
       <td style="white-space:nowrap">${esc(x.sentDate || '')}</td>
       <td><b>${esc(x.name)}</b></td>
       <td style="min-width:240px;max-width:480px">${pp.name}${pp.opt || ''}${memo}</td>
-      <td>${chip(x.delivered ? '배달완료' : x.status)}${noteBadges.length ? '<br>' + noteBadges.join(' ') : ''}</td>
+      <td>${chipEl(stage.kind, stage.label)}${noteBadges.length ? '<br>' + noteBadges.join(' ') : ''}</td>
       <td style="max-width:160px">${shipInvoiceCell(x)}</td>
       <td class="acts" style="white-space:nowrap">${actionsHtml}</td>
     </tr>`;

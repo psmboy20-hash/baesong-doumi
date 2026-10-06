@@ -361,9 +361,9 @@ async function restoreSend(kind, id, name) {
   render();
   toast(`${name}님 건을 [주문 확인] 목록으로 되돌렸어요.`, 5000);
 }
-// 다른 택배사 등 자동 확인이 안 되는 건을 손으로 [배달 끝] 처리
+// 다른 택배사 등 자동 확인이 안 되는 건을 손으로 [배송완료] 처리
 async function markDelivered(kind, id, name) {
-  if (!confirm(`${name}님 택배를 [배달 끝]으로 표시할까요?`)) return;
+  if (!confirm(`${name}님 택배를 [배송완료]로 표시할까요?`)) return;
   const list = kind === 'seeding' ? DB.seeding : DB.orders;
   const x = list.find(i => i.id === id);
   if (!x) return;
@@ -374,7 +374,7 @@ async function markDelivered(kind, id, name) {
   delete x.deliveredAuto;
   await saveDb();
   render();
-  toast('배달 끝으로 표시했어요.');
+  toast('배송완료로 표시했어요.');
 }
 // 배송 확인 화면에서 보낸 건을 바로 교환/반품으로 넘기기
 function returnFormFrom(kind, id) {
