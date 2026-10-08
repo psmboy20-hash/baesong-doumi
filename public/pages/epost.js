@@ -240,7 +240,6 @@ function printLabels(sel) {
   if (!opened) toast('팝업이 막혀 라벨 창을 열지 못했어요. 주소창 오른쪽에서 팝업을 허용해 주세요.', 7000);
 }
 async function confirmSitePrinted(sel, name) {
-  if (!confirm(`${name}님 운송장을 우체국 사이트에서 실제로 인쇄했나요?`)) return;
   const selected = String(sel || '').split(',').filter(Boolean).map(value => {
     const [type, id] = value.split(':');
     return { type: type === 'seeding' ? 'seeding' : 'order', id: Number(id) };
@@ -255,7 +254,7 @@ async function confirmSitePrinted(sel, name) {
   }
   adoptDb(result.db);
   render();
-  toast(`택배 ${result.parcels}건을 출력 완료로 기록했어요.`);
+  toast(`✅ ${name}님 운송장 출력 완료 — 우체국 픽업 대기로 바뀌었어요.`);
 }
 // 인쇄가 필요한(접수됐는데 아직 안 뽑은) 건 수
 function needPrintList() {

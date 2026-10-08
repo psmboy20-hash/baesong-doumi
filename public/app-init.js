@@ -4,7 +4,7 @@ window.addEventListener('message', async event => {
   if (event.origin !== location.origin || !event.data || event.data.type !== 'ham-label-printed') return;
   adoptDb(await api('/api/db'));
   render();
-  toast(`인쇄 완료를 택배 ${Number(event.data.parcels) || 0}건에 기록했어요.`);
+  toast(`✅ 택배 ${Number(event.data.parcels) || 0}건 출력 완료 — 우체국 픽업 대기로 바뀌었어요.`);
 });
 
 (async function init() {
