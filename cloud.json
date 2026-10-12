@@ -1,6 +1,6 @@
 {
-  "url": "https://macmini.tail68ac1d.ts.net",
+  "url": "https://baesong.140.238.54.44.sslip.io",
   "retireLocal": true,
   "since": "2026-09-04",
-  "note": "retireLocal=true 이면 클라우드(HAM_CLOUD_WRITER=1)가 아닌 컴퓨터에서 켜진 서버는 접수·동기화를 하지 않고 위 주소로 안내만 한다. 개발용으로 로컬에서 진짜로 띄우려면 HAM_ALLOW_LOCAL=1. 2026-10-05 메인 서버를 오라클 클라우드에서 맥미니(Tailscale Funnel)로 이전."
+  "note": "retireLocal=true 이면 클라우드(HAM_CLOUD_WRITER=1)가 아닌 컴퓨터에서 켜진 서버는 접수·동기화를 하지 않고 위 주소로 안내만 한다. 개발용으로 로컬에서 진짜로 띄우려면 HAM_ALLOW_LOCAL=1.  2026-10-05 맥미니로 옮겼다가 2026-10-12 오라클로 되돌림(맥미니 Tailscale 끊김). 맥미니는 은퇴 안내만."
 }
