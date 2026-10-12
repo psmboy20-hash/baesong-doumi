@@ -210,7 +210,15 @@ function setAccessCode(db, next) {
   db.accessCode = next;
   _accessCode = next;
 }
-function clientIp(req) { return String(req.socket.remoteAddress || '').replace(/^::ffff:/, ''); }
+// 프록시(Caddy) 뒤에서는 모든 접속이 127.0.0.1로 보인다 — 그대로 쓰면 한 사람이 코드를 5번 틀릴 때 모두가 10분 잠긴다
+function clientIp(req) {
+  const socketIp = String(req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+  if (TRUST_PROXY && ['127.0.0.1', '::1'].includes(socketIp)) {
+    const hops = String(req.headers['x-forwarded-for'] || '').split(',').map(v => v.trim()).filter(Boolean);
+    if (hops.length) return hops[hops.length - 1].replace(/^::ffff:/, '');
+  }
+  return socketIp;
+}
 function reqCookies(req) {
   const out = {};
   String(req.headers.cookie || '').split(';').forEach(p => {

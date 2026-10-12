@@ -190,6 +190,12 @@ function areaHtml(a, lb, cls) {
     <span class="team"><span class="tt">${esc(a.team)}</span><div class="course">${lb.courseNo ? '- ' + esc(lb.courseNo) + ' -' : ''}</div></span>`;
 }
 
+// 포장 표기 — 앱과 같은 규칙: 주문은 없음, 시딩 일반포장 •, 시딩 박스포장 ★ (라벨기 인쇄용으로 ⭐ 대신 ★)
+function packMark(it) {
+  if (!it || it.sourceChannel !== 'seeding') return '';
+  return it.packMark === 'box' ? '★ ' : '• ';
+}
+
 function renderRoll() {
   const st = DBREF.settings;
   return LABELS.map((L, i) => {
@@ -203,7 +209,7 @@ function renderRoll() {
       <div class="r-recv">
         <div class="addr1">${esc(a1)} &nbsp; ${esc(zip)}</div>
         <div class="addr2">${esc(a2)}</div>
-        <span class="rname">${esc(maskName(it.name))} 님께</span>
+        <span class="rname">${packMark(it)}${esc(maskName(it.name))} 님께</span>
         <span class="tel">${lb.vTelNo ? esc(fmtVtel(lb.vTelNo)) : esc(it.phone || '')}</span>
       </div>
       <div class="r-regi">
@@ -267,7 +273,7 @@ function labelC(L, i) { // 오즈뷰어 C형 출력과 같은 배치
     <div class="f" style="left:110mm; top:29mm; font-size:3.1mm">M: ${esc(st.senderPhone || '')}</div>
     <!-- 받는 분 -->
     <div class="f wrap" style="left:55mm; top:39mm; width:90mm; font-size:5mm; font-weight:900; line-height:1.35">${esc(addr)} .</div>
-    <div class="f" style="left:55mm; top:58mm; font-size:6.5mm; font-weight:900">${esc(maskName(it.name))} 님</div>
+    <div class="f" style="left:55mm; top:58mm; font-size:6.5mm; font-weight:900">${packMark(it)}${esc(maskName(it.name))} 님</div>
     <div class="f" style="left:55mm; top:67mm; font-size:5mm; font-weight:900">T: ${esc(vtel)}</div>
     ${virtualPhoneNote}
     <!-- 등기번호 + 대형 바코드 -->
@@ -279,7 +285,7 @@ function labelC(L, i) { // 오즈뷰어 C형 출력과 같은 배치
         <svg id="vregi${i}" style="width:26mm;height:8mm;flex-shrink:0"></svg>
         <b style="font-size:2.6mm;flex-shrink:0">${esc(fmtRegi(it.invoice))}</b>
         <b style="font-size:3.1mm;flex:1;overflow:hidden;white-space:nowrap">${L.products.join(' / ')}</b>
-        <b style="flex-shrink:0">${esc(maskName(it.name))} 님</b>
+        <b style="flex-shrink:0">${packMark(it)}${esc(maskName(it.name))} 님</b>
       </div>
     </div>
   </div>`;
