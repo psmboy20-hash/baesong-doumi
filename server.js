@@ -4099,18 +4099,24 @@ const server = http.createServer((req, res) => {
           return sendJson(res, 200, { error: '카페24에서 이미 회수 신청이 진행 중이라 우체국에 중복 접수하지 않았어요. 카페24의 회수 송장과 진행상태를 확인해 주세요.', db });
         }
         const stage = cafe24ClaimStage(ret.cafe24OrderStatus);
+        // 고객이 쇼핑몰에서 직접 신청한 건(R00/E00)은 승인 전이라 카페24 접수번호가 원래 없다 —
+        // '확인 중'으로 막지 말고 접수(=승인)를 만들어 준다. 카페24는 같은 품목에 접수를 두 번 만들지 않는다.
+        const customerRequest = ret._src === 'c24' && stage === 'requested';
+        let acceptedByCreate = false;
         if (!ret.cafe24ClaimCode) {
           const createState = ret.syncOps && ret.syncOps.create && ret.syncOps.create.state;
-          if (createState !== 'failed') {
+          if (createState !== 'failed' && !customerRequest) {
             return sendJson(res, 200, { error: '카페24 접수번호를 확인 중이라 중복 접수하지 않았어요. 잠시 뒤 [지금 확인하기]를 눌러 주세요.', db });
           }
           try {
             await cafe24WriteClaim(db, ret, 'create', {});
+            acceptedByCreate = customerRequest;
           } catch (error) {
-            return sendJson(res, 200, { error: '카페24 교환·반품 접수를 먼저 맞추지 못해 우체국 회수를 시작하지 않았어요: ' + error.message, db });
+            const hint = customerRequest ? ' 카페24 관리자에서 이 신청을 [접수]한 뒤 다시 눌러 주세요.' : '';
+            return sendJson(res, 200, { error: '카페24 교환·반품 접수를 먼저 맞추지 못해 우체국 회수를 시작하지 않았어요: ' + error.message + hint, db });
           }
         }
-        if (ret.cafe24ClaimCode && stage === 'requested') {
+        if (ret.cafe24ClaimCode && stage === 'requested' && !acceptedByCreate) {
           const acceptState = ret.syncOps && ret.syncOps.accept && ret.syncOps.accept.state;
           if (['pending', 'unknown'].includes(acceptState)) {
             return sendJson(res, 200, { error: '카페24 승인 결과를 확인 중이라 중복 승인하지 않았어요. 잠시 뒤 [지금 확인하기]를 눌러 주세요.', db });
