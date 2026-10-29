@@ -875,3 +875,39 @@ test('재고 매칭은 안정된 식별자가 틀리거나 후보가 여러 개�
   assert.equal(plan.rows.length, 0);
   assert.equal(plan.missing.length, 1);
 });
+
+test('다른 판매 페이지(밀이 마켓)의 같은 옷은 상품명 대신 코드로 같은 재고 줄에 묶는다', () => {
+  const { stockRowFor } = require('../public/item-lines.js');
+  const inventory = [{ id: 1, sku: 'ROSIE-BK', variantCode: 'V-MAIN', qty: 3, needsCount: false,
+    aliases: [{ productNo: 112, variantCode: 'V-MILLI' }] }];
+  assert.equal(stockRowFor(inventory, { variantCode: 'V-MILLI', product: "[밀이's PICK]완전히 다른 이름" }).sku, 'ROSIE-BK');
+  assert.equal(stockRowFor(inventory, { variantCode: 'v-main' }).sku, 'ROSIE-BK');
+  assert.equal(stockRowFor(inventory, { variantCode: 'NOPE' }), null);
+  // 두 페이지에서 각각 2개씩 주문 → 재고 3개를 같이 나눠 쓴다
+  const states = shipmentStockStates([
+    { id: 1, variantCode: 'V-MAIN', qty: 2, orderedAt: '2026-10-01T10:00:00+09:00' },
+    { id: 2, variantCode: 'V-MILLI', qty: 2, orderedAt: '2026-10-01T11:00:00+09:00' }
+  ], inventory);
+  assert.equal(states.get(1).state, 'enough');
+  assert.equal(states.get(2).state, 'shortage');
+  assert.equal(states.get(2).shortage, 1);
+});
+
+test('한 사람이 옵션별로 2·5·8개, 또 같은 옷을 다른 주문으로 산 경우 옵션별 필요 수량이 정확하다', () => {
+  const inventory = [
+    { id: 1, sku: 'A-S', variantCode: 'A-S', qty: 10, needsCount: false },
+    { id: 2, sku: 'A-M', variantCode: 'A-M', qty: 5, needsCount: false },
+    { id: 3, sku: 'A-L', variantCode: 'A-L', qty: 7, needsCount: false }
+  ];
+  const states = shipmentStockStates([
+    { id: 1, orderNo: 'O-1', variantCode: 'A-S', qty: 2 },
+    { id: 2, orderNo: 'O-1', variantCode: 'A-M', qty: 5 },
+    { id: 3, orderNo: 'O-1', variantCode: 'A-L', qty: 8 },
+    { id: 4, orderNo: 'O-2', variantCode: 'A-S', qty: 1 },
+    { id: 5, orderNo: 'O-3', variantCode: 'A-S', qty: 1 }
+  ], inventory);
+  assert.deepEqual([1, 2, 3, 4, 5].map(id => states.get(id).needed), [2, 5, 8, 1, 1]);
+  assert.equal(states.get(3).shortage, 1); // L 8개 필요, 재고 7
+  assert.equal(states.get(2).state, 'enough');
+  assert.equal(states.get(5).available, 7); // S 재고 10 − 2 − 1
+});

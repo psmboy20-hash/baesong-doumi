@@ -231,25 +231,47 @@
     return sku ? 'S|' + sku : '';
   }
 
+  // 주문 품목 → 실제 재고 줄. 다른 카페24 상품(예: 밀이 마켓)에 올린 같은 옷은 대표 줄의 aliases 로 찾는다 (상품명은 안 봄).
+  function stockRowFor(inventory, item) {
+    const variant = String((item && item.variantCode) || '').trim().toUpperCase();
+    const sku = String((item && item.sku) || '').trim().toUpperCase();
+    if (!variant && !sku) return null;
+    const up = v => String(v || '').trim().toUpperCase();
+    const rows = (inventory || []).filter(row => !row.retiredAggregate && (variant
+      ? up(row.variantCode) === variant || (Array.isArray(row.aliases) && row.aliases.some(a => up(a.variantCode) === variant))
+      : up(row.sku) === sku));
+    return rows.length === 1 ? rows[0] : null;
+  }
+
+  // 이름으로 찾은 제품(시딩 등 코드 없는 줄) → 같은 재고 줄. 그 제품·사이즈(·색상)에 맞는 줄이 딱 하나일 때만.
+  function stockRowForProduct(inventory, productNo, color, size) {
+    const flat = v => String(v || '').toLowerCase().replace(/[^a-z0-9가-힣]/g, '');
+    const no = String(productNo);
+    const rows = (inventory || []).filter(row => !row.retiredAggregate &&
+      (String(row.productNo) === no || (Array.isArray(row.aliases) && row.aliases.some(a => String(a.productNo) === no))) &&
+      (!flat(size) || flat(row.size) === flat(size) || (!flat(row.size) && /^(free|f)$/.test(flat(size)))));
+    if (rows.length === 1) return rows[0];
+    const byColor = color ? rows.filter(row => flat(row.color) === flat(color)) : [];
+    return byColor.length === 1 ? byColor[0] : null;
+  }
+
   function shipmentStockStates(items, inventory) {
     const result = new Map();
     const grouped = new Map();
     for (const item of (items || [])) {
-      const identity = stockIdentity(item);
-      if (!identity) {
+      const row = stockIdentity(item) ? stockRowFor(inventory, item) : null;
+      if (!row) {
         result.set(item.id, { state: 'unknown', needed: Number(item.qty) || 1, available: null, shortage: 0 });
         continue;
       }
-      if (!grouped.has(identity)) grouped.set(identity, { items: [], needed: 0 });
-      const group = grouped.get(identity);
+      if (!grouped.has(row)) grouped.set(row, { items: [], needed: 0 });
+      const group = grouped.get(row);
       group.items.push(item);
       group.needed += Math.max(1, Number(item.qty) || 1);
     }
-    for (const [identity, group] of grouped) {
-      const matches = (inventory || []).filter(row => !row.retiredAggregate && stockIdentity(row) === identity);
-      const known = matches.length === 1 && !matches[0].needsCount && matches[0].qty !== null &&
-        matches[0].qty !== undefined && Number.isFinite(Number(matches[0].qty));
-      let remaining = known ? Math.max(0, Number(matches[0].qty)) : null;
+    for (const [row, group] of grouped) {
+      const known = !row.needsCount && row.qty !== null && row.qty !== undefined && Number.isFinite(Number(row.qty));
+      let remaining = known ? Math.max(0, Number(row.qty)) : null;
       const ordered = [...group.items].sort((a, b) => {
         const aTime = Date.parse(a.orderedAt || a.regDate || '') || 0;
         const bTime = Date.parse(b.orderedAt || b.regDate || '') || 0;
@@ -317,6 +339,8 @@
     hasVirtualPhone,
     cafe24MergeSuggestions,
     shipmentStockStates,
+    stockRowFor,
+    stockRowForProduct,
     sentShipmentKey
   };
 });

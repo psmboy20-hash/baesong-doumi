@@ -23,13 +23,27 @@ function todayPickAggregate(targets) {
     for (const line of shipmentLineItems(x)) {
       const { color, size } = parseOption(line);
       const qty = Number(line.qty) || 1;
+      // 상품 코드가 있으면 실제 재고 줄 기준 — 다른 판매 페이지(밀이 마켓 등)에서 들어온 같은 옷도 한 줄로 합친다
+      const inv = HamItemLines.stockRowFor(DB.inventory, line);
+      if (inv) {
+        const key = 'inv|' + (inv.sku || inv.variantCode || inv.id);
+        if (!agg.has(key)) {
+          const p = (DB.products || []).find(x => String(x.no) === String(inv.productNo));
+          agg.set(key, { img: p ? p.img : '', name: splitColor(inv.name).base, color: inv.color || color, size: inv.size || size, qty: 0 });
+        }
+        agg.get(key).qty += qty;
+        continue;
+      }
       const matches = matchProducts(line.product);
       if (matches.length) {
         for (const p of matches) {
           const sc = splitColor(p.name);
           const finalColor = sc.color || color;
-          const key = p.no + '|' + finalColor + '|' + size;
-          if (!agg.has(key)) agg.set(key, { img: p.img, name: sc.base, color: finalColor, size, qty: 0 });
+          const row = HamItemLines.stockRowForProduct(DB.inventory, p.no, color, size);
+          const key = row ? 'inv|' + (row.sku || row.variantCode || row.id) : p.no + '|' + finalColor + '|' + size;
+          if (!agg.has(key)) agg.set(key, row
+            ? { img: p.img, name: splitColor(row.name).base, color: row.color || finalColor, size: row.size || size, qty: 0 }
+            : { img: p.img, name: sc.base, color: finalColor, size, qty: 0 });
           agg.get(key).qty += qty;
         }
       } else {
