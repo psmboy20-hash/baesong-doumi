@@ -137,3 +137,30 @@ test("택배비는 '3,500원' 처럼 적혀 있어도 숫자로 읽는다", () =
   assert.equal(monthlyStats(db, '2026-09').shipping.epostCost, 3500);
   assert.equal(shippingCostRows(db, '2026-09')[0].price, 3500);
 });
+
+test('통계: 반품 검수(양품/불량)·입고·여러 판매 페이지 상품 순위를 함께 낸다', () => {
+  const db = sampleDb();
+  db.returns = (db.returns || []).concat([
+    { id: 91, kind: '반품', regDate: '2026-09-02', inspection: 'sellable', inspectionAt: '2026-09-05T03:00:00Z' },
+    { id: 92, kind: '반품', regDate: '2026-09-02', inspection: 'damaged', inspectionAt: '2026-09-06T03:00:00Z' },
+    { id: 93, kind: '교환', regDate: '2026-09-03', flowState: 'received' }
+  ]);
+  db.inbound = [
+    { id: 1, status: 'expected', qty: 10, eta: '2026-09-01' },
+    { id: 2, status: 'expected', qty: 5, eta: '2099-01-01' },
+    { id: 3, status: 'received', qty: 7, receivedQty: 7, receivedDate: '2026-09-10' },
+    { id: 4, status: 'received', qty: 3, receivedQty: 3, receivedDate: '2026-08-31' }
+  ];
+  const r = monthlyStats(db, '2026-09', { now: new Date('2026-09-20T12:00:00+09:00') });
+  assert.deepEqual(r.claims.inspection, { sellable: 1, damaged: 1, waiting: 1 });
+  assert.deepEqual(r.inbound, { expected: 2, expectedQty: 15, overdue: 1, received: 1, receivedQty: 7 });
+
+  // 밀이 마켓 페이지에서 팔린 같은 옷은 대표 상품으로 합쳐 센다
+  db.inventory = [{ id: 1, name: 'Wool Coat', color: 'Black', size: 'L', variantCode: 'V-MAIN', aliases: [{ variantCode: 'V-MILLI' }] }];
+  db.orders[2].variantCode = 'V-MAIN';
+  db.orders.push({ id: 10, name: '최가을', orderNo: 'M-1', product: "[밀이's PICK]Wool Coat", size: 'L', qty: 2, status: '발송완료',
+    sentDate: '2026-09-07', invoice: '5555', sourceChannel: 'cafe24', variantCode: 'V-MILLI', epost: { orderNo: 'E5', price: 3500 } });
+  const coat = monthlyStats(db, '2026-09').products.filter(p => /Wool Coat/.test(p.name));
+  assert.equal(coat.length, 1);
+  assert.equal(coat[0].units, 3);
+});

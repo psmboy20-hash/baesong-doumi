@@ -24,6 +24,7 @@ async function loadInquiries() {
   window._inquiriesLoading = false;
   window._inquiries = (r && !r.error) ? r : null; // supported:false 도 정상 응답 — 오류 토스트 없이 그냥 숨김
   if (PAGE === 'home') renderHome();
+  if (PAGE === 'stats') renderStats();
 }
 // 마감 카드: 수거 시각(기본 16:00) 2시간 전부터 펼쳐진다. status.closing 이 없으면(백엔드 미구현) 카드 자체를 숨김
 function closingCardHtml() {

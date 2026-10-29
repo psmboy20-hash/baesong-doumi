@@ -138,9 +138,18 @@ function statsBodyHtml(r) {
   ]);
   const reasonRows = byReason.map(x => `<tr><td>${esc(x.reason || '기타')}</td><td class="num">${x.n || 0}</td></tr>`).join('');
   const productRows = byProduct.map(x => `<tr><td>${esc(x.name || '')}</td><td class="num">${x.n || 0}</td></tr>`).join('');
+  const insp = claims.inspection || {};
+  const inspKpis = kpiStrip([
+    { label: '검수 · 양품(재고로)', value: insp.sellable || 0, unit: '건' },
+    { label: '검수 · 불량(폐기)', value: insp.damaged || 0, unit: '건', tone: insp.damaged ? 'bad' : '' },
+    { label: '도착 · 검수 대기', value: insp.waiting || 0, unit: '건', tone: insp.waiting ? 'hot' : '',
+      onclick: insp.waiting ? "go('returns')" : '' }
+  ]);
   const claimCard = `<div class="card">
     <div class="step-title">클레임</div>
     ${claimKpis}
+    <div class="sub" style="margin:14px 0 6px">반품 검수 (이달)</div>
+    ${inspKpis}
     <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:14px">
       <div style="flex:1;min-width:220px">
         <div class="sub" style="margin-bottom:6px">사유별</div>
@@ -155,5 +164,27 @@ function statsBodyHtml(r) {
     </div>
   </div>`;
 
-  return kpis + amountHint + channelCard + dayCard + prodCard + sizeCard + claimCard;
+  // 입고 (예정은 지금 기준, 완료는 이달)
+  const ib = r.inbound || {};
+  const inboundCard = `<div class="card">
+    <div class="step-title">입고</div>
+    ${kpiStrip([
+      { label: '입고 예정', value: ib.expected || 0, unit: `건 · ${ib.expectedQty || 0}개`, onclick: "window._invTab='inbound';go('inventory')" },
+      { label: '예정일 지남', value: ib.overdue || 0, unit: '건', tone: ib.overdue ? 'hot' : '', onclick: ib.overdue ? "window._invTab='inbound';go('inventory')" : '' },
+      { label: '이달 입고 완료', value: ib.received || 0, unit: `건 · ${ib.receivedQty || 0}개` }
+    ])}
+  </div>`;
+
+  // 카페24 미답변 문의 (서버 15분 캐시 — 홈과 같은 값)
+  if (window._inquiries === undefined) loadInquiries();
+  const iq = window._inquiries;
+  const inquiryBody = !iq
+    ? `<div class="muted">${window._inquiries === undefined ? '불러오는 중…' : '문의 수를 가져오지 못했어요.'}</div>`
+    : !iq.supported
+      ? `<div class="muted">${esc(iq.reason || '문의 수를 볼 수 없어요.')}</div>`
+      : kpiStrip([{ label: '미답변 문의', value: iq.unanswered || 0, unit: '건', tone: iq.unanswered ? 'hot' : '' },
+          ...(iq.boards || []).map(b => ({ label: b.name, value: b.unanswered || 0, unit: '건' }))]);
+  const inquiryCard = `<div class="card"><div class="step-title">카페24 문의 (지금)</div>${inquiryBody}</div>`;
+
+  return kpis + amountHint + channelCard + dayCard + prodCard + sizeCard + claimCard + inboundCard + inquiryCard;
 }
