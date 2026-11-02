@@ -2851,55 +2851,86 @@ async function retryCanceledExternalUpdates(db, allowCafe24) {
 }
 
 // 발송 확정된 건들의 공통 후처리 (송장매칭·API접수 양쪽에서 사용)
+// 발송 1건의 재고 차감. 이미 뺀 수량(stockDeductionDetails)은 다시 빼지 않는다.
+// opts.rowAllowed(inv, stockItem) 가 false 면 그 줄은 건너뛴다(소급 차감에서 실사 이전 발송 제외용).
+function deductShipmentStock(db, type, item, results, opts = {}) {
+  if (!shouldProcessStockDeduction(item) || !item.product) return;
+  const already = new Map(getStockDeductions(item).map(row => [row.sku, row.qty]));
+  const planned = new Map();
+  let missing = false;
+  for (const stockItem of splitShipmentItems(item)) {
+    const matches = selectStockMatches(db.inventory, stockItem, undefined, db.products);
+    if (!matches.length || !inventoryCountKnown(matches[0])) {
+      results.stockMissing.push({ name: item.name, product: stockItem.product, option: [stockItem.color, stockItem.size].filter(Boolean).join(' ') });
+      missing = true;
+      continue;
+    }
+    const inv = matches[0];
+    if (opts.rowAllowed && !opts.rowAllowed(inv, stockItem)) continue;
+    const deductionKey = inv.sku || inventorySku(inv);
+    const current = planned.get(deductionKey) || { inv, qty: 0 };
+    current.qty += Number(stockItem.qty) || 1;
+    planned.set(deductionKey, current);
+  }
+  for (const [sku, row] of planned) {
+    const deduction = availableStockDeduction(row.inv.qty, row.qty, already.get(sku));
+    if (deduction.shortage > 0) {
+      results.stockMissing.push({
+        name: item.name,
+        product: [row.inv.name, row.inv.color, row.inv.size].filter(Boolean).join(' '),
+        option: `재고 ${Math.max(0, Number(row.inv.qty) || 0)}개 · 출고 ${row.qty}개`,
+        reason: '재고 수량 부족'
+      });
+      row.inv.needsCount = true;
+      row.inv.stockIssue = '출고 수량이 현재 재고보다 많아 실사 필요';
+      missing = true;
+    }
+    if (!deduction.deducted) continue;
+    row.inv.qty = deduction.left;
+    results.stock.push({ sku, name: [row.inv.name, row.inv.color, row.inv.size].filter(Boolean).join(' '), minus: deduction.deducted, left: row.inv.qty });
+    logStock(db, row.inv, -deduction.deducted, shipmentStockReason(type, item), stockLedgerRef(item, type), opts.note);
+    recordStockDeduction(item, sku, deduction.deducted);
+  }
+  item.stockDeducted = getStockDeductions(item).length > 0;
+  item.stockDeductionIncomplete = missing;
+}
+
+// 소급 차감 (2026-11-02 사용자 지시): 그동안 재고가 안 빠진 발송분(주로 시딩)을 한 번 뺀다.
+// 사람이 수량을 직접 맞춘 시점(실사·기초재고·직접 수정) 이전에 나간 건은 그 숫자에 이미 반영돼 있으므로 빼지 않는다.
+// 같은 날 발송분은 순서를 알 수 없어 빼지 않고 skippedSameDay 로 남긴다.
+function backfillShippedStock(db) {
+  const localDay = iso => { const d = new Date(iso); return isNaN(d) ? '' : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+  const baselineDay = inv => [inv.lastCountedAt, inv.stockInitAt, inv.stockVerifiedAt].filter(Boolean).map(localDay).sort().pop() || '';
+  const results = { stock: [], stockMissing: [], skippedBeforeCount: 0, skippedSameDay: [] };
+  for (const [type, list] of [['seeding', db.seeding], ['order', db.orders]]) {
+    for (const item of (list || [])) {
+      if (item.status !== '발송완료' || !item.product) continue;
+      // 조금이라도 빠진 기록이 있는 건은 건드리지 않는다 — 예전 재고 줄 코드로 빠진 기록과 지금 줄이 달라 두 번 빠질 수 있음
+      if (item.stockDeducted || getStockDeductions(item).length) { results.skippedPartial = (results.skippedPartial || 0) + 1; continue; }
+      const sent = String(item.sentDate || '').slice(0, 10);
+      if (!sent) continue;
+      deductShipmentStock(db, type, item, results, {
+        note: '소급 차감',
+        rowAllowed: inv => {
+          const base = baselineDay(inv);
+          if (!base || sent > base) return true;
+          if (sent === base) results.skippedSameDay.push({ name: item.name, product: item.product, sent });
+          else results.skippedBeforeCount += 1;
+          return false;
+        }
+      });
+    }
+  }
+  return results;
+}
+
 async function postProcessShipped(db, matchedItems) {
   const results = {};
 
-  // 1) 재고 자동 차감 (제품 이름이 재고 목록과 맞으면)
+  // 1) 재고 자동 차감 (상품코드, 없으면 상품명 → 카페24 상품 → 재고 줄)
   results.stock = [];
   results.stockMissing = [];
-  for (const { type, item } of matchedItems) {
-    const existingDetails = getStockDeductions(item);
-    if (!shouldProcessStockDeduction(item)) continue;
-    if (!item.product) continue;
-    const already = new Map(existingDetails.map(row => [row.sku, row.qty]));
-    const planned = new Map();
-    let missing = false;
-    for (const stockItem of splitShipmentItems(item)) {
-      const matches = selectStockMatches(db.inventory, stockItem, undefined, db.products);
-      if (!matches.length || !inventoryCountKnown(matches[0])) {
-        results.stockMissing.push({ name: item.name, product: stockItem.product, option: [stockItem.color, stockItem.size].filter(Boolean).join(' ') });
-        missing = true;
-        continue;
-      }
-      const inv = matches[0];
-      const deductionKey = inv.sku || inventorySku(inv);
-      const n = Number(stockItem.qty) || 1;
-      const current = planned.get(deductionKey) || { inv, qty: 0 };
-      current.qty += n;
-      planned.set(deductionKey, current);
-    }
-    for (const [sku, row] of planned) {
-      const deduction = availableStockDeduction(row.inv.qty, row.qty, already.get(sku));
-      if (deduction.shortage > 0) {
-        results.stockMissing.push({
-          name: item.name,
-          product: [row.inv.name, row.inv.color, row.inv.size].filter(Boolean).join(' '),
-          option: `재고 ${Math.max(0, Number(row.inv.qty) || 0)}개 · 출고 ${row.qty}개`,
-          reason: '재고 수량 부족'
-        });
-        row.inv.needsCount = true;
-        row.inv.stockIssue = '출고 수량이 현재 재고보다 많아 실사 필요';
-        missing = true;
-      }
-      if (!deduction.deducted) continue;
-      row.inv.qty = deduction.left;
-      results.stock.push({ sku, name: [row.inv.name, row.inv.color, row.inv.size].filter(Boolean).join(' '), minus: deduction.deducted, left: row.inv.qty });
-      logStock(db, row.inv, -deduction.deducted, shipmentStockReason(type, item), stockLedgerRef(item, type));
-      recordStockDeduction(item, sku, deduction.deducted);
-    }
-    item.stockDeducted = getStockDeductions(item).length > 0;
-    item.stockDeductionIncomplete = missing;
-  }
+  for (const { type, item } of matchedItems) deductShipmentStock(db, type, item, results);
 
   // 2) 카페24에 송장번호 자동 등록 + 배송중 처리 (주문건만) — 실패분은 syncAll이 같은 함수로 재시도
   results.cafe24 = await pushCafe24Shipments(db, matchedItems);
@@ -4673,6 +4704,26 @@ server.on('error', e => {
   }
   throw e;
 });
+
+// 한 번만 도는 데이터 정리 — 메인 서버(장부 주인)에서만
+if (CLOUD_WRITER) {
+  try {
+    const db = loadDb();
+    if (!db.migrations) db.migrations = {};
+    if (!db.migrations.stockBackfill20261102) {
+      const r = backfillShippedStock(db);
+      const units = r.stock.reduce((sum, row) => sum + row.minus, 0);
+      db.migrations.stockBackfill20261102 = {
+        at: new Date().toISOString(), units, lines: r.stock.length,
+        skippedBeforeCount: r.skippedBeforeCount, skippedPartial: r.skippedPartial || 0, skippedSameDay: r.skippedSameDay.slice(0, 50),
+        missing: r.stockMissing.slice(0, 100)
+      };
+      saveDb(db);
+      audit('stock.backfill', { count: units, rev: db.rev });
+      console.log(`소급 재고 차감: ${units}개 (${r.stock.length}줄), 실사 이전 제외 ${r.skippedBeforeCount}, 같은 날 ${r.skippedSameDay.length}, 못 찾음 ${r.stockMissing.length}`);
+    }
+  } catch (e) { console.error('소급 재고 차감 실패:', e.message); }
+}
 
 server.listen(PORT, BIND_HOST, () => {
   console.log('배송 도우미 실행됨 → http://localhost:' + PORT);
