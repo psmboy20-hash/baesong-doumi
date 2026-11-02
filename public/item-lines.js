@@ -248,12 +248,15 @@
     const flat = v => String(v || '').toLowerCase().replace(/[^a-z0-9가-힣]/g, '');
     const sizeOf = v => /^(f|free|프리|원사이즈|onesize)$/.test(flat(v)) ? 'free' : flat(v);
     const no = String(productNo);
-    let rows = (inventory || []).filter(row => !row.retiredAggregate &&
-      (String(row.productNo) === no || (Array.isArray(row.aliases) && row.aliases.some(a => String(a.productNo) === no))) &&
-      (!sizeOf(size) || sizeOf(row.size) === sizeOf(size) || (!sizeOf(row.size) && sizeOf(size) === 'free')));
     // 지금 카페24 옵션에 연결된 줄(옵션 코드 있음)이 있으면 예전에 남은 줄보다 그쪽을 쓴다
-    if (rows.length > 1 && rows.some(row => row.variantCode)) rows = rows.filter(row => row.variantCode);
+    const current = list => list.length > 1 && list.some(row => row.variantCode) ? list.filter(row => row.variantCode) : list;
+    const ofProduct = current((inventory || []).filter(row => !row.retiredAggregate &&
+      (String(row.productNo) === no || (Array.isArray(row.aliases) && row.aliases.some(a => String(a.productNo) === no)))));
+    const rows = current(ofProduct.filter(row =>
+      !sizeOf(size) || sizeOf(row.size) === sizeOf(size) || (!sizeOf(row.size) && sizeOf(size) === 'free')));
     if (rows.length === 1) return rows[0];
+    // 사이즈가 하나뿐인 옷(Free)인데 시딩에 S·M 처럼 적혀 온 경우 — 그 옷의 재고 줄이 하나면 그 줄이다
+    if (!rows.length && ofProduct.length === 1) return ofProduct[0];
     const byColor = color ? rows.filter(row => flat(row.color) === flat(color)) : [];
     return byColor.length === 1 ? byColor[0] : null;
   }

@@ -4710,17 +4710,19 @@ if (CLOUD_WRITER) {
   try {
     const db = loadDb();
     if (!db.migrations) db.migrations = {};
-    if (!db.migrations.stockBackfill20261102) {
+    // b: Free 하나뿐인 옷을 S·M 으로 적은 시딩까지 찾도록 고친 뒤 남은 건을 한 번 더 (이미 뺀 건은 기록이 있어 건너뜀)
+    for (const key of ['stockBackfill20261102', 'stockBackfill20261102b']) {
+      if (db.migrations[key]) continue;
       const r = backfillShippedStock(db);
       const units = r.stock.reduce((sum, row) => sum + row.minus, 0);
-      db.migrations.stockBackfill20261102 = {
+      db.migrations[key] = {
         at: new Date().toISOString(), units, lines: r.stock.length,
         skippedBeforeCount: r.skippedBeforeCount, skippedPartial: r.skippedPartial || 0, skippedSameDay: r.skippedSameDay.slice(0, 50),
         missing: r.stockMissing.slice(0, 100)
       };
       saveDb(db);
       audit('stock.backfill', { count: units, rev: db.rev });
-      console.log(`소급 재고 차감: ${units}개 (${r.stock.length}줄), 실사 이전 제외 ${r.skippedBeforeCount}, 같은 날 ${r.skippedSameDay.length}, 못 찾음 ${r.stockMissing.length}`);
+      console.log(`소급 재고 차감(${key}): ${units}개 (${r.stock.length}줄), 실사 이전 제외 ${r.skippedBeforeCount}, 같은 날 ${r.skippedSameDay.length}, 못 찾음 ${r.stockMissing.length}`);
     }
   } catch (e) { console.error('소급 재고 차감 실패:', e.message); }
 }

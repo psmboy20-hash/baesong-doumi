@@ -927,4 +927,7 @@ test('시딩(상품코드 없음)도 상품명 → 카페24 상품 → 재고 �
   assert.deepEqual(pick({ product: 'K#01_Rosie Lace Satin Skirt(Black)', size: 'F' }), ['ROSIE-BK']);
   // 사이즈를 모르면 어느 줄인지 알 수 없으니 빼지 않는다
   assert.deepEqual(pick({ product: 'B#05_Tessa Pigment Pants(Brown)', size: '' }), []);
+  // Free 하나뿐인 옷을 시딩에 S 로 적어도 그 옷의 재고에서 뺀다 (사이즈 여러 개인 옷에 없는 사이즈는 여전히 모름)
+  assert.deepEqual(pick({ product: 'K#01_Rosie Lace Satin Skirt(Black)', size: 'S' }), ['ROSIE-BK']);
+  assert.deepEqual(pick({ product: 'B#05_Tessa Pigment Pants(Brown)', size: 'XL' }), []);
 });
