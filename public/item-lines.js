@@ -246,10 +246,13 @@
   // 이름으로 찾은 제품(시딩 등 코드 없는 줄) → 같은 재고 줄. 그 제품·사이즈(·색상)에 맞는 줄이 딱 하나일 때만.
   function stockRowForProduct(inventory, productNo, color, size) {
     const flat = v => String(v || '').toLowerCase().replace(/[^a-z0-9가-힣]/g, '');
+    const sizeOf = v => /^(f|free|프리|원사이즈|onesize)$/.test(flat(v)) ? 'free' : flat(v);
     const no = String(productNo);
-    const rows = (inventory || []).filter(row => !row.retiredAggregate &&
+    let rows = (inventory || []).filter(row => !row.retiredAggregate &&
       (String(row.productNo) === no || (Array.isArray(row.aliases) && row.aliases.some(a => String(a.productNo) === no))) &&
-      (!flat(size) || flat(row.size) === flat(size) || (!flat(row.size) && /^(free|f)$/.test(flat(size)))));
+      (!sizeOf(size) || sizeOf(row.size) === sizeOf(size) || (!sizeOf(row.size) && sizeOf(size) === 'free')));
+    // 지금 카페24 옵션에 연결된 줄(옵션 코드 있음)이 있으면 예전에 남은 줄보다 그쪽을 쓴다
+    if (rows.length > 1 && rows.some(row => row.variantCode)) rows = rows.filter(row => row.variantCode);
     if (rows.length === 1) return rows[0];
     const byColor = color ? rows.filter(row => flat(row.color) === flat(color)) : [];
     return byColor.length === 1 ? byColor[0] : null;

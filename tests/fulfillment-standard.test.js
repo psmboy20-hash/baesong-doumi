@@ -911,3 +911,20 @@ test('한 사람이 옵션별로 2·5·8개, 또 같은 옷을 다른 주문으�
   assert.equal(states.get(2).state, 'enough');
   assert.equal(states.get(5).available, 7); // S 재고 10 − 2 − 1
 });
+
+test('시딩(상품코드 없음)도 상품명 → 카페24 상품 → 재고 줄로 찾아 재고를 뺀다', () => {
+  const { selectStockMatches } = require('../lib/operations');
+  const products = [{ no: 68, name: 'K#01_Rosie Lace Satin Skirt(Black)' }, { no: 50, name: 'B#05_Tessa Pigment Pants(Brown)' }];
+  const inventory = [
+    { sku: 'ROSIE-BK', name: 'K#01_Rosie Lace Satin Skirt(Black)', color: '블랙', size: 'Free', qty: 6, variantCode: 'V1', productNo: 68 },
+    { sku: 'OLD-ROSIE', name: 'K#01_Rosie Lace Satin Skirt(Black)', color: 'Black', size: '', qty: 0, productNo: 68 },
+    { sku: 'TESSA-S', name: 'B#05_Tessa Pigment Pants(Brown)', color: '밤색', size: 'S', qty: 29, variantCode: 'V2', productNo: 50 },
+    { sku: 'TESSA-M', name: 'B#05_Tessa Pigment Pants(Brown)', color: '밤색', size: 'M', qty: 20, variantCode: 'V3', productNo: 50 }
+  ];
+  const pick = item => selectStockMatches(inventory, item, undefined, products).map(r => r.sku);
+  // 한글 컬러(밤색)·영문 상품명(Brown)이어도, F ↔ Free 표기가 달라도 맞는 줄을 찾고, 예전에 남은 빈 줄은 고르지 않는다
+  assert.deepEqual(pick({ product: 'B#05_Tessa Pigment Pants(Brown)', size: 'M' }), ['TESSA-M']);
+  assert.deepEqual(pick({ product: 'K#01_Rosie Lace Satin Skirt(Black)', size: 'F' }), ['ROSIE-BK']);
+  // 사이즈를 모르면 어느 줄인지 알 수 없으니 빼지 않는다
+  assert.deepEqual(pick({ product: 'B#05_Tessa Pigment Pants(Brown)', size: '' }), []);
+});

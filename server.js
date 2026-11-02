@@ -2545,7 +2545,7 @@ function prepareReturnCompletion(db, ret, restock) {
   const returnItems = ret ? returnLineItems(ret) : [];
   const restockPlan = !ret || ret.localCompleted || restock === false
     ? { rows: [], missing: [] }
-    : buildReturnRestockPlan(returnItems, item => selectStockMatches(db.inventory, item));
+    : buildReturnRestockPlan(returnItems, item => selectStockMatches(db.inventory, item, undefined, db.products));
   const safety = returnCompletionSafety(ret, { restock, stockMissing: restockPlan.missing });
   return { returnItems, restockPlan, safety };
 }
@@ -2865,7 +2865,7 @@ async function postProcessShipped(db, matchedItems) {
     const planned = new Map();
     let missing = false;
     for (const stockItem of splitShipmentItems(item)) {
-      const matches = selectStockMatches(db.inventory, stockItem);
+      const matches = selectStockMatches(db.inventory, stockItem, undefined, db.products);
       if (!matches.length || !inventoryCountKnown(matches[0])) {
         results.stockMissing.push({ name: item.name, product: stockItem.product, option: [stockItem.color, stockItem.size].filter(Boolean).join(' ') });
         missing = true;
