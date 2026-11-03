@@ -1,5 +1,6 @@
 # 장부/개인정보 - 절대 저장소에 올리지 않음
 data/
+data.before-*/
 .qa-data-*/
 .qa-server.*
 계정메모.md
