@@ -384,13 +384,15 @@ test('claim code 응답 모양과 작업키를 안정적으로 처리한다', ()
 
 test('unansweredArticleCount: admin replies, notices and answered threads are not open inquiries', () => {
   const { unansweredArticleCount } = require('../lib/claims');
+  // 실제 카페24 Q&A 모양: 원글 depth 0·parent null, 답글 depth 1+·parent=윗글, 답글의 reply_status 는 null
   const articles = [
-    { article_no: 10, parent_article_no: 10, reply_depth: 1, reply_status: 'N' }, // 답글 달림
-    { article_no: 11, parent_article_no: 10, reply_depth: 2 },                    // 관리자 답글
-    { article_no: 12, parent_article_no: 12, reply_depth: 1, reply_status: 'C' }, // 답변완료
-    { article_no: 13, parent_article_no: 13, reply_depth: 1, notice: 'T' },       // 공지
-    { article_no: 14, parent_article_no: 14, reply_depth: 1, deleted: 'T' },      // 삭제
-    { article_no: 15, parent_article_no: 15, reply_depth: 1, reply_status: 'N' }  // 진짜 미답변
+    { article_no: 10, parent_article_no: null, reply_depth: 0, reply_status: 'N' }, // 답글 달림
+    { article_no: 11, parent_article_no: 10, reply_depth: 1, reply_status: null },  // 관리자 답글
+    { article_no: 16, parent_article_no: 11, reply_depth: 2, reply_status: null },  // 답글의 답글
+    { article_no: 12, parent_article_no: null, reply_depth: 0, reply_status: 'C' }, // 답변완료
+    { article_no: 13, parent_article_no: null, reply_depth: 0, notice: 'T' },       // 공지
+    { article_no: 14, parent_article_no: null, reply_depth: 0, deleted: 'T' },      // 삭제
+    { article_no: 15, parent_article_no: null, reply_depth: 0, reply_status: 'N' }  // 진짜 미답변
   ];
   assert.equal(unansweredArticleCount(articles), 1);
   assert.equal(unansweredArticleCount(null), 0);
