@@ -74,9 +74,16 @@ cat > "$AGENTS/$UPDATE_LABEL.plist" <<EOF
 </dict></plist>
 EOF
 
+# 은퇴 때 disable 해 둔 라벨은 bootstrap 이 "5: Input/output error" 로 실패한다 → enable 먼저.
+# bootout 은 비동기라 바로 bootstrap 하면 같은 오류가 나므로 몇 번 다시 시도한다.
 for label in "$LABEL" "$UPDATE_LABEL"; do
+  launchctl enable "gui/$UID_NOW/$label"
   launchctl bootout "gui/$UID_NOW/$label" 2>/dev/null || true
-  launchctl bootstrap "gui/$UID_NOW" "$AGENTS/$label.plist"
+  for try in 1 2 3 4 5; do
+    launchctl bootstrap "gui/$UID_NOW" "$AGENTS/$label.plist" 2>/dev/null && break
+    [ "$try" = 5 ] && launchctl bootstrap "gui/$UID_NOW" "$AGENTS/$label.plist"
+    sleep 2
+  done
 done
 git rev-parse HEAD > "$HOME/.ham-deployed-sha"
 
