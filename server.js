@@ -184,7 +184,8 @@ const {
   claimCancelUnresolved,
   resolveClaimCodeFromItems,
   missingCafe24ExchangeTargets,
-  returnCompletionSafety
+  returnCompletionSafety,
+  unansweredArticleCount
 } = require('./lib/claims');
 
 const PORT = Number(process.env.HAM_PORT) || 8899;
@@ -965,7 +966,7 @@ async function cafe24WriteClaim(db, ret, action, values) {
 // ---------- 카페24 문의(게시판) 미답변 수 ----------
 // 게시판 API 는 mall.read_community 권한이 있어야 한다 — 예전에 연결한 토큰에는 없으므로
 // 권한이 없거나 조회에 실패하면 오류가 아니라 supported:false 로 알려주고 화면은 "재연결하면 볼 수 있어요"만 띄운다.
-const INQUIRY_CACHE_MS = 15 * 60 * 1000;
+const INQUIRY_CACHE_MS = 5 * 60 * 1000; // 답을 달고 나서 숫자가 너무 늦게 줄지 않게 짧게
 let inquiryCache = { at: 0, value: null };
 
 function inquiryUnsupported(reason) {
@@ -996,8 +997,7 @@ async function cafe24Inquiries(db) {
         // 최근 100건만 본다 (배지용 숫자라 전체를 훑지 않는다)
         const articles = await cafe24Fetch(db, token, '/api/v2/admin/boards/' + boardNo + '/articles?limit=100');
         if (articles.status !== 200 || !articles.json) continue;
-        const open = (articles.json.articles || []).filter(article =>
-          String(article.reply_status || 'N').toUpperCase() !== 'C').length;
+        const open = unansweredArticleCount(articles.json.articles);
         unanswered += open;
         rows.push({ board_no: boardNo, name: String(board.board_name || board.name || ('게시판 ' + boardNo)), unanswered: open });
       }

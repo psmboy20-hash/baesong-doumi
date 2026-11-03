@@ -381,3 +381,17 @@ test('claim code 응답 모양과 작업키를 안정적으로 처리한다', ()
   assert.equal(claimCancelUnresolved({ flowState: 'hold', syncOps: { cancel: { state: 'failed' } } }), true);
   assert.equal(claimCancelUnresolved({ flowState: 'canceled', syncOps: { cancel: { state: 'failed' } } }), false);
 });
+
+test('unansweredArticleCount: admin replies, notices and answered threads are not open inquiries', () => {
+  const { unansweredArticleCount } = require('../lib/claims');
+  const articles = [
+    { article_no: 10, parent_article_no: 10, reply_depth: 1, reply_status: 'N' }, // 답글 달림
+    { article_no: 11, parent_article_no: 10, reply_depth: 2 },                    // 관리자 답글
+    { article_no: 12, parent_article_no: 12, reply_depth: 1, reply_status: 'C' }, // 답변완료
+    { article_no: 13, parent_article_no: 13, reply_depth: 1, notice: 'T' },       // 공지
+    { article_no: 14, parent_article_no: 14, reply_depth: 1, deleted: 'T' },      // 삭제
+    { article_no: 15, parent_article_no: 15, reply_depth: 1, reply_status: 'N' }  // 진짜 미답변
+  ];
+  assert.equal(unansweredArticleCount(articles), 1);
+  assert.equal(unansweredArticleCount(null), 0);
+});
