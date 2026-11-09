@@ -557,28 +557,52 @@ async function cafe24TokenRequest(db, params) {
   if (r.status !== 200 || !r.json || !r.json.access_token) {
     throw new Error('카페24 토큰 발급 실패 (' + r.status + '): ' + (r.json && (r.json.error_description || r.json.error) || r.text.slice(0, 200)));
   }
-  db.cafe24Token = {
+  const token = {
     access_token: r.json.access_token,
     refresh_token: r.json.refresh_token,
     expires_at: r.json.expires_at || new Date(Date.now() + 110 * 60 * 1000).toISOString(),
     refresh_expires_at: r.json.refresh_token_expires_at || new Date(Date.now() + 13 * 86400 * 1000).toISOString()
   };
-  saveDb(db);
+  db.cafe24Token = token;
+  // 새 토큰은 받는 순간 옛 토큰이 폐기된다 — 호출한 쪽이 들고 있던 옛 장부(rev)로 저장하면 '장부가 먼저 바뀌었어요'로
+  // 저장이 거부돼 새 토큰을 잃고 장부엔 폐기된 토큰만 남는다(2026-10-06, 11-07 연결 끊김). 최신 장부에 토큰만 넣어 저장한다.
+  const fresh = loadDb();
+  const callerCurrent = Number(db.rev || 0) === Number(fresh.rev || 0);
+  fresh.cafe24Token = token;
+  saveDb(fresh);
+  if (callerCurrent) db.rev = fresh.rev; // 호출한 쪽 장부가 최신이었으면 토큰만 바뀐 것이라 이어서 저장해도 된다
 }
 async function cafe24ExchangeCode(db, code) {
   await cafe24TokenRequest(db, { grant_type: 'authorization_code', code, redirect_uri: cafe24RedirectUri(db) });
   // 재연결하면 권한이 새로 붙으므로 "재고 수정 권한 없음" 표시를 푼다 (갱신 토큰은 옛 권한 그대로라 여기서만 푼다)
-  if (db.channelStockScopeMissing) { delete db.channelStockScopeMissing; saveDb(db); }
+  const fresh = loadDb();
+  if (fresh.channelStockScopeMissing) { delete fresh.channelStockScopeMissing; saveDb(fresh); }
+  delete db.channelStockScopeMissing;
 }
+let cafe24RefreshInFlight = null; // 갱신은 한 번에 하나만 — 같은 갱신 토큰을 두 번 쓰면 카페24가 폐기한다
 async function cafe24EnsureToken(db) {
-  const t = db.cafe24Token;
+  const fresh = t => t && new Date(t.expires_at).getTime() - Date.now() > 5 * 60 * 1000;
+  let t = db.cafe24Token;
+  if (fresh(t)) return t.access_token;
+  // 다른 작업이 이미 갱신해 장부에 넣었을 수 있다 — 들고 있던 옛 토큰으로 다시 갱신하지 않는다
+  const diskDb = loadDb();
+  const wasCurrent = Number(db.rev || 0) === Number(diskDb.rev || 0);
+  const disk = diskDb.cafe24Token;
+  if (disk) { db.cafe24Token = disk; t = disk; }
   if (!t) throw new Error('카페24가 아직 연결되지 않았어요. 설정에서 [카페24 연결하기]를 눌러 주세요.');
-  const now = Date.now();
-  if (new Date(t.expires_at).getTime() - now > 5 * 60 * 1000) return t.access_token;
-  if (new Date(t.refresh_expires_at).getTime() <= now) {
+  if (fresh(t)) return t.access_token;
+  if (new Date(t.refresh_expires_at).getTime() <= Date.now()) {
     throw new Error('카페24 연결이 만료됐어요(2주 경과). 설정에서 [카페24 연결하기]를 다시 눌러 주세요.');
   }
-  await cafe24TokenRequest(db, { grant_type: 'refresh_token', refresh_token: t.refresh_token });
+  if (!cafe24RefreshInFlight) {
+    cafe24RefreshInFlight = cafe24TokenRequest({ settings: db.settings, cafe24Token: t }, { grant_type: 'refresh_token', refresh_token: t.refresh_token })
+      .finally(() => { cafe24RefreshInFlight = null; });
+  }
+  await cafe24RefreshInFlight;
+  const after = loadDb();
+  db.cafe24Token = after.cafe24Token;
+  // 갱신 저장으로 장부 rev 가 하나 올랐다 — 그사이 다른 변경이 없었으면 호출한 쪽도 이어서 저장할 수 있게 맞춘다
+  if (wasCurrent && Number(after.rev || 0) === Number(diskDb.rev || 0) + 1) db.rev = after.rev;
   return db.cafe24Token.access_token;
 }
 
