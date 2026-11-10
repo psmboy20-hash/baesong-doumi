@@ -466,10 +466,13 @@ async function saveSettings() {
   toast('설정을 저장했어요.');
 }
 async function cafe24Connect() {
+  // 새 창은 클릭 직후에 열어야 한다 — 서버에 다녀온 뒤 열면 브라우저가 팝업으로 보고 막는다
+  const win = window.open('', '_blank');
   await saveSettings();
   const r = await api('/api/cafe24/authurl');
-  if (r.error) { toast(r.error, 6000); return; }
-  window.open(r.url, '_blank');
+  if (r.error) { if (win) win.close(); toast(r.error, 6000); return; }
+  if (win) win.location.href = r.url;
+  else location.href = r.url; // 그래도 막히면 이 창에서 바로 카페24로 간다
   toast('카페24 로그인 창이 열렸어요. 로그인하고 [동의]를 눌러 주세요.', 6000);
 }
 async function cafe24PasteCode() {
