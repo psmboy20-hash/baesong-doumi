@@ -67,6 +67,47 @@ test('기초재고: ids 를 주면 그 줄만 보고, 대상이 아니면 skippe
   assert.equal(db.stockLog.length, 1);
 });
 
+test('기초재고: 실사·직접 조정·기초재고 표식이 있으면 0·음수·확인필요 수량도 덮어쓰지 않는다', () => {
+  const inventory = [];
+  for (const marker of ['lastCountedAt', 'stockVerifiedAt', 'stockInitAt']) {
+    for (const qty of [0, -1, 3]) {
+      const id = inventory.length + 1;
+      inventory.push({
+        id, name: '확인한 코트', sku: `C24V-${id}`, qty, cafe24Qty: 9,
+        needsCount: true, stockIssue: '다시 확인 필요', [marker]: NOW.toISOString()
+      });
+    }
+  }
+  const db = { inventory, stockLog: [] };
+  const before = structuredClone(db);
+  const r = initFromCafe24(db, { ids: inventory.map(inv => inv.id), now: new Date('2026-09-07T00:00:00Z') });
+  assert.deepEqual(r, { applied: 0, skipped: 9, rows: [] });
+  assert.deepEqual(db, before, '수량뿐 아니라 확인필요 상태·기존 표식·장부도 그대로 둔다');
+});
+
+test('기초재고: 0개로 실사한 줄은 이후 카페24 수량이 있어도 다시 채우지 않는다', () => {
+  const db = baseDb();
+  const counted = applyStocktake(db, [{ id: 1, counted: 0 }], { now: NOW });
+  assert.equal(counted.unchanged, 1);
+  const before = structuredClone(db);
+  const r = initFromCafe24(db, { ids: [1], now: new Date('2026-09-07T00:00:00Z') });
+  assert.deepEqual(r, { applied: 0, skipped: 1, rows: [] });
+  assert.deepEqual(db, before);
+});
+
+test('기초재고: 처음 가져온 0개도 기초재고 표식으로 보호하고 미확인 0개는 계속 채운다', () => {
+  const db = baseDb();
+  db.inventory[0].cafe24Qty = 0;
+  assert.equal(initFromCafe24(db, { ids: [1], now: NOW }).applied, 1);
+  db.inventory[0].cafe24Qty = 8;
+  const r = initFromCafe24(db, { now: new Date('2026-09-07T00:00:00Z') });
+  assert.deepEqual(r.rows, [{ id: 3, sku: 'C24V-3', qty: 7 }]);
+  assert.equal(r.skipped, 2);
+  assert.equal(db.inventory[0].qty, 0);
+  assert.equal(db.inventory[0].stockInitAt, NOW.toISOString());
+  assert.equal(db.stockLog.some(e => e.sku === 'C24V-1'), false);
+});
+
 // ── 2. 재고 실사 ────────────────────────────────────────────────────────────
 test('실사: ± 차이는 재고 조정으로 기록하고 차이 0은 조정 없이 확인만 남긴다', () => {
   const db = baseDb();

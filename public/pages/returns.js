@@ -397,8 +397,14 @@ async function returnPickup(id, name) {
   const c24 = ret.sourceChannel === 'cafe24' ? '\n· 카페24 교환·반품 접수를 승인하고 회수 송장을 등록해요' : '';
   if (!confirm(`${name}님 ${ret.kind || '반품'}을 진행할까요?\n\n· 우체국에 회수를 접수해 기사님이 고객 집으로 방문해요${c24}\n· 회수된 물건은 우리 발송지로 배달돼요\n· 택배 요금은 우리(계약) 앞으로 청구돼요`)) return;
   busy(true, '우체국에 회수를 신청하는 중…');
-  const r = await api('/api/return/pickup', { method: 'POST', body: JSON.stringify({ id }) });
+  let r = await api('/api/return/pickup', { method: 'POST', body: JSON.stringify({ id }) });
   busy(false);
+  if (r.externalPickupConfirmationRequired) {
+    if (!confirm(`${r.error}\n\n우체국에서 기존 회수를 취소했나요?\n[확인] = 기존 회수를 취소했어요 · 새 회수 신청`)) return;
+    busy(true, '우체국에 회수를 신청하는 중…');
+    r = await api('/api/return/pickup', { method: 'POST', body: JSON.stringify({ id, confirmExternalCanceled: true }) });
+    busy(false);
+  }
   if (r.error) { toast(r.error, 8000); return; }
   adoptDb(r.db);
   render();
@@ -473,11 +479,15 @@ async function returnComplete(id, name, kind, inspection) {
   if (r.warning) setTimeout(() => alert(r.warning), 200);
 }
 async function returnCancel(id, scope, name) {
+  const ret = (DB.returns || []).find(r => r.id === id);
+  const pickupNote = ret && ret.manualPickup && ret.invoice
+    ? '직접 입력한 회수는 자동 취소되지 않아요. 우체국에서 기존 회수를 따로 취소해 주세요'
+    : '우체국 회수가 있으면 함께 취소돼요';
   const q = scope === 'delete'
     ? `${name}님의 교환/반품 기록을 완전히 지울까요?\n\n· 한 번 지우면 되돌릴 수 없어요\n· 기록만 남겨두려면 [취소]를 누르세요`
     : scope === 'pickup'
       ? `${name}님의 우체국 방문 회수만 취소할까요?\n\n· 카페24 교환·반품 접수는 그대로 남아요\n· 나중에 회수를 다시 신청할 수 있어요`
-      : `${name}님의 교환·반품을 전체 취소할까요?\n\n· 우체국 회수가 있으면 함께 취소돼요\n· 카페24 접수도 함께 취소돼요`;
+      : `${name}님의 교환·반품을 전체 취소할까요?\n\n· ${pickupNote}\n· 카페24 접수도 함께 취소돼요`;
   if (!confirm(q)) return;
   busy(true, '처리하는 중…');
   const r = await api('/api/return/cancel', { method: 'POST', body: JSON.stringify({ id, scope }) });

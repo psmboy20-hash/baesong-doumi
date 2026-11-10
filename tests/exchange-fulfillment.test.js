@@ -175,7 +175,7 @@ test('혼합 합포장에 외부 송장을 반영해도 교환 행은 원주문 
   const db = exchangeDb();
   db.orders[0] = { ...db.orders[0], status: '대기', invoice: '', epost: undefined };
   const server = loadFunctions('server.js', ['adoptExternalShipment'], { today: () => '2026-10-06' });
-  server.adoptExternalShipment(db, { items: db.orders.map(item => ({ type: 'order', item })) }, { tracking: '6890178073141', carrierCode: '0012' });
+  server.adoptExternalShipment(db, { items: db.orders.map(item => ({ type: 'order', item })) }, { orderNo: db.orders[0].orderNo, itemCodes: [db.orders[0].orderItemCode], tracking: '6890178073141', carrierCode: '0012' });
   assert.equal(db.orders[0].status, '발송완료');
   assert.equal(db.orders[1].status, '대기');
   assert.equal(db.orders[1].invoice, undefined);

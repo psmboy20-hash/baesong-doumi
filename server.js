@@ -50,6 +50,7 @@ const {
   groupCafe24ShipmentItems,
   cafe24ShipmentItemsReady,
   shipmentOperationKey,
+  cafe24ShipmentCodes,
   classifyCafe24Shipment,
   setExternalSyncState,
   clearExternalSyncState,
@@ -2963,21 +2964,29 @@ async function postProcessShipped(db, matchedItems) {
   return await finishPostProcessShipped(db, matchedItems, results);
 }
 
-// 접수 직전 이중 접수 방지: 카페24에 이미 이 주문의 송장이 있으면(매장 PC 등 다른 곳에서 먼저 접수) 여기서 또 접수하지 않는다
-async function cafe24ExistingShipment(db, orderNo) {
+// 접수 직전 이중 접수 방지: 선택한 품목이 이미 발송됐는지 확인한다
+async function cafe24ExistingShipment(db, orderNo, itemCodes) {
   if (!(cafe24Configured(db) && db.cafe24Token) || !orderNo) return null;
   const token = await cafe24EnsureToken(db);
   const r = await cafe24Fetch(db, token, `/api/v2/admin/orders/${orderNo}/shipments`);
   if (r.status !== 200 || !r.json) throw new Error('카페24 송장 확인 실패(' + r.status + ')');
-  const hit = (r.json.shipments || []).find(s => String(s.tracking_no || '').replace(/\D/g, ''));
+  const requested = (itemCodes || []).map(code => String(code || '').trim());
+  const expected = [...new Set(requested.filter(Boolean))];
+  const shipments = (r.json.shipments || []).filter(s => String(s.tracking_no || '').replace(/\D/g, ''));
+  const hit = expected.length && requested.every(Boolean) && shipments.find(s => expected.every(code => cafe24ShipmentCodes(s).includes(code)));
+  if (!hit && shipments.some(s => cafe24ShipmentCodes(s).some(code => expected.includes(code)))) {
+    const partial = new Error('선택한 일부 상품에만 카페24 송장이 있어요. 합포장을 풀고 이미 보낸 상품과 남은 상품을 확인해 주세요.');
+    partial.partialShipment = true;
+    throw partial;
+  }
   if (!hit) return null;
-  return { tracking: String(hit.tracking_no).replace(/\D/g, ''), carrierCode: String(hit.shipping_company_code || ''), updatedAt: hit.tracking_no_updated_date || '' };
+  return { orderNo, itemCodes: expected, tracking: String(hit.tracking_no).replace(/\D/g, ''), carrierCode: String(hit.shipping_company_code || ''), updatedAt: hit.tracking_no_updated_date || '' };
 }
 // 다른 곳에서 이미 접수된 주문을 그 송장으로 '보냄' 처리 (우리 접수는 하지 않음)
 function adoptExternalShipment(db, g, found) {
   const courier = found.carrierCode === '0012' ? '우체국' : '기타';
   for (const { type, item } of g.items) {
-    if (type !== 'order' || item.exchange) continue;
+    if (type !== 'order' || item.exchange || item.orderNo !== found.orderNo || !found.itemCodes.includes(String(item.orderItemCode || '').trim())) continue;
     item.invoice = found.tracking;
     item.courier = courier;
     item.status = '발송완료';
@@ -3272,11 +3281,16 @@ const server = http.createServer((req, res) => {
       const db = loadDb();
       const inv = (db.inventory || []).find(i => i.id === b.id);
       if (!inv) return sendJson(res, 200, { error: '해당 재고를 찾지 못했어요.' });
-      const d = Number(b.delta);
-      if (!Number.isSafeInteger(d)) return sendJson(res, 200, { error: '수량은 정수로 적어 주세요.' });
-      if (!d) return sendJson(res, 200, { error: '변경할 개수가 없어요.' });
       const before = Number(inv.qty) || 0;
-      inv.qty = Math.max(0, before + d);
+      const absolute = b.target !== undefined;
+      if (absolute && (!Number.isSafeInteger(b.target) || b.target < 0 || !Number.isSafeInteger(b.orig))) {
+        return sendJson(res, 200, { error: '실제 수량과 기존 수량은 0 이상의 정수로 적어 주세요.' });
+      }
+      if (absolute && before !== b.orig) return sendJson(res, 200, { error: `그 사이 재고가 ${before}개로 바뀌었어요. 새로고침한 뒤 다시 세 주세요.` });
+      const d = absolute ? b.target - before : Number(b.delta);
+      if (!Number.isSafeInteger(d)) return sendJson(res, 200, { error: '수량은 정수로 적어 주세요.' });
+      if (!absolute && !d) return sendJson(res, 200, { error: '변경할 개수가 없어요.' });
+      inv.qty = absolute ? b.target : Math.max(0, before + d);
       inv.needsCount = false;
       inv.stockVerifiedAt = new Date().toISOString(); // 사람이 직접 수량을 만진 줄 — 채널 반영 대상 표식
       if (inv.variantCode && inv.productNo) {
@@ -3297,7 +3311,7 @@ const server = http.createServer((req, res) => {
       }
       const applied = inv.qty - before;
       // 입출고 구분(본사 입고·샘플 출고 등)과 메모는 화면에서 고른 값을 쓰고, 없으면 직접 입고/차감으로
-      const wanted = String(b.reason || '').trim();
+      const wanted = absolute ? (applied > 0 ? '재고 조정 (+)' : '재고 조정 (−)') : String(b.reason || '').trim();
       const allowedReasons = applied > 0 ? STOCK_MOVE_REASONS.in : STOCK_MOVE_REASONS.out;
       const reason = allowedReasons.includes(wanted) ? wanted : (applied > 0 ? '입고 (직접)' : '차감 (직접)');
       if (applied) logStock(db, inv, applied, reason, '', String(b.memo || '').trim().slice(0, 80));
@@ -3668,12 +3682,24 @@ const server = http.createServer((req, res) => {
       for (const g of groups.values()) {
         idx++;
         const orderNo = 'HAM' + Date.now() + '-' + idx;
-        // 접수 전 검증 0: 카페24에 이미 이 주문의 송장이 있으면(다른 컴퓨터·매장 PC에서 먼저 접수) 이중 접수 금지
-        const c24OrderNos = cafe24ExistingShipmentOrderNos(g.items);
+        // 접수 전 검증 0: 선택 품목의 기존 송장을 확인해 이중 접수를 막는다
+        const c24OrderNos = cafe24Configured(db) && db.cafe24Token ? cafe24ExistingShipmentOrderNos(g.items) : [];
         let external = null;
+        let externalError = '';
         for (const no of c24OrderNos) {
-          try { external = await cafe24ExistingShipment(db, no); if (external) break; }
-          catch (e) { console.error('카페24 기존 송장 확인 실패:', e.message); }
+          const items = g.items.filter(({ type, item }) => type === 'order' && !item.exchange && item.orderNo === no).map(({ item }) => item);
+          try {
+            external = await cafe24ExistingShipment(db, no, items.map(item => item.orderItemCode));
+            if (external) break;
+          } catch (e) {
+            // 일부만 발송된 포장은 멈추고, 카페24 조회 자체가 실패한 건 예전처럼 접수를 막지 않는다
+            if (e.partialShipment) { externalError = e.message; break; }
+            console.error('카페24 기존 송장 확인 실패:', e.message);
+          }
+        }
+        if (externalError || external && g.items.some(({ type, item }) => type !== 'order' || item.exchange || item.orderNo !== external.orderNo)) {
+          out.push({ name: g.name, ok: false, safeStop: true, error: externalError || '합포장 일부에 이미 카페24 송장이 있어요. 묶음을 풀고 남은 상품만 접수해 주세요.' });
+          continue;
         }
         if (external) {
           adoptExternalShipment(db, g, external);
@@ -4139,6 +4165,15 @@ const server = http.createServer((req, res) => {
       if (!ret) return sendJson(res, 200, { error: '해당 건을 찾지 못했어요.' });
       if (['completed', 'canceled'].includes(ret.flowState)) return sendJson(res, 200, { error: '이미 끝났거나 취소된 건이에요.' });
       if (ret.epost) return sendJson(res, 200, { error: '이미 회수 신청이 되어 있어요.' });
+      if (ret.manualPickup && ret.invoice) {
+        if (b.confirmExternalCanceled !== true) return sendJson(res, 200, { error: '직접 입력한 회수 송장이 있어요. 우체국에서 기존 회수를 먼저 취소한 뒤 [기존 회수를 취소했어요]로 확인해 주세요.', externalPickupConfirmationRequired: true });
+        delete ret.manualPickup;
+        ret.invoice = '';
+        ret.flowState = 'requested';
+        ret.status = statusForFlowState(ret.flowState);
+        appendClaimEvent(ret, 'pickup_canceled', 'manual', '우체국 외부 회수 취소 확인');
+        saveDb(db);
+      }
       if (ret.pickupOp && ['pending', 'unknown'].includes(ret.pickupOp.state)) {
         return sendJson(res, 200, { error: '이전 회수 신청 결과를 확인 중이라 중복 접수하지 않았어요. [회수 진행상태 새로고침]을 눌러 주세요.' });
       }
@@ -4256,7 +4291,7 @@ const server = http.createServer((req, res) => {
         if (ret.sourceChannel === 'cafe24') return sendJson(res, 200, { error: '카페24에서 취소된 건은 카페24에서 다시 신청한 뒤 자동으로 들어오게 해주세요.' });
         ret.flowState = 'requested';
         ret.status = statusForFlowState(ret.flowState);
-        ret.invoice = '';
+        if (!ret.manualPickup) ret.invoice = '';
         delete ret.epost;
         if (ret.pickupOp) ret.pickupOp.state = 'canceled';
         appendClaimEvent(ret, 'requested', 'shipping-helper', 'reopen');
@@ -4716,7 +4751,7 @@ const server = http.createServer((req, res) => {
       sendJson(res, 500, { error: '서버 오류: ' + e.message });
     }
   };
-  const mutates = req.method === 'POST' || url.pathname === '/api/cafe24/callback';
+  const mutates = req.method === 'POST' || url.pathname === '/api/cafe24/callback' || url.pathname === '/api/cafe24/inquiries';
   if (mutates) mutationQueue.run(handle);
   else handle();
 });

@@ -555,18 +555,18 @@ async function invSetQty(id, value) {
   if (String(value).trim() === '' || !Number.isSafeInteger(next) || next < 0) {
     toast('실제 수량을 0 이상의 정수로 적어 주세요.'); renderInventory(); return;
   }
-  const delta = next - (Number(item.qty) || 0);
-  if (!delta) return;
+  const orig = Number(item.qty) || 0;
+  const delta = next - orig;
   if (Math.abs(delta) >= 10 && !confirm(`${item.name} ${item.color || ''} ${item.size || ''}\n${Number(item.qty) || 0}개 → ${next}개로 조정할까요?`)) { renderInventory(); return; }
-  const r = await invAdjustStock(id, delta, delta > 0 ? '재고 조정 (+)' : '재고 조정 (−)', '');
-  if (r && r.ok) toast(`${next}개로 조정했어요.`, 2500);
+  const r = await invAdjustStock(id, delta, delta > 0 ? '재고 조정 (+)' : '재고 조정 (−)', '', { target: next, orig });
+  if (r && r.ok) toast(`${r.db.inventory.find(i => i.id === id).qty}개로 조정했어요.`, 2500);
 }
 // 행별 폼과 별도 입출고 등록 폼이 같은 요청·갱신 로직을 쓴다.
-async function invAdjustStock(id, delta, reason, memo) {
+async function invAdjustStock(id, delta, reason, memo, count) {
   if (window._invAdjustBusy) { toast('앞선 재고 변경을 저장하는 중이에요.'); return null; }
   window._invAdjustBusy = true;
   try {
-    const r = await api('/api/inventory/adjust', { method: 'POST', body: JSON.stringify({ id, delta, reason, memo }) });
+    const r = await api('/api/inventory/adjust', { method: 'POST', body: JSON.stringify({ id, delta, reason, memo, ...count }) });
     if (!r.ok) { toast(r.error || '재고를 저장하지 못했어요.', 5000); renderInventory(); return r; }
     adoptDb(r.db);
     window._invHistCache = new Map();
