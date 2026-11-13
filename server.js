@@ -98,6 +98,7 @@ const {
 const { linkVariantAliases, rowForVariant, variantCodeWrites } = require('./lib/variant-alias');
 const {
   initFromCafe24,
+  pickFirstStockFromCafe24,
   applyStocktake,
   ledgerSummary,
   toCsv,
@@ -1963,6 +1964,20 @@ async function syncAll() {
   }
   // 카페24 제품이 재고 목록에 전부 있도록 자동 등록 (새 제품은 수량 0으로)
   if (syncInventoryFromProducts(db) > 0) changed = true;
+  // 새 옵션의 첫 수량은 카페24 수량으로 (30분 동안 안 바뀐 1개 이상 숫자만) — 그 뒤로는 배송도우미가 기준
+  try {
+    const first = pickFirstStockFromCafe24(db);
+    if (first.touched) changed = true;
+    if (first.ready.length) {
+      const r = initFromCafe24(db, { ids: first.ready });
+      for (const row of r.rows) markChannelDirty(db, (db.inventory || []).find(i => i.id === row.id));
+      if (r.applied) {
+        changed = true;
+        audit('inventory.firstStockFromCafe24', { count: r.applied, rev: db.rev });
+        console.log(`카페24 첫 수량 가져옴: ${r.applied}줄`);
+      }
+    }
+  } catch (e) { console.error('카페24 첫 수량 가져오기 실패:', e.message); }
   // 같은 실물의 다른 카페24 옵션(밀이 마켓 등)을 대표 줄에 묶는다 (코드 기준: 품목 자체코드 → 상품 자체코드+색상·사이즈)
   try {
     const linked = linkVariantAliases(db);

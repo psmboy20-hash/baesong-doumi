@@ -150,7 +150,7 @@ function renderInventory() {
           ${btn({ label: '입고', onclick: `invRowMove(${i.id},'in',this)`, size: 'sm' })}
           ${btn({ label: '출고', onclick: `invRowMove(${i.id},'out',this)`, size: 'sm' })}
         </div>
-        ${i.needsAllocation ? `<span class="stock-note">${i.allocationTotal != null ? `배분 ${i.allocationTotal}/${i.allocationExpected}` : '옵션 배분 필요'}</span>` : i.needsCount ? '<span class="stock-note">실사 필요</span>' : ''}
+        ${i.needsAllocation ? `<span class="stock-note">${i.allocationTotal != null ? `배분 ${i.allocationTotal}/${i.allocationExpected}` : '옵션 배분 필요'}</span>` : i.needsCount && i.cafe24FirstQtyWatch ? `<span class="stock-note" title="카페24 수량이 30분 동안 그대로면 그 숫자를 처음 수량으로 가져와요">카페24 ${Number(i.cafe24FirstQtyWatch.qty)}개 가져오는 중</span>` : i.needsCount ? '<span class="stock-note">실사 필요</span>' : ''}
       </td>`;
       const minCell = counting
         ? `<td style="text-align:center" class="muted">${minQtyOf(i)}개</td>`
