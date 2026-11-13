@@ -35,7 +35,7 @@ function renderInventory() {
     const parsed = splitColor(i.name);
     return { name: parsed.base, color: i.color || parsed.color };
   };
-  const activeInventory = DB.inventory.filter(i => !i.retiredAggregate);
+  const activeInventory = DB.inventory.filter(i => !HamItemLines.isRetiredStockRow(i)); // 카페24에서 지운 옵션(안 센 줄)은 안 보임
   const allGroups = new Map();
   for (const i of activeInventory) {
     const k = invParts(i).name;

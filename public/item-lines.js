@@ -231,6 +231,13 @@
     return sku ? 'S|' + sku : '';
   }
 
+  // 카페24에서 지운 옵션인데 실물을 한 번도 센 적 없는 줄 — 재고 화면과 이름 매칭에서 뺀다.
+  // (센 적 있는 줄은 실물이 사라지면 안 되니 '옵션 삭제됨'으로 남긴다)
+  function isRetiredStockRow(row) {
+    if (!row || row.retiredAggregate) return true;
+    return row.cafe24VariantActive === false && (row.qty === null || row.qty === undefined);
+  }
+
   // 주문 품목 → 실제 재고 줄. 다른 카페24 상품(예: 밀이 마켓)에 올린 같은 옷은 대표 줄의 aliases 로 찾는다 (상품명은 안 봄).
   function stockRowFor(inventory, item) {
     const variant = String((item && item.variantCode) || '').trim().toUpperCase();
@@ -250,7 +257,7 @@
     const no = String(productNo);
     // 지금 카페24 옵션에 연결된 줄(옵션 코드 있음)이 있으면 예전에 남은 줄보다 그쪽을 쓴다
     const current = list => list.length > 1 && list.some(row => row.variantCode) ? list.filter(row => row.variantCode) : list;
-    const ofProduct = current((inventory || []).filter(row => !row.retiredAggregate &&
+    const ofProduct = current((inventory || []).filter(row => !isRetiredStockRow(row) &&
       (String(row.productNo) === no || (Array.isArray(row.aliases) && row.aliases.some(a => String(a.productNo) === no)))));
     const rows = current(ofProduct.filter(row =>
       !sizeOf(size) || sizeOf(row.size) === sizeOf(size) || (!sizeOf(row.size) && sizeOf(size) === 'free')));
@@ -347,6 +354,7 @@
     shipmentStockStates,
     stockRowFor,
     stockRowForProduct,
+    isRetiredStockRow,
     sentShipmentKey
   };
 });

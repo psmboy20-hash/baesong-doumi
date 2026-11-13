@@ -65,7 +65,7 @@ function renderHome() {
   const overdueUnconfirmed = shipmentCount(all.filter(x => x.status === '발송완료' && !x.delivered && daysSince(x.sentDate) >= 7));
   const epostOpPending = shipmentCount(all.filter(x => epostOperationUnresolved(x)));
   // 실물재고를 아직 한 번도 입력하지 않았으면(합계 0) "부족 145개" 같은 헛경고 대신 시작 안내를 띄운다
-  const activeInv = (DB.inventory || []).filter(i => !i.retiredAggregate);
+  const activeInv = (DB.inventory || []).filter(i => !HamItemLines.isRetiredStockRow(i));
   const physicalTotal = activeInv.reduce((s, i) => s + (Number(i.qty) || 0), 0);
   const stockNotStarted = activeInv.length > 0 && physicalTotal === 0 && !(DB.stocktakes || []).length;
   const minOf = i => i.minQty != null ? Number(i.minQty) : (Number(i.cafe24SafetyInventory) > 0 ? Number(i.cafe24SafetyInventory) : 2);

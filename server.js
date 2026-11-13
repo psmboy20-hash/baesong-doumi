@@ -77,7 +77,8 @@ const {
   buildReturnRestockPlan,
   selectStockMatches,
   deliveryCheckOrder,
-  groupRecipientConflict
+  groupRecipientConflict,
+  cafe24OptionKind
 } = require('./lib/operations');
 const { writeJsonAtomic, appendAudit, createMutationQueue } = require('./lib/storage');
 const { buildWorkbookBuffer, xlsxDownloadHeaders, downloadHeaders } = require('./lib/spreadsheet-export');
@@ -778,8 +779,9 @@ function cafe24OptionParts(raw) {
     if (kv.length !== 2) continue;
     const key = kv[0].trim().toLowerCase();
     const value = kv.slice(1).join('=').trim();
-    if (key.includes('색상') || key.includes('color')) color = value;
-    else if (key.includes('사이즈') || key.includes('size')) size = value;
+    const kind = cafe24OptionKind(key);
+    if (kind === 'color') color = value;
+    else if (kind === 'size') size = value;
   }
   return { color, size };
 }
@@ -1312,8 +1314,9 @@ async function cafe24FetchProducts(db) {
         for (const option of (v.options || [])) {
           const name = String(option.name || option.option_name || '').toLowerCase();
           const value = String(option.value || option.option_value || '').trim();
-          if (name.includes('색상') || name.includes('color')) color = value;
-          else if (name.includes('사이즈') || name.includes('size')) size = value;
+          const kind = cafe24OptionKind(name);
+          if (kind === 'color') color = value;
+          else if (kind === 'size') size = value;
         }
         return {
           variantCode: v.variant_code || '', customVariantCode: v.custom_variant_code || '',
@@ -1395,7 +1398,8 @@ function syncInventoryFromProducts(db) {
         if (inv) {
           inv.productNo = p.no;
           inv.variantCode = v.variantCode;
-          if (!inv.color && v.color) inv.color = v.color;
+          // 품목코드로 이어진 줄은 카페24 색 이름을 따른다 (카페24에서 옵션 값을 고치면 여기도 바뀌게)
+          if (v.color) inv.color = v.color;
           if (!inv.size && v.size) inv.size = v.size;
           inv.needsCount = inv.qty === null || inv.qty === undefined;
           if (!(inv.cafe24PushedAt && db.productsStockAt && inv.cafe24PushedAt > db.productsStockAt)) inv.cafe24Qty = v.cafe24Qty;
