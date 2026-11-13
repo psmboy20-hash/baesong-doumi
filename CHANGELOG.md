@@ -1,5 +1,10 @@
 # 변경 이력
 
+## 2026-11-13 — 다시 오라클로
+
+- 노트북(Tailscale Funnel) 주소가 요청마다 3~5초씩 걸려 메인 서버를 오라클로 되돌림. 주소 https://nusolvere.duckdns.org (응답 약 0.1초, 접속코드 그대로).
+- 노트북의 ham-server·ham-update 작업과 Funnel은 끔. 맥미니는 은퇴 모드(새 주소로 넘기기만). 오라클 앱·10분 자동 업데이트·상태 점검 켬.
+
 ## 2026-11-12 — 노트북으로 이전
 
 - 메인 서버를 맥미니에서 윈도우 노트북(서버용)으로 옮김. 새 주소 https://jellly.tail68ac1d.ts.net (Tailscale Funnel, 접속코드 그대로).

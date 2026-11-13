@@ -5,3 +5,5 @@
 - 바깥 주소: `tailscale funnel --bg 8899` → https://jellly.tail68ac1d.ts.net (Tailscale은 unattended로 켜 둠)
 - 서버만 다시 켜기: `C:\srv\ham-ops\restart.request` 파일의 수정 시각을 바꾼다
 - 메인 서버는 항상 한 대만. 다른 컴퓨터에서 HAM_CLOUD_WRITER=1로 켜지 말 것 (카페24 연결이 갈라짐)
+
+> 2026-11-13: 메인 서버는 다시 오라클(https://nusolvere.duckdns.org). 노트북의 ham-server·ham-update 작업은 꺼 둠(사용 안 함).
