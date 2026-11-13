@@ -37,3 +37,18 @@ test('이름으로 찾을 때 지워진 옛 옵션 줄 때문에 지금 옵션�
   assert.equal(stockRowForProduct(inventory, 156, '블랙', '').id, 472);
   assert.equal(stockRowForProduct(inventory, 156, '아이보리', '').id, 473);
 });
+
+test('지운 제품 목록: 줄이 남아 있고 풀어도 새 줄이 안 생기는 제품만 푼다', () => {
+  const { releasableHiddenProducts } = require('../lib/operations');
+  const products = [
+    { no: 151, variants: [{ variantCode: 'FV000C' }, { variantCode: 'FV000D' }] }, // 옛 옵션 줄만 지운 경우
+    { no: 127, variants: [{ variantCode: 'EX000A' }, { variantCode: 'EX000B' }] }, // Olive 를 일부러 지운 경우
+    { no: 102, variants: [{ variantCode: 'EN000A' }] }                              // 제품 통째로 지운 경우
+  ];
+  const inventory = [
+    { productNo: 151, variantCode: 'FV000C', cafe24VariantActive: true },
+    { productNo: 151, variantCode: 'FV000D', cafe24VariantActive: true },
+    { productNo: 127, variantCode: 'EX000B', cafe24VariantActive: true }
+  ];
+  assert.deepEqual(releasableHiddenProducts(inventory, products, [102, 151, 151, 127, 118]), ['151']);
+});

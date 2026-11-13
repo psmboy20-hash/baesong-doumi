@@ -886,7 +886,10 @@ async function invDel(id) {
   if (!item) return;
   if (!confirm(`"${item.name}"을(를) 재고 목록에서 지울까요?\n(지운 제품은 자동 등록에서도 빠져요)`)) return;
   DB.inventory = DB.inventory.filter(i => i.id !== id);
-  if (item.productNo) (DB.inventoryHidden = DB.inventoryHidden || []).push(item.productNo); // 자동 재등록 방지
+  // 자동 재등록 방지 — 단, 카페24에서 이미 지운 옵션 줄이고 같은 제품의 다른 줄이 남아 있으면 제품 전체를 막지 않는다
+  // (막으면 같은 제품의 새 옵션·색 이름 변경이 동기화에서 빠짐)
+  const siblingsLeft = DB.inventory.some(i => item.productNo && String(i.productNo) === String(item.productNo));
+  if (item.productNo && !(item.cafe24VariantActive === false && siblingsLeft)) (DB.inventoryHidden = DB.inventoryHidden || []).push(item.productNo);
   await saveDb();
   window._invHistCache = new Map();
   renderInventory();

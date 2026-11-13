@@ -78,7 +78,8 @@ const {
   selectStockMatches,
   deliveryCheckOrder,
   groupRecipientConflict,
-  cafe24OptionKind
+  cafe24OptionKind,
+  releasableHiddenProducts
 } = require('./lib/operations');
 const { writeJsonAtomic, appendAudit, createMutationQueue } = require('./lib/storage');
 const { buildWorkbookBuffer, xlsxDownloadHeaders, downloadHeaders } = require('./lib/spreadsheet-export');
@@ -1351,7 +1352,9 @@ function syncInventoryFromProducts(db) {
   let added = markMissingCafe24Variants(db.inventory, db.products, db.productsStockAt);
   for (const p of (db.products || [])) {
     if (!p.name) continue;
-    if ((db.inventoryHidden || []).includes(p.no)) continue; // 사용자가 지운 제품은 다시 안 넣음
+    // 사용자가 지운 제품은 줄을 다시 만들지 않는다. 다만 남겨 둔 줄은 계속 카페24 정보(색·수량·판매상태)를 받는다
+    const hiddenProduct = (db.inventoryHidden || []).map(String).includes(String(p.no));
+    if (hiddenProduct && !db.inventory.some(i => String(i.productNo) === String(p.no))) continue;
     if (Array.isArray(p.variants) && p.variants.length) {
       const hasSizedVariants = p.variants.some(v => String(v.size || '').trim());
       for (const aggregate of db.inventory.filter(i =>
@@ -1413,6 +1416,7 @@ function syncInventoryFromProducts(db) {
           inv.sku = inventorySku(inv);
           continue;
         }
+        if (hiddenProduct) continue;
         const item = {
           id: db.nextId++, name: p.name, color: v.color, size: v.size, qty: null,
           productNo: p.no, variantCode: v.variantCode, needsCount: true,
@@ -1435,6 +1439,7 @@ function syncInventoryFromProducts(db) {
       if (inv && !inv.productNo) inv.productNo = p.no;
       continue;
     }
+    if (hiddenProduct) continue;
     existing.add(lo(p.name));
     const item = { id: db.nextId++, name: p.name, color: '', size: '', qty: null, productNo: p.no, needsCount: true };
     item.sku = inventorySku(item);
@@ -4769,6 +4774,21 @@ server.on('error', e => {
 });
 
 // 한 번만 도는 데이터 정리 — 메인 서버(장부 주인)에서만
+if (CLOUD_WRITER) {
+  // 카페24에서 지운 옵션 줄을 [지우기] 하다가 제품 전체가 동기화에서 빠진 것 되돌리기 (풀어도 새로 생기는 줄이 없는 제품만)
+  try {
+    const db = loadDb();
+    if (!db.migrations) db.migrations = {};
+    const key = 'unhideAfterOptionCleanup20261113';
+    if (!db.migrations[key]) {
+      const released = releasableHiddenProducts(db.inventory, db.products, db.inventoryHidden);
+      db.inventoryHidden = (db.inventoryHidden || []).filter(no => !released.includes(String(no)));
+      db.migrations[key] = { at: new Date().toISOString(), released };
+      saveDb(db);
+      console.log(`지운 제품 목록에서 다시 동기화: ${released.join(', ') || '없음'}`);
+    }
+  } catch (e) { console.error('지운 제품 정리 실패:', e.message); }
+}
 if (CLOUD_WRITER) {
   try {
     const db = loadDb();
